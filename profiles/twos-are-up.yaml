@@ -1,0 +1,61 @@
+# Twos Are Up — SonoranLab project profile
+# Spec: docs/07-project-profile.md
+# STATUS: placeholder values. Fill from the real project in Phase 2 and run
+#   sonoranlab profile check profiles/twos-are-up.yaml
+
+id: twos-are-up
+name: Twos Are Up
+style: pixel
+
+canvas:
+  cell: [32, 48]          # TODO confirm against existing class sheets
+  gen_scale: 16
+  padding: 2
+  sheet_layout: rows_by_direction
+
+palette:
+  hex: []                 # TODO paste the shipped palette, one hex per line
+  max_colors_per_sprite: 16
+  dither: none
+
+anchor:
+  mode: foot              # foot | rig | bbox_bottom
+  foot_y: 46              # TODO
+  anchor_x: 16
+  foot_zone: [38, 47]
+  max_foot_slide_px: 1
+  max_bbox_drift_px: 2
+
+alpha:
+  threshold: 128
+  bg_key: "#00ff00"
+  fringe_passes: 1
+  fringe_tolerance: 0
+
+directions:
+  order: [down, left, right, up]
+  mirror_right_from_left: false
+
+animations:
+  walk_4dir:   {frames: 8, fps: 10, loop: true,  track_default: E, template: templates/poses/walk}
+  idle_4dir:   {frames: 4, fps: 6,  loop: true,  track_default: E, template: templates/poses/idle}
+  attack_4dir: {frames: 4, fps: 12, loop: false, track_default: C, template: templates/poses/attack_1h}
+  hurt_4dir:   {frames: 2, fps: 8,  loop: false, track_default: C, template: templates/poses/hurt}
+
+references:
+  style_refs: []          # TODO paths to 2–3 approved existing class sheets
+  proportions: ""         # TODO e.g. "chibi, ~2.5 heads tall"
+  outline: ""             # TODO e.g. "1px dark outline, no AA"
+  camera: ""              # TODO e.g. "3/4 top-down"
+
+export:
+  godot_project: ""       # TODO absolute path
+  sprites_dir: "res://assets/sprites/classes"
+  spriteframes_name: "{character}_frames"
+  anim_name: "{animation}_{direction}"
+
+autonomy:
+  allow_auto_approve: false
+  max_seeds_per_attempt: 4
+  max_attempts_per_animation: 3
+  escalate_after: ask

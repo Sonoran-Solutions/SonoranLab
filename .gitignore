@@ -1,0 +1,26 @@
+# generated artifacts (large, reproducible from manifests)
+artifacts/
+benchmark/results/**/raw/
+benchmark/results/**/processed/
+*.safetensors
+*.gguf
+*.ckpt
+
+# python
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+dist/
+build/
+*.egg-info/
+
+# editors / os
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# godot scratch
+tools/godot/.godot/
