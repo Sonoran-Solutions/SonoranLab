@@ -74,7 +74,7 @@ up() {
     esac
   done
   guard_replace "$replace" "$force"   # early, so a refusal doesn't wait for the image build
-  mkdir -p "$WORK/output" "$MODELS"/{checkpoints,text_encoders,vae,diffusion_models,unet,loras,controlnet,clip_vision,latent_upscale_models}
+  mkdir -p "$WORK/output" "$WORK/input" "$MODELS"/{checkpoints,text_encoders,vae,diffusion_models,unet,loras,controlnet,clip_vision,latent_upscale_models}
   cat > "$WORK/extra_model_paths.yaml" <<YAML
 sonoranlab:
     base_path: /models
@@ -108,6 +108,7 @@ YAML
     -v "$MODELS/controlnet_aux_ckpts:/opt/ComfyUI/custom_nodes/comfyui_controlnet_aux/ckpts:ro" \
     -v "$WORK/RMBG:/opt/ComfyUI/models/RMBG" \
     -v "$WORK/output:/work/output" \
+    -v "$WORK/input:/opt/ComfyUI/input/sonoranlab:ro" \
     -v "$WORK/extra_model_paths.yaml:/work/extra_model_paths.yaml:ro" \
     "$IMAGE" bash -lc "cd /opt/ComfyUI && exec python main.py --listen 0.0.0.0 --port 8188 \
       --output-directory /work/output --extra-model-paths-config /work/extra_model_paths.yaml $FLAGS"
