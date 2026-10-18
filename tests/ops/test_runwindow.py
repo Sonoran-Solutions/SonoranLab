@@ -21,7 +21,8 @@ f="$FAKE/units/$2"
 case "$1" in
   is-active) s=$(cat "$f" 2>/dev/null || echo inactive); echo "$s"; [ "$s" = active ] ;;
   stop) [ -f "$FAKE/slow_stop" ] && { touch "$FAKE/stopping"; sleep 2; }
-        echo inactive > "$f"; [ -f "$FAKE/free_on_stop" ] && cp "$FAKE/free_on_stop" "$FAKE/proc/meminfo"; exit 0 ;;
+        echo inactive > "$f"; [ -f "$FAKE/free_on_stop" ] && cp "$FAKE/free_on_stop" "$FAKE/proc/meminfo"
+        [ -f "$FAKE/gtt_on_stop" ] && cp "$FAKE/gtt_on_stop" "$FAKE/gtt"; exit 0 ;;
   start) [ -f "$FAKE/start_fails" ] && exit 1; echo active > "$f" ;;
 esac
 """
@@ -58,7 +59,8 @@ def fake(tmp_path):
     pm.write_text(FAKE_PODMAN)
     work = tmp_path / "work"
     env = {**os.environ, "FAKE": str(tmp_path), "SONORANLAB_PROC": str(proc), "SONORANLAB_PODMAN": f"bash {pm}",
-           "SONORANLAB_SYSTEMCTL": f"bash {sc}", "SONORANLAB_WORK": str(work)}
+           "SONORANLAB_SYSTEMCTL": f"bash {sc}", "SONORANLAB_WORK": str(work),
+           "SONORANLAB_GTT": str(tmp_path / "gtt")}   # absent unless a test writes it: no GTT credit
 
     class F:
         root, environ = tmp_path, env
@@ -478,3 +480,47 @@ def test_restore_keeps_units_stopped_when_podman_errors(fake):
     assert fake.state() == "inactive"
     (fake.root / "exists_rc").unlink()                           # confirmed absent: safe
     assert fake.run("--restore").returncode == 0 and fake.state() == "active"
+
+
+# --- freed-GTT credit in the settle check (owner-approved 2026-10-18) -----------------------------------------
+
+
+def gib(x):
+    return str(int(x * (1 << 30)))
+
+
+def test_gtt_released_by_paused_unit_counts_toward_settle(fake):
+    fake.holder(100, "llama-gemory.service", 20)
+    fake.unit("llama-gemory.service", "active")
+    (fake.root / "gtt").write_text(gib(21))
+    (fake.root / "gtt_on_stop").write_text(gib(1.3))            # GTT freed into amdgpu's pool...
+    (fake.root / "free_on_stop").write_text(meminfo(42))        # ...but MemAvailable barely moves (40 -> 42)
+    r = fake.run("--need-gib", "52", "--allow-pause", "llama-gemory", *marker_cmd(fake.root / "ran"))
+    assert r.returncode == 0, r.stderr                           # 42 + 19.7 credit >= 52 + 8
+    assert (fake.root / "ran").exists() and "freed GTT credit" in r.stderr
+    assert fake.state() == "active"
+
+
+def test_settle_refuses_when_credit_cap_is_not_enough(fake):
+    fake.holder(100, "llama-gemory.service", 5)
+    fake.unit("llama-gemory.service", "active")
+    (fake.root / "proc" / "meminfo").write_text(meminfo(30))
+    (fake.root / "gtt").write_text(gib(40))
+    (fake.root / "gtt_on_stop").write_text(gib(1))              # 39 GiB "freed", but only 5 was the paused unit's
+    (fake.root / "free_on_stop").write_text(meminfo(30))
+    # target 35.05: preflight 30 + 5.1 (gpu + rss estimate) passes and pauses; settle 30 + min(39, 5) = 35 < 35.05.
+    # Without the cap the 39 GiB drop (mostly not ours) would wrongly let it run.
+    r = fake.run("--need-gib", "27.05", "--margin-gib", "8", "--allow-pause", "llama-gemory",
+                 *marker_cmd(fake.root / "ran"))
+    assert r.returncode == 3 and not (fake.root / "ran").exists(), r.stderr
+    assert "freed GTT" in r.stderr and fake.state() == "active"  # restored after the refusal
+
+
+def test_unreadable_gtt_gives_no_credit(fake):
+    fake.holder(100, "llama-gemory.service", 20)
+    fake.unit("llama-gemory.service", "active")
+    (fake.root / "gtt").write_text("garbage")
+    (fake.root / "gtt_on_stop").write_text("also garbage")
+    (fake.root / "free_on_stop").write_text(meminfo(42))
+    r = fake.run("--need-gib", "52", "--allow-pause", "llama-gemory", *marker_cmd(fake.root / "ran"))
+    assert r.returncode == 3 and not (fake.root / "ran").exists()

@@ -8,7 +8,8 @@ systemd-oomd from killing *other* scopes when the host runs out. This wrapper:
    MemAvailable and memory pressure (PSI) against what the workload needs. It also refuses while the sonoranlab-comfy
    queue is busy (e.g. an orphaned prompt) or the container's state can't be confirmed (podman error = busy);
 2. fails safely (exit 3, nothing stopped, nothing run) when the run does not fit;
-3. pauses only systemd *user* units the caller explicitly approved with --allow-pause, and only if needed;
+3. pauses only systemd *user* units the caller explicitly approved with --allow-pause, and only if needed; the settle
+   check credits GTT the paused units measurably released (sysfs), capped at what they held;
 4. runs the command, forwarding INT/TERM/HUP to it;
 5. waits for the container queue to drain before releasing the window, even when nothing was paused, then
    restores every paused unit to its original state, including on failure and on signals. If this
@@ -24,7 +25,7 @@ systemd-oomd from killing *other* scopes when the host runs out. This wrapper:
 Exit codes: the command's own code (1 if it was 0 but the queue never drained); 3 preflight refused; 4 another run
 window is active; 128+N on signal N.
 Test hooks: SONORANLAB_PROC (proc root), SONORANLAB_SYSTEMCTL (systemctl command), SONORANLAB_WORK (state dir),
-SONORANLAB_PODMAN (podman command).
+SONORANLAB_PODMAN (podman command), SONORANLAB_GTT (file holding GTT bytes).
 """
 
 from __future__ import annotations
@@ -60,6 +61,18 @@ def mem_available() -> int:
         if line.startswith("MemAvailable:"):
             return int(line.split()[1]) * 1024
     raise RuntimeError("MemAvailable not found")
+
+
+def gtt_used() -> int | None:
+    """amdgpu GTT in use (bytes), or None if unreadable (then no freed-GTT credit is given: fail closed)."""
+    hook = os.environ.get("SONORANLAB_GTT")
+    paths = [Path(hook)] if hook else sorted(Path("/sys/class/drm").glob("card*/device/mem_info_gtt_used"))
+    for f in paths:
+        try:
+            return int(f.read_text().split()[0])
+        except (OSError, ValueError, IndexError):
+            continue
+    return None
 
 
 def psi_some_avg10() -> float:
@@ -350,7 +363,8 @@ def main(argv: list[str] | None = None) -> int:
     for s in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
         signal.signal(s, forward)
     try:
-        state["rc"] = run_window(p["pause"], paused, cmd, a, state)
+        credit_cap = sum(h["gpu"] for h in p["holders"] if h["unit"] in p["pause"])
+        state["rc"] = run_window(p["pause"], paused, cmd, a, state, credit_cap)
     except KeyboardInterrupt:
         state["rc"] = state["rc"] if state["rc"] >= 128 else 130
     finally:
@@ -372,7 +386,9 @@ def main(argv: list[str] | None = None) -> int:
     return state["rc"]
 
 
-def run_window(pause: list[str], paused: list[str], cmd: list[str], a: argparse.Namespace, state: dict) -> int:
+def run_window(pause: list[str], paused: list[str], cmd: list[str], a: argparse.Namespace, state: dict,
+               credit_cap: int = 0) -> int:
+    gtt0 = gtt_used()
     for u in pause:
         if is_active(u):
             # Recorded (state file and in-memory) before stopping, so a signal or SIGKILL mid-stop still restores it.
@@ -385,11 +401,24 @@ def run_window(pause: list[str], paused: list[str], cmd: list[str], a: argparse.
             log(f"paused {u} (was active)")
     target = int((a.need_gib + a.margin_gib) * GIB)
     deadline = time.monotonic() + a.settle_s
-    while mem_available() < target:
+    def effective() -> tuple[int, int]:
+        # GTT released by a paused unit goes to amdgpu's page pool, which MemAvailable does not count but the next
+        # amdgpu allocation (our container) reuses first (2026-10-18: pausing llama-gemory dropped GTT 20.7 -> 1.3 GiB
+        # while MemAvailable rose ~2 GiB; Phase 0 Qwen drew 33-37 GiB with it paused vs 53 with it running). Credit
+        # only the measured drop, capped at what the paused units held in preflight; unreadable GTT = no credit.
+        now = gtt_used()
+        credit = min(max(gtt0 - now, 0), credit_cap) if paused and gtt0 is not None and now is not None else 0
+        return mem_available() + credit, credit
+
+    while (eff := effective())[0] < target:
         if time.monotonic() > deadline:
-            log(f"REFUSED: still only {mem_available() / GIB:.1f} GiB available after pausing {paused}")
+            log(f"REFUSED: still only {eff[0] / GIB:.1f} GiB effective ({(eff[0] - eff[1]) / GIB:.1f} available + "
+                f"{eff[1] / GIB:.1f} freed GTT) after pausing {paused}")
             return 3
         time.sleep(1)
+    if paused:
+        log(f"settled: {eff[0] / GIB:.1f} GiB effective ({(eff[0] - eff[1]) / GIB:.1f} available + {eff[1] / GIB:.1f} "
+            "freed GTT credit)")
     # Marks the child as guarded, so env/smoke.sh runs directly instead of re-entering a window.
     state["child"] = subprocess.Popen(cmd, env={**os.environ, "SONORANLAB_RUNWINDOW": str(os.getpid())})
     state["child"].wait()
