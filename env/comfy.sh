@@ -24,7 +24,16 @@ MEM="${SONORANLAB_MEM:-64g}"
 # Toolbox-documented flags (start_comfy_ui alias / benchmark_workflows.py). Change one at a time and record it.
 FLAGS="${SONORANLAB_COMFY_FLAGS:---disable-mmap --gpu-only --disable-smart-memory --cache-none --bf16-vae}"
 
-running() { "${PODMAN[@]}" container exists "$NAME" && [[ "$("${PODMAN[@]}" inspect -f '{{.State.Running}}' "$NAME")" == true ]]; }
+# absent | stopped | running | unknown. Only a confirmed answer counts: a podman error (`container exists` rc 125,
+# failed inspect) or an unexpected state (paused, stopping, removing, ...) is unknown and is never treated as idle.
+cstate() {
+  local rc=0 s
+  "${PODMAN[@]}" container exists "$NAME" || rc=$?
+  case "$rc" in 0) ;; 1) echo absent; return ;; *) echo unknown; return ;; esac
+  s=$("${PODMAN[@]}" inspect -f '{{.State.Status}}' "$NAME" 2>/dev/null) || { echo unknown; return; }
+  case "$s" in running) echo running ;; created|configured|exited|stopped) echo stopped ;; *) echo unknown ;; esac
+}
+running() { [[ "$(cstate)" == running ]]; }
 
 # Take the run-window lock on fd 9 (exit 5 if a guarded run holds it), so no guarded job can start between the busy
 # check and the removal. Released by unlock_window before `podman run`, so conmon never inherits it.
@@ -36,7 +45,11 @@ unlock_window() { exec 9>&-; }
 
 # Exit 5 unless it is safe to remove the current container. $1=replace-approved(0/1) $2=force(0/1)
 guard_replace() {
-  running || return 0
+  local state; state=$(cstate)
+  case "$state" in absent|stopped) return 0 ;; esac
+  if [[ "$state" == unknown && "$2" != 1 ]]; then
+    echo "refusing: cannot confirm the state of $NAME (podman error or unexpected state); pass --force to destroy it anyway" >&2; exit 5
+  fi
   if [[ "$1" != 1 ]]; then
     echo "refusing: container $NAME is already running; pass --replace to recreate it" >&2; exit 5
   fi

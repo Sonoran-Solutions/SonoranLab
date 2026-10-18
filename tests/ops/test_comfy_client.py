@@ -253,9 +253,13 @@ def test_runs_via_python_c_without_file(comfy):
 
 
 FAKE_PODMAN_FOR_SMOKE = """#!/usr/bin/env bash
-case "$1" in
-  exec) cat > /dev/null; [ -n "$FAKE_OUT" ] && printf '%s\\n' "$FAKE_OUT"; exit "$FAKE_RC" ;;
-  inspect) echo fake ;;
+# a running sonoranlab-comfy with an idle queue (what the run-window preflight checks); exec runs the fake client
+case "$*" in
+  container*) exit 0 ;;
+  "inspect -f {{.State.Status}}"*) echo running ;;
+  inspect*) echo fake ;;
+  "exec sonoranlab-comfy curl"*/queue*) echo '{"queue_running": [], "queue_pending": []}' ;;
+  exec*) cat > /dev/null; [ -n "$FAKE_OUT" ] && printf '%s\\n' "$FAKE_OUT"; exit "$FAKE_RC" ;;
 esac
 """
 
@@ -281,7 +285,7 @@ def test_smoke_sh_propagates_client_result(tmp_path, fake_out, fake_rc, want_rc,
 
 def _guarded_smoke(tmp_path, avail_gib, leaked_window=None):
     podman = tmp_path / "podman.sh"
-    podman.write_text(FAKE_PODMAN_FOR_SMOKE.replace("exec) cat > /dev/null;", 'exec) echo exec >> "$CALLS"; cat > /dev/null;'))
+    podman.write_text(FAKE_PODMAN_FOR_SMOKE.replace("exec*) cat > /dev/null;", 'exec*) echo exec >> "$CALLS"; cat > /dev/null;'))
     proc = tmp_path / "proc"
     (proc / "pressure").mkdir(parents=True)
     (proc / "meminfo").write_text(f"MemAvailable: {int(avail_gib * (1 << 20))} kB\n")
