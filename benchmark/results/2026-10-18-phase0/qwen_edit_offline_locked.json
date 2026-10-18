@@ -1,0 +1,32 @@
+{
+  "status": "success",
+  "exit_code": 0,
+  "prompt_id": "bdaf7952-c2bc-4701-9fb2-ec361706617e",
+  "wall_s": 156.503,
+  "images": [
+    "p0/qwen_edit_2511_fp8_lightning_00005_.png"
+  ],
+  "errors": [],
+  "detail": "Execution completed and outputs validated",
+  "tag": "qwen_edit_offline_locked",
+  "date": "2026-10-18T14:43:32-07:00",
+  "workflow": "workflows/static/qwen_edit_2511_fp8_lightning_4step.json",
+  "workflow_sha256": "0ed164626546f387d7da4f878036cc53e73b510f568d8935273e328efd5e9eb4",
+  "image": "localhost/sonoranlab-comfy:p0 a4b70c4d9727b1074d0e7716806e74b48091f3964f9efd2b6e1604c06ec2fe70",
+  "network": "none",
+  "gpu_vram_used_gib": {
+    "before": 3.54,
+    "peak": 4.43
+  },
+  "gpu_gtt_used_gib": {
+    "before": 20.35,
+    "peak": 59.55
+  },
+  "host_mem_available_gib": {
+    "before": 61.12,
+    "min": 8.02
+  },
+  "output_sha256": {
+    "p0/qwen_edit_2511_fp8_lightning_00005_.png": "fea3c1496b6916b02974d2c130fba3e93b02ed57f67e60b5fb43c45426518c19"
+  }
+}

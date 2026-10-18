@@ -67,13 +67,97 @@ Deleting hardlinks in `~/comfy-models` never deletes the originals in `~/ComfyUI
 
 ## Custom nodes installed
 
+Recorded 2026-10-18 (DYL-67). Baked into `localhost/sonoranlab-comfy:p0` by [`env/Containerfile`](../../env/Containerfile)
+(each commit verified with `git rev-parse` at build time; original image id `1e37559bc4f2`, locked rebuild `a4b70c4d9727`). A container restart or rebuild loads
+the same commits. Full pip freeze of the image: `/opt/sonoranlab-pip-freeze.txt` inside it.
+
 | node pack | commit | notes |
 |---|---|---|
-| PixelOE (ComfyUI node) | | |
-| ComfyUI-PixelGridHelpers | | |
-| comfyui_controlnet_aux | | |
-| ComfyUI-GGUF | | |
-| ComfyUI-RMBG | | |
+| PixelOE (ComfyUI node, KohakuBlueleaf/PixelOE) | `1d45ba0b5c51c3d998b19043a168366a8f170eaa` (tag v1.0.0 = PyPI 1.0.0) | full source incl. `src/pixeloe`, so the node never pip-installs at import. Classes `PixelOE`, `OutlineExpansion`, `PreResize`. |
+| ComfyUI-PixelGridHelpers (molbal) | `005997b1ae8e666e5068866c4e97fd72a1b486b8` (v1.1.1) | no deps. `PixelGrid_ApplyPalette` (Enforce Palette), `GridMedianFixer`, etc. No LICENSE file upstream (pyproject says MIT). |
+| comfyui_controlnet_aux (Fannovel16) | `a587a4c1594524c1d2de5cd1a86cd868ff448e1c` | `onnxruntime-gpu` (CUDA-only) dropped, CPU `onnxruntime` 1.31 instead → DWPose runs on CPU. Checkpoints pre-placed in `~/comfy-models/controlnet_aux_ckpts` (mounted read-only at `ckpts/`), so nothing downloads. Workflows must pin `pose_estimator=dw-ll_ucoco_384.onnx` (node default is a torchscript file we don't ship) and `ckpt_name=depth_anything_v2_vits.pth` (node default vitl is CC-BY-NC). |
+| ComfyUI-GGUF | kyuz0/ComfyUI-GGUF-H3 `6d33de29cdc8bfa3f417dc0d96cbbc3b5412b8ed` | bundled in the toolbox image (fork of city96/ComfyUI-GGUF via molbal). `UnetLoaderGGUF`, `CLIPLoaderGGUF` present. |
+| ComfyUI-RMBG (1038lab) | `229529e0ea63fb7085848225d74f91f6dc164956` (3.2.0) | GPL-3.0. Uses official ZhengPeng7 BiRefNet (MIT, fp16) pre-placed instead of its default `1038lab` mirror: loads and runs. RMBG rewrites `birefnet.py` on load, so `env/comfy.sh` gives it a working copy in `~/sonoranlab-work/RMBG`; the verified original keeps its hash. `SAM3Segment` loads; SAM3 itself is Phase 6 and also available as core `SAM3_Detect`. |
+
+Pip constraints frozen from the base image: torch/torchvision/torchaudio (`2.14.0a0+rocm7.15.0a20260721`), the ROCm
+wheels, numpy, opencv-python-headless. Transitive deps still pulled `opencv-python`/`opencv-contrib-python` 5.0.0
+alongside headless; `cv2` imports and the nodes run (watch this if a node misbehaves on cv2 GUI symbols).
+
+Startup evidence: all packs import with no `IMPORT FAILED` and no pip activity at startup; all 17 required classes are
+present in `/object_info` (PixelOE, PixelGrid_ApplyPalette, GridMedianFixer, DWPreprocessor, OpenposePreprocessor,
+DepthAnythingV2Preprocessor, BiRefNetRMBG, SAM3Segment, UnetLoaderGGUF, CLIPLoaderGGUF, SAM3_Detect,
+ControlNetApplyAdvanced, SetUnionControlNetType, ReferenceLatent, Flux2Scheduler, EmptyFlux2LatentImage,
+TextEncodeQwenImageEditPlus).
+
+Operational tests (manifests in [`2026-10-18-phase0/`](2026-10-18-phase0/)):
+- [`workflows/smoke/nodes_pixel.json`](../../workflows/smoke/nodes_pixel.json), 1.5 s: PixelOE k_centroid 4× (768→192) +
+  Enforce Palette (16 HEX) → 10 colours, all in palette. Median Fixer grid 4 → **191×191** (not 192; matters for DYL-77).
+- [`workflows/smoke/nodes_pose_depth_alpha.json`](../../workflows/smoke/nodes_pose_depth_alpha.json), 96 s total (mostly the klein
+  t2i that makes the full-body test character): DWPose (ONNX, CPU) skeleton, Depth Anything V2 Small depth, BiRefNet-general
+  RGBA with binary-capable alpha (min 0 / max 255). Contact sheet: `nodes_pose_depth_alpha_contact.jpg`. Non-blocking
+  warning: depth model triggers a hipBLASLt `HIPBLAS_STATUS_NOT_SUPPORTED` fallback to hipBLAS on gfx1151.
+
+### Operational safety and reproducibility (senior review, 2026-10-18)
+
+- **Run-window guard** [`env/runwindow.py`](../../env/runwindow.py) wraps every heavy run, e.g.
+  `python3 env/runwindow.py --need-gib 52 [--allow-pause llama-gemory] -- bash env/smoke.sh WF TAG`. In order, it:
+  1. inventories GPU-memory holders (amdgpu fdinfo → systemd unit) and checks `MemAvailable` and memory PSI;
+  2. **refuses with exit 3, stopping and running nothing** if `need + 8 GiB margin` doesn't fit;
+  3. pauses only user units named with `--allow-pause`, and only if that is needed to fit;
+  4. restores each paused unit to its original state on success, failure, or INT/TERM/HUP;
+  5. persists paused units to `~/sonoranlab-work/runwindow.state.json`, so a SIGKILLed run is repaired by
+     `--restore` (recover.sh runs it first);
+  6. takes an exclusive lock, so two heavy runs can't overlap (exit 4). `--restore` takes the **same** lock: while a
+     window is live it refuses (exit 4) and leaves the paused units stopped. Once the window's process is gone (the
+     kernel drops the lock even on SIGKILL), restore proceeds.
+
+  **Drain gate.** The heavy work is a ComfyUI prompt *inside the container*, and it outlives an interrupted
+  host-side client (Ctrl-C, a closed terminal, a SIGKILLed window). So every restore path (normal exit, signals,
+  `--restore`, and the automatic restore before a new run) first waits up to `--drain-s` (default 1800 s) for
+  `sonoranlab-comfy` to report an empty queue. A busy or unreadable queue counts as busy. If the job is still running
+  when the wait ends, or the operator presses Ctrl-C, the units **stay stopped**, the state file is kept, and a warning
+  says to re-run `--restore`. Further signals are ignored while restoring. A unit is recorded as paused before
+  `systemctl stop` runs, and the state file is fsynced.
+
+  **Guarded by default:** `bash env/smoke.sh WF TAG` re-runs itself inside the window unless it is already in one, using
+  `SMOKE_NEED_GIB` (default 52) and `SMOKE_ALLOW_PAUSE="llama-gemory"` (owner-approved units only). That makes it the
+  single canonical command; only `SONORANLAB_UNGUARDED=1` (tests) skips the preflight. It counts as guarded only
+  when its direct parent is the window (`SONORANLAB_RUNWINDOW == $PPID`), so a leaked variable doesn't bypass it.
+
+  Budgets from the measurements above: Qwen Edit FP8 `--need-gib 52`, klein and the node chain `--need-gib 30`.
+  The guard keeps a desktop-sized margin before anything runs. That is the protection the container memory cap
+  alone can't give.
+- **Smoke client** [`env/comfy_client.py`](../../env/comfy_client.py), used by `env/smoke.sh`:
+  - validates `status_str == success` **and** `completed`, and the absence of execution_error/interrupted messages;
+  - checks at least N output images exist and are non-empty;
+  - applies per-request HTTP timeouts and an overall deadline. On timeout it sends `/interrupt` with **its own
+    `prompt_id`**, which ComfyUI 0.31.0 honours only if that prompt is the running one, so another client's job is never
+    stopped. It also deletes its own prompt from the queue;
+  - exit codes: 0 success, 2 rejected, 3 execution_error, 4 timeout, 5 missing_outputs, 6 http_error / no response.
+  
+  `smoke.sh` exits with that code. Live check: a workflow naming a missing model → exit 2 (`rejected`).
+- **`comfy.sh up` / `down`** refuse (exit 5) to destroy a running container unless `--replace`, and refuse even then
+  while ComfyUI has a running or pending job, or can't report its queue, unless `--force`. The final check and the
+  `podman rm` happen together under the run-window lock, so a guarded run can't start in between; `up`/`down` refuse
+  while a window is live. Live check: a second `up` → exit 5.
+- **Dependency lock.** [`env/requirements.lock.txt`](../../env/requirements.lock.txt) lists the image's 64-package pip
+  layer with exact versions and SHA-256, installed with `--require-hashes --no-deps`. The build then fails if the
+  environment differs from [`env/pip-freeze.p0.txt`](../../env/pip-freeze.p0.txt) (163 packages) or if the base's ROCm
+  torch stack moved ([`env/check_lock.py`](../../env/check_lock.py)). Regenerate deliberately with
+  [`env/lock_deps.sh`](../../env/lock_deps.sh).
+  - Known ceiling: 5 sdists are hash-pinned but built with unpinned build backends.
+  - The locked rebuild is image `a4b70c4d9727`, now tagged `:p0`. The pre-lock image `1e37559bc4f2` is kept as
+    `:p0-resolved-20261018` for rollback.
+  - Equivalence: Qwen Edit, klein, the node chain and the pixel test, run offline on the locked image, are all
+    **byte-identical** to the pre-lock outputs. Manifests `*_offline_locked.json` are in
+    [`2026-10-18-phase0/`](2026-10-18-phase0/).
+- **Regression tests:**
+  `uv run --no-project --with pytest pytest -q tests/ops` runs the fake-/proc run-window tests, the fake-ComfyUI
+  client tests and the fake-podman guard tests. No GPU, network or real services are touched. The same suite runs on
+  GitHub Actions (`.github/workflows/ops-tests.yml`) for every PR.
+
+Unsupported / not exercised in Phase 0: onnxruntime GPU execution on ROCm (CPU only), SAM3 segmentation (Phase 6),
+ControlNet-Union conditioning and Wan 2.2 video (Phase 1 Tracks C/E test them; weights are present and hash-verified).
 
 ## Models downloaded
 

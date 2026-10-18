@@ -1,0 +1,21 @@
+# Regression tests for the Phase 0 operational tooling (env/*.py, env/*.sh). They use fake /proc, systemctl,
+# podman and ComfyUI, so they need no GPU, models or network services.
+name: ops-tests
+on:
+  pull_request:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  tests:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install pytest==9.1.1
+      - run: for f in env/*.sh; do bash -n "$f"; done
+      - run: python -m pytest -q tests/ops

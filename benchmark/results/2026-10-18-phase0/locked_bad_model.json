@@ -1,0 +1,28 @@
+{
+  "status": "rejected",
+  "exit_code": 2,
+  "prompt_id": null,
+  "wall_s": 0.008,
+  "images": [],
+  "errors": [],
+  "detail": "{\"error\": {\"type\": \"prompt_outputs_failed_validation\", \"message\": \"Prompt outputs failed validation\", \"details\": \"\", \"extra_info\": {}}, \"node_errors\": {\"70\": {\"errors\": [{\"type\": \"value_not_in_list\", \"message\": \"Value not in list\", \"details\": \"unet_name: 'does-not-exist.safetensors' not in ['flux-2-klein-base-4b.safetensors', 'qwen_image_edit_2511_fp8mixed.safetensors']\", \"extra_info\": {\"input_name\": \"unet_name\", \"input_config\": [[\"flux-2-klein-base-4b.safetensors\", \"qwen_image_edit_2511_fp8mixed.safetensors\"], {}], \"received_value\": \"does-not-exist.safetensors\"}}], \"dependent_outputs\": [\"9\"], \"class_type\": \"UNETLoader\"}}}",
+  "tag": "locked_bad_model",
+  "date": "2026-10-18T14:39:16-07:00",
+  "workflow": "/tmp/claude-1000/-mnt-serverdata-Projects-SonoranLab/b6395ca8-3625-41f0-aba1-2d399e701234/scratchpad/bad_wf.json",
+  "workflow_sha256": "6f3c435e422e66cfe1330e56ab9a28a64e04fd9750998248409ee97f10b546e3",
+  "image": "localhost/sonoranlab-comfy:p0 a4b70c4d9727b1074d0e7716806e74b48091f3964f9efd2b6e1604c06ec2fe70",
+  "network": "none",
+  "gpu_vram_used_gib": {
+    "before": 3.56,
+    "peak": 3.56
+  },
+  "gpu_gtt_used_gib": {
+    "before": 19.98,
+    "peak": 19.98
+  },
+  "host_mem_available_gib": {
+    "before": 64.15,
+    "min": 64.15
+  },
+  "output_sha256": {}
+}
