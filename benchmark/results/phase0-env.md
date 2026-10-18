@@ -219,16 +219,25 @@ every run, so repeat ≈ steady state.
 
 ### Memory incident (2026-10-18 12:08) and the guardrails it produced
 
-The first Qwen load, run while the owner's host ComfyUI and `llama-gemory` held ~30 GiB GTT, drove host
-MemAvailable to 1.2 GiB. systemd-oomd then killed the whole Claude desktop app scope, which also contained the
-owner's host ComfyUI (started from a terminal in that app) and this container's `conmon`/port forwarder.
-Guardrails now in `env/comfy.sh`:
-- `--memory 64g --memory-swap 64g --oom-score-adj 1000`: GTT is charged to the container's memcg (Qwen peak 51.2 GiB),
-  so an overshoot kills ComfyUI, not a desktop scope.
-- `podman run` is wrapped in `systemd-run --user --scope`, so `conmon`/`rootlessport` live in their own scope.
-- Heavy runs pause `llama-gemory` (`systemctl --user stop llama-gemory` … `start`) and are launched with
-  `systemd-run --user --wait` so they finish and restart the service even if the controlling session dies.
-- Rule of thumb: Qwen Edit FP8 needs ≈ 50 GiB free; do not run it next to another model-holding service.
+The first Qwen load started while other processes already held ~30 GiB of GTT (baseline sampled at 11:55; at least
+`llama-gemory`'s model). It drove host MemAvailable to 1.2 GiB. systemd-oomd then killed the whole Claude desktop app
+scope: the controlling agent session, its background jobs, and this container's `conmon`/port forwarder, which had
+been launched from that scope. The container's ComfyUI survived.
+
+*Correction (owner, 2026-10-18):* the owner's host ComfyUI was **not** part of this incident. The owner had closed it
+after saving its queue. An earlier version of this note said otherwise.
+
+Guardrails:
+- `env/comfy.sh`: `--memory 64g --memory-swap 64g --oom-score-adj 1000`. GTT is charged to the container's memcg (Qwen
+  peak 51.2 GiB), so an overshoot inside the container kills ComfyUI. On its own, this does **not** protect other
+  apps from oomd when the host as a whole runs short.
+- `env/comfy.sh`: `podman run` is wrapped in `systemd-run --user --scope`, so `conmon`/`rootlessport` live in their own scope.
+- **`env/runwindow.py`** (see "Operational safety" above) is the host-level protection. It refuses heavy runs that
+  don't fit with a desktop margin, pauses only owner-approved user units (e.g. `llama-gemory`), and restores them
+  afterwards. Launch long runs with `systemd-run --user --wait` so they survive the controlling session.
+- Rule of thumb: Qwen Edit FP8 needs ≈ 52 GiB free (`--need-gib 52`); klein ≈ 30.
+
+The incident was not reproduced deliberately (no repeat OOM testing).
 
 ## Offline test
 
