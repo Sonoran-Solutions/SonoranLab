@@ -176,6 +176,9 @@ def plan(need: int, margin: int, max_psi: float, allowed: set[str], own: str | N
         p["ok"], p["reason"] = True, "fits without pausing anything"
         return p
     pausable = [h for h in big if h["unit"] in allowed and h["unit"].endswith(".service")]
+    # ponytail: reclaim is optimistic (mmap'd model pages may already count as MemAvailable, observed 2026-10-18 with
+    # llama-server); the post-pause settle check is the real gate and restores the unit if memory doesn't free up.
+    # Upgrade path: sample MemAvailable before/after a trial pause per unit and cache the measured reclaim.
     reclaim = sum(h["gpu"] + h["rss"] for h in pausable)
     units = sorted({h["unit"] for h in pausable})
     if avail + reclaim >= target:
