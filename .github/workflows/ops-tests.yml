@@ -16,6 +16,6 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: python -m pip install pytest==9.1.1
+      - run: python -m pip install pytest==9.1.1 pyyaml==6.0.2
       - run: for f in env/*.sh; do bash -n "$f"; done
       - run: python -m pytest -q tests/ops
