@@ -67,13 +67,38 @@ Deleting hardlinks in `~/comfy-models` never deletes the originals in `~/ComfyUI
 
 ## Custom nodes installed
 
+Recorded 2026-10-18 (DYL-67). Baked into `localhost/sonoranlab-comfy:p0` by [`env/Containerfile`](../../env/Containerfile)
+(each commit verified with `git rev-parse` at build time; image id `1e37559bc4f2`). A container restart or rebuild loads
+the same commits. Full pip freeze of the image: `/opt/sonoranlab-pip-freeze.txt` inside it.
+
 | node pack | commit | notes |
 |---|---|---|
-| PixelOE (ComfyUI node) | | |
-| ComfyUI-PixelGridHelpers | | |
-| comfyui_controlnet_aux | | |
-| ComfyUI-GGUF | | |
-| ComfyUI-RMBG | | |
+| PixelOE (ComfyUI node, KohakuBlueleaf/PixelOE) | `1d45ba0b5c51c3d998b19043a168366a8f170eaa` (tag v1.0.0 = PyPI 1.0.0) | full source incl. `src/pixeloe`, so the node never pip-installs at import. Classes `PixelOE`, `OutlineExpansion`, `PreResize`. |
+| ComfyUI-PixelGridHelpers (molbal) | `005997b1ae8e666e5068866c4e97fd72a1b486b8` (v1.1.1) | no deps. `PixelGrid_ApplyPalette` (Enforce Palette), `GridMedianFixer`, etc. No LICENSE file upstream (pyproject says MIT). |
+| comfyui_controlnet_aux (Fannovel16) | `a587a4c1594524c1d2de5cd1a86cd868ff448e1c` | `onnxruntime-gpu` (CUDA-only) dropped, CPU `onnxruntime` 1.31 instead → DWPose runs on CPU. Checkpoints pre-placed in `~/comfy-models/controlnet_aux_ckpts` (mounted read-only at `ckpts/`), so nothing downloads. Workflows must pin `pose_estimator=dw-ll_ucoco_384.onnx` (node default is a torchscript file we don't ship) and `ckpt_name=depth_anything_v2_vits.pth` (node default vitl is CC-BY-NC). |
+| ComfyUI-GGUF | kyuz0/ComfyUI-GGUF-H3 `6d33de29cdc8bfa3f417dc0d96cbbc3b5412b8ed` | bundled in the toolbox image (fork of city96/ComfyUI-GGUF via molbal). `UnetLoaderGGUF`, `CLIPLoaderGGUF` present. |
+| ComfyUI-RMBG (1038lab) | `229529e0ea63fb7085848225d74f91f6dc164956` (3.2.0) | GPL-3.0. Uses official ZhengPeng7 BiRefNet (MIT, fp16) pre-placed instead of its default `1038lab` mirror: loads and runs. RMBG rewrites `birefnet.py` on load, so `env/comfy.sh` gives it a working copy in `~/sonoranlab-work/RMBG`; the verified original keeps its hash. `SAM3Segment` loads; SAM3 itself is Phase 6 and also available as core `SAM3_Detect`. |
+
+Pip constraints frozen from the base image: torch/torchvision/torchaudio (`2.14.0a0+rocm7.15.0a20260721`), the ROCm
+wheels, numpy, opencv-python-headless. Transitive deps still pulled `opencv-python`/`opencv-contrib-python` 5.0.0
+alongside headless; `cv2` imports and the nodes run (watch this if a node misbehaves on cv2 GUI symbols).
+
+Startup evidence: all packs import with no `IMPORT FAILED` and no pip activity at startup; all 17 required classes are
+present in `/object_info` (PixelOE, PixelGrid_ApplyPalette, GridMedianFixer, DWPreprocessor, OpenposePreprocessor,
+DepthAnythingV2Preprocessor, BiRefNetRMBG, SAM3Segment, UnetLoaderGGUF, CLIPLoaderGGUF, SAM3_Detect,
+ControlNetApplyAdvanced, SetUnionControlNetType, ReferenceLatent, Flux2Scheduler, EmptyFlux2LatentImage,
+TextEncodeQwenImageEditPlus).
+
+Operational tests (manifests in [`2026-10-18-phase0/`](2026-10-18-phase0/)):
+- [`workflows/smoke/nodes_pixel.json`](../../workflows/smoke/nodes_pixel.json), 1.5 s: PixelOE k_centroid 4× (768→192) +
+  Enforce Palette (16 HEX) → 10 colours, all in palette. Median Fixer grid 4 → **191×191** (not 192; matters for DYL-77).
+- [`workflows/smoke/nodes_pose_depth_alpha.json`](../../workflows/smoke/nodes_pose_depth_alpha.json), 96 s total (mostly the klein
+  t2i that makes the full-body test character): DWPose (ONNX, CPU) skeleton, Depth Anything V2 Small depth, BiRefNet-general
+  RGBA with binary-capable alpha (min 0 / max 255). Contact sheet: `nodes_pose_depth_alpha_contact.jpg`. Non-blocking
+  warning: depth model triggers a hipBLASLt `HIPBLAS_STATUS_NOT_SUPPORTED` fallback to hipBLAS on gfx1151.
+
+Unsupported / not exercised in Phase 0: onnxruntime GPU execution on ROCm (CPU only), SAM3 segmentation (Phase 6),
+ControlNet-Union conditioning and Wan 2.2 video (Phase 1 Tracks C/E test them; weights are present and hash-verified).
 
 ## Models downloaded
 
