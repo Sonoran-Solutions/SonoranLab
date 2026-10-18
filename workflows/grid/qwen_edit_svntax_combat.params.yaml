@@ -4,10 +4,13 @@
 # an empty 768x768 latent instead of the VAE-encoded input, and no ImageScaleToTotalPixels (the edit encoder resizes
 # the reference itself: 384^2 for the VL tokens, ~1 MP for the reference latent).
 #
-# UNVERIFIED (no local copy of the svntax model card; not fetched):
-#   - prompt: written from docs/02 + docs/05 (6 cols x 4 rows: 3 walk, 2 attack, 1 hurt per direction, 32x48 cells).
-#     Replace with the card's documented layout prompt before scoring.
-#   - steps/cfg: Lightning defaults (4, 1.0). The card may assume the 20-step non-Lightning recipe.
+# Card-verified (https://huggingface.co/svntax-dev/pixel_spritesheet_4walk_combat_32x48_v1 README.md, read 2026-10-18):
+#   - prompt: the card's widget prompt verbatim (no trigger words; instance_prompt null).
+#   - 768x768; downscale x4 with k-centroid -> 192x192 = 6x4 cells of 32x48.
+#   - default lora_name = checkpoint 2500 (S4): the card's showcase images are labelled "2500".
+# Not on the card: steps, cfg, sampler, LoRA strength, Lightning. The card says "default Qwen Image Edit 2511 workflow";
+#   we keep Lightning 4-step (cfg 1) like our static workflow and record it in every manifest. A no-Lightning arm
+#   (lightning_strength 0, steps 20, cfg 4) is a documented variant, not part of the reduced floor sweep.
 # Verified locally: the LoRA's safetensors metadata says ai-toolkit 0.7.24, step 3000 (the un-suffixed S1 file).
 # Checkpoints 1750/2000/2500 (S2-S4) are valid lora_name values; docs/04 says the card showcase looks like 2500.
 #

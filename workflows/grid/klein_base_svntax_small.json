@@ -41,7 +41,7 @@
         "71",
         0
       ],
-      "text": "pixel art sprite sheet, 4x4 grid, a walking character in four directions, one direction per row (down, left, right, up), four walk frames per row, same character in every cell, full body, flat solid background. The character: {character}"
+      "text": "A pixel art spritesheet of {character}. The spritesheet is a 4 by 4 grid of four rows of frames - first row is 3 walking frames facing down and 1 frame both arms raised, second row is 3 walking frames facing left and 1 frame jumping left, third row is 3 walking frames facing right and 1 frame jumping right, fourth row is 3 walking frames back view facing up and 1 frame lying on floor."
     }
   },
   "67": {
