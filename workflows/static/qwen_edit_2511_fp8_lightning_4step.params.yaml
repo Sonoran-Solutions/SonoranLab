@@ -1,0 +1,8 @@
+reference_image: {node: "41", input: "image"}
+prompt:          {node: "68", input: "prompt"}
+negative_prompt: {node: "69", input: "prompt"}
+seed:            {node: "65", input: "seed"}
+steps:           {node: "65", input: "steps"}
+megapixels:      {node: "79", input: "megapixels"}
+lora_strength:   {node: "74", input: "strength_model"}
+output_prefix:   {node: "9",  input: "filename_prefix"}
