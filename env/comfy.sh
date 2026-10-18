@@ -7,7 +7,9 @@
 set -euo pipefail
 
 NAME=sonoranlab-comfy
-IMAGE="${SONORANLAB_COMFY_IMAGE:-docker.io/kyuz0/amd-strix-halo-comfyui@sha256:384aa1fecef6a841832e0d5552949977330308d8c25e212a94f5e8dfcc061cae}"
+# Pinned toolbox + Phase 0 node packs, built from env/Containerfile (base digest pinned there).
+IMAGE="${SONORANLAB_COMFY_IMAGE:-localhost/sonoranlab-comfy:p0}"
+HERE="$(cd "$(dirname "$0")" && pwd)"
 MODELS="${SONORANLAB_MODELS:-$HOME/comfy-models}"   # local NVMe only; never the CIFS share
 WORK="${SONORANLAB_WORK:-$HOME/sonoranlab-work}"    # outputs + generated config
 PORT="${SONORANLAB_PORT:-8189}"
@@ -32,11 +34,17 @@ sonoranlab:
     clip_vision: clip_vision
     latent_upscale_models: latent_upscale_models
 YAML
+  podman image exists "$IMAGE" || podman build -t "$IMAGE" -f "$HERE/Containerfile" "$HERE"
+  # ComfyUI-RMBG rewrites birefnet.py in place on load, so it gets a writable copy; the verified originals stay untouched.
+  mkdir -p "$MODELS/RMBG" "$MODELS/controlnet_aux_ckpts" "$WORK/RMBG"
+  cp -a -u "$MODELS/RMBG/." "$WORK/RMBG/"
   podman rm -f "$NAME" >/dev/null 2>&1 || true
   podman run -d --name "$NAME" "${net[@]}" \
     --device /dev/kfd --device /dev/dri --group-add keep-groups \
     --security-opt seccomp=unconfined \
     -v "$MODELS:/models:ro" \
+    -v "$MODELS/controlnet_aux_ckpts:/opt/ComfyUI/custom_nodes/comfyui_controlnet_aux/ckpts:ro" \
+    -v "$WORK/RMBG:/opt/ComfyUI/models/RMBG" \
     -v "$WORK/output:/work/output" \
     -v "$WORK/extra_model_paths.yaml:/work/extra_model_paths.yaml:ro" \
     "$IMAGE" bash -lc "cd /opt/ComfyUI && exec python main.py --listen 0.0.0.0 --port 8188 \

@@ -1,0 +1,30 @@
+# SonoranLab ComfyUI image: the pinned kyuz0 Strix Halo toolbox + the Phase 0 node packs at fixed commits.
+# Build: podman build -t localhost/sonoranlab-comfy:p0 -f env/Containerfile env/
+# The base's ROCm torch stack, numpy and opencv-python-headless are frozen as pip constraints so no
+# node requirement can swap them (e.g. for a CUDA wheel or GUI opencv).
+ARG BASE=docker.io/kyuz0/amd-strix-halo-comfyui@sha256:384aa1fecef6a841832e0d5552949977330308d8c25e212a94f5e8dfcc061cae
+FROM ${BASE}
+
+RUN pip freeze | grep -iE '^(torch|torchvision|torchaudio|rocm|triton|pytorch-triton|numpy|opencv-python-headless)[=@ ]' > /opt/constraints.txt \
+ && cat /opt/constraints.txt
+
+WORKDIR /opt/ComfyUI/custom_nodes
+# name|repo|commit
+RUN set -e; for spec in \
+      "PixelOE|https://github.com/KohakuBlueleaf/PixelOE|1d45ba0b5c51c3d998b19043a168366a8f170eaa" \
+      "ComfyUI-PixelGridHelpers|https://github.com/molbal/ComfyUI-PixelGridHelpers|005997b1ae8e666e5068866c4e97fd72a1b486b8" \
+      "comfyui_controlnet_aux|https://github.com/Fannovel16/comfyui_controlnet_aux|a587a4c1594524c1d2de5cd1a86cd868ff448e1c" \
+      "ComfyUI-RMBG|https://github.com/1038lab/ComfyUI-RMBG|229529e0ea63fb7085848225d74f91f6dc164956"; do \
+      IFS='|' read -r name repo commit <<<"$spec"; \
+      git init -q "$name" && git -C "$name" fetch -q --depth 1 "$repo" "$commit" && git -C "$name" checkout -q FETCH_HEAD; \
+      test "$(git -C "$name" rev-parse HEAD)" = "$commit"; \
+    done
+
+# CUDA-only / GUI wheels are dropped; onnxruntime (CPU) replaces onnxruntime-gpu (no ROCm wheel on PyPI).
+RUN set -e; drop='^(onnxruntime-gpu|onnxruntime|opencv-python|opencv-contrib-python)([<>=~! ;]|$)'; \
+    for n in comfyui_controlnet_aux ComfyUI-RMBG; do grep -viE "$drop" "$n/requirements.txt" | grep -vE '^\s*(#|$)' > "/tmp/$n.txt"; done; \
+    pip install -c /opt/constraints.txt kornia onnxruntime -r /tmp/comfyui_controlnet_aux.txt -r /tmp/ComfyUI-RMBG.txt \
+ && python -c "import torch, cv2, numpy; print('torch', torch.__version__, 'hip', torch.version.hip, 'cv2', cv2.__version__, 'numpy', numpy.__version__)" \
+ && pip freeze > /opt/sonoranlab-pip-freeze.txt
+
+WORKDIR /opt/ComfyUI
