@@ -88,3 +88,14 @@ usable_rubric:                  # a clip is usable only if every line is yes
     - reads as the clip (a run, or #3 a hover) at its fps without popping; the loop closes
     - no baked VFX, background, sticker border or keyline; outline style matches the shipped sheets
   cleanup_minutes: stopwatch time in Aseprite/Pixelorama to reach all-yes; > 60 total for character 1 = track out
+
+thresholds_addendum:            # DYL-71, 2026-10-18. PROPOSED, orchestrator to confirm before the first track row.
+  method: >-
+    process.py calibrate: validator metrics on the shipped gt clips (5 dirs each) after the same per-clip registration
+    tracks get; threshold = observed max rounded up. foot_slide = |contact-frame foot x - cell/2|.
+  per_character:
+    samurai:        {max_foot_slide_px: 30, max_bbox_drift_px: 16, opaque_area_cv_warn: 0.11, loop_closure_ratio_warn: 1.18}
+    oathguard:      {max_foot_slide_px: 20, max_bbox_drift_px: 8,  opaque_area_cv_warn: 0.13, loop_closure_ratio_warn: 1.17}
+    relay_sentinel: {max_foot_slide_px: 15, max_bbox_drift_px: 10, opaque_area_cv_warn: 0.01, loop_closure_ratio_warn: 1.29}
+  all:              {max_foot_slide_px: 30, max_bbox_drift_px: 16, opaque_area_cv_warn: 0.13, loop_closure_ratio_warn: 1.29}
+  loop_closure_delta_observed: 0.90   # docs/08's "warn > 0.15" fails every shipped loop; gate the ratio instead
