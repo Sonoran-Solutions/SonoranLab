@@ -241,6 +241,48 @@ The incident was not reproduced deliberately (no repeat OOM testing).
 
 ## Offline test
 
-- Date:
-- Method (unshare -n / cable):
-- Result:
+- Date: 2026-10-18 13:2x (DYL-69).
+- Method: container network namespace with no interfaces, `bash env/comfy.sh up --offline` (`podman run --network=none`);
+  the client runs inside the container via `podman exec` (`env/smoke.sh`). Not `unshare -n` on the host and not a cable
+  pull: the repo lives on a Wi-Fi CIFS share and the box runs other services. No `HF_HUB_OFFLINE` or similar was set,
+  so any hidden download would have failed loudly instead of being skipped.
+- Isolation proof (inside the container): `/sys/class/net` = `lo` only; `curl https://huggingface.co` → `(6) Could not
+  resolve host`; TCP connect 1.1.1.1:443 → `[Errno 101] Network is unreachable`; host `curl 127.0.0.1:8189` → no
+  listener. ComfyUI itself started offline (no startup downloads).
+- Result: **PASS**. Manifests in [`2026-10-18-phase0/`](2026-10-18-phase0/) (`network: none`):
+
+| workflow | status | seconds | GTT peak | output vs online run |
+|---|---|---|---|---|
+| Qwen Image Edit 2511 FP8 + Lightning | success | 114.8 | 39.8 GiB | byte-identical (`fea3c149…`) |
+| FLUX.2 klein-base-4B t2i | success | 86.2 | 23.7 GiB | byte-identical (`1918e034…`) |
+| nodes: klein char → DWPose / Depth V2 Small / BiRefNet | success | 90.4 | 23.7 GiB | byte-identical (all 4 images) |
+
+  No download, DNS or connection attempts in the ComfyUI log. (klein at 86 s vs 116 s online: the online runs had a
+  ~30 MB/s model download writing to the same NVMe; treat 86 s as the clean number.)
+
+## Restart / reboot recovery
+
+Runbook = "Start / recover" above, scripted step for step in [`env/recover.sh`](../../env/recover.sh)
+(`bash env/recover.sh [--allow-pause llama-gemory]`, from either checkout; the NVMe clone does not depend on the NAS):
+1. `runwindow.py --restore` (units left paused by a killed run)
+2. image present, else rebuild from `env/Containerfile` (hash-locked)
+3. `fetch_models.sh --verify`
+4. `comfy.sh up --replace` (refuses to destroy a busy container)
+5. Qwen Edit smoke inside `runwindow.py --need-gib 52`
+6. compare the output SHA-256 with the reference `fea3c149…`
+
+The script never calls `systemctl` itself. Service state is owned by the run window, which pauses only `--allow-pause`
+units and restores each to its original state, including on failure and interruption. Every step logs its rc,
+and a failure ends with `RECOVERY FAIL at: <step>`. Log: `~/sonoranlab-work/recovery.log`.
+
+| date | scenario | runbook time | since reboot issued | result |
+|---|---|---|---|---|
+| 2026-10-18 13:28 | container teardown + recreate (host up), pre-review script | 193 s | n/a | PASS (hash match) |
+| 2026-10-18 14:58 | revised script, container replace (host up), owner's host ComfyUI holding GPU memory | 110 s to refusal | n/a | **Correctly refused** at the Qwen step: approved `llama-gemory` paused, only 42.7 GiB free after 30 s, so the run was refused and `llama-gemory` restored (active). Log: [`recovery-2026-10-18-1458-refused.log`](2026-10-18-phase0/recovery-2026-10-18-1458-refused.log). The Qwen-in-run-window path itself passed in the locked-image equivalence run (`qwen_edit_offline_locked`, byte-identical). |
+| 2026-10-18 | host reboot | not run | n/a | **WAIVED by owner** ("I authorize continuing without doing the reboot validation"). Run `env/recover.sh` after the next reboot that happens anyway, and add the row here. |
+
+After a reboot, run `recover.sh` **before** starting other model-holding services. If they are already running, the
+run window refuses rather than starving them. The owner's host ComfyUI has no unit file; since 2026-10-18 it is started as
+`systemd-run --user --unit=host-comfyui …` with its original command and environment.
+
+Phase 0 GO/HOLD: see [`2026-10-18-phase0/phase0-readiness.md`](2026-10-18-phase0/phase0-readiness.md).

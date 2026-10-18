@@ -1,0 +1,36 @@
+{
+  "status": "success",
+  "prompt_id": "2ac2aa2f-0f26-4bde-883c-34d5d177dfa8",
+  "wall_s": 90.44,
+  "images": [
+    "p0/nodes_char_source_00002_.png",
+    "p0/nodes_birefnet_alpha_00002_.png",
+    "p0/nodes_depth_vits_00002_.png",
+    "p0/nodes_dwpose_00002_.png"
+  ],
+  "errors": [],
+  "tag": "nodes_pose_depth_alpha_offline",
+  "date": "2026-10-18T13:27:50-07:00",
+  "workflow": "workflows/smoke/nodes_pose_depth_alpha.json",
+  "workflow_sha256": "3b7f04c926b8f438cf6eb5ae90cbdd61372b61aadd103afb79d2d0439678688a",
+  "image": "localhost/sonoranlab-comfy:p0 1e37559bc4f27052f084ccec13ef89e6291d5ae123e653e02de2171670886f71",
+  "network": "none",
+  "gpu_vram_used_gib": {
+    "before": 3.55,
+    "peak": 3.69
+  },
+  "gpu_gtt_used_gib": {
+    "before": 0.82,
+    "peak": 23.65
+  },
+  "host_mem_available_gib": {
+    "before": 82.61,
+    "min": 59.33
+  },
+  "output_sha256": {
+    "p0/nodes_char_source_00002_.png": "1608767920694020861f69ba5370112e9b6933ebdbf97b3d48f39362b74c9e8f",
+    "p0/nodes_birefnet_alpha_00002_.png": "bfbb2398d6768c9b2b0ed41d554c9cd8ee6014c1581699421a633cd3f04bb06b",
+    "p0/nodes_depth_vits_00002_.png": "449d9e0fb843760197799fdb79d84e75cda8d4f531a4acbaab89133da428efdb",
+    "p0/nodes_dwpose_00002_.png": "57260748fb2afa11db901e58adffeb17abf253d34feb54204a822415edec8277"
+  }
+}

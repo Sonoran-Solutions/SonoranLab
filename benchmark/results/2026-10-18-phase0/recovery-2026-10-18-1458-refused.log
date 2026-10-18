@@ -1,0 +1,18 @@
+### recovery 2026-10-18T14:50:47-07:00 boot=2026-10-15 19:39:55 repo=/home/dq/src/SonoranLab-local rev=c18bfa3
+== restore units left paused by an interrupted run
+[runwindow] nothing to restore
+   rc=0 (0 s)
+== image present (else rebuild from env/Containerfile)
+present
+   rc=0 (0 s)
+== weights verify (sha256, no network)
+   rc=0 (51 s)
+== ComfyUI up (refuses to replace a busy container)
+   rc=0 (28 s)
+== Qwen Edit smoke in a guarded run window
+{"preflight": {"need_gib": 52.0, "margin_gib": 8.0, "available_gib": 41.5, "psi_some_avg10": 0.0, "holders": [{"pid": 3355006, "comm": "llama-server", "unit": "llama-gemory.service", "gpu": 20895555584, "rss": 299679744, "gpu_gib": 19.46}, {"pid": 3294973, "comm": "python", "unit": "host-comfyui.service", "gpu": 18077704192, "rss": 9003077632, "gpu_gib": 16.84}, {"pid": 3055, "comm": "gnome-shell", "unit": "org.gnome.Shell@wayland.service", "gpu": 1918861312, "rss": 334995456, "gpu_gib": 1.79}], "pause": ["llama-gemory.service"], "ok": true, "reason": "fits after pausing approved ['llama-gemory.service']"}}
+[runwindow] paused llama-gemory.service (was active)
+[runwindow] REFUSED: still only 42.7 GiB available after pausing ['llama-gemory.service']
+[runwindow] restore llama-gemory.service: active
+   rc=3 (31 s)
+== RECOVERY FAIL at: Qwen Edit smoke in a guarded run window (rc=3)
