@@ -241,6 +241,32 @@ The incident was not reproduced deliberately (no repeat OOM testing).
 
 ## Offline test
 
-- Date:
-- Method (unshare -n / cable):
-- Result:
+- Date: 2026-10-18 13:2x (DYL-69).
+- Method: container network namespace with no interfaces, `bash env/comfy.sh up --offline` (`podman run --network=none`);
+  the client runs inside the container via `podman exec` (`env/smoke.sh`). Not `unshare -n` on the host and not a cable
+  pull: the repo lives on a Wi-Fi CIFS share and the box runs other services. No `HF_HUB_OFFLINE` or similar was set,
+  so any hidden download would have failed loudly instead of being skipped.
+- Isolation proof (inside the container): `/sys/class/net` = `lo` only; `curl https://huggingface.co` → `(6) Could not
+  resolve host`; TCP connect 1.1.1.1:443 → `[Errno 101] Network is unreachable`; host `curl 127.0.0.1:8189` → no
+  listener. ComfyUI itself started offline (no startup downloads).
+- Result: **PASS**. Manifests in [`2026-10-18-phase0/`](2026-10-18-phase0/) (`network: none`):
+
+| workflow | status | seconds | GTT peak | output vs online run |
+|---|---|---|---|---|
+| Qwen Image Edit 2511 FP8 + Lightning | success | 114.8 | 39.8 GiB | byte-identical (`fea3c149…`) |
+| FLUX.2 klein-base-4B t2i | success | 86.2 | 23.7 GiB | byte-identical (`1918e034…`) |
+| nodes: klein char → DWPose / Depth V2 Small / BiRefNet | success | 90.4 | 23.7 GiB | byte-identical (all 4 images) |
+
+  No download, DNS or connection attempts in the ComfyUI log. (klein at 86 s vs 116 s online: the online runs had a
+  ~30 MB/s model download writing to the same NVMe; treat 86 s as the clean number.)
+
+## Restart / reboot recovery
+
+Runbook = "Start / recover" above, scripted step for step in [`env/recover.sh`](../../env/recover.sh): image present
+(else rebuild from `env/Containerfile`) → `fetch_models.sh --verify` → `comfy.sh up` → Qwen Edit smoke with
+`llama-gemory` paused → compare the output SHA-256 with the reference `fea3c149…`. Run it from either checkout
+(the NVMe clone does not depend on the NAS being up).
+
+| date | scenario | runbook time | since reboot issued | result |
+|---|---|---|---|---|
+| 2026-10-18 13:28 | container teardown + recreate (host up) | 193 s | n/a | PASS (hash match) |
