@@ -1,0 +1,26 @@
+# Track A: Qwen Image Edit 2511 FP8 + Lightning 4-step + svntax combat LoRA, 768x768, one sheet per run.
+# Graph = workflows/static/qwen_edit_2511_fp8_lightning_4step.json with the svntax LoRA chained after Lightning
+# (LoRA patches are additive on the base weights, so the order of the two LoRA nodes does not change the result),
+# an empty 768x768 latent instead of the VAE-encoded input, and no ImageScaleToTotalPixels (the edit encoder resizes
+# the reference itself: 384^2 for the VL tokens, ~1 MP for the reference latent).
+#
+# UNVERIFIED (no local copy of the svntax model card; not fetched):
+#   - prompt: written from docs/02 + docs/05 (6 cols x 4 rows: 3 walk, 2 attack, 1 hurt per direction, 32x48 cells).
+#     Replace with the card's documented layout prompt before scoring.
+#   - steps/cfg: Lightning defaults (4, 1.0). The card may assume the 20-step non-Lightning recipe.
+# Verified locally: the LoRA's safetensors metadata says ai-toolkit 0.7.24, step 3000 (the un-suffixed S1 file).
+# Checkpoints 1750/2000/2500 (S2-S4) are valid lora_name values; docs/04 says the card showcase looks like 2500.
+#
+# reference_image: a filename relative to ComfyUI's input dir. See workflows/README.md "Input images".
+reference_image:    {node: "41", input: "image"}
+prompt:             {node: "68", input: "prompt"}
+negative_prompt:    {node: "69", input: "prompt"}      # inert at cfg 1
+seed:               {node: "65", input: "seed"}
+steps:              {node: "65", input: "steps"}
+cfg:                {node: "65", input: "cfg"}
+width:              {node: "75", input: "width"}       # 768 per the card; multiple of 16
+height:             {node: "75", input: "height"}
+lora_name:          {node: "76", input: "lora_name"}
+lora_strength:      {node: "76", input: "strength_model"}
+lightning_strength: {node: "74", input: "strength_model"}   # 0 = no Lightning (then raise steps/cfg)
+output_prefix:      {node: "9",  input: "filename_prefix"}

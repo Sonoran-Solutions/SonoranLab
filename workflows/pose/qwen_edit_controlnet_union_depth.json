@@ -1,0 +1,247 @@
+{
+  "10": {
+    "class_type": "VAELoader",
+    "inputs": {
+      "vae_name": "qwen_image_vae.safetensors"
+    }
+  },
+  "12": {
+    "class_type": "UNETLoader",
+    "inputs": {
+      "unet_name": "qwen_image_edit_2511_fp8mixed.safetensors",
+      "weight_dtype": "default"
+    }
+  },
+  "61": {
+    "class_type": "CLIPLoader",
+    "inputs": {
+      "clip_name": "qwen_2.5_vl_7b_fp8_scaled.safetensors",
+      "type": "qwen_image",
+      "device": "default"
+    }
+  },
+  "74": {
+    "class_type": "LoraLoaderModelOnly",
+    "_meta": {
+      "title": "Lightning 4-step (stock position: directly on the UNET)"
+    },
+    "inputs": {
+      "lora_name": "Qwen-Image-Edit-2511-Lightning-4steps-V1.0-bf16.safetensors",
+      "strength_model": 1,
+      "model": [
+        "12",
+        0
+      ]
+    }
+  },
+  "67": {
+    "class_type": "ModelSamplingAuraFlow",
+    "inputs": {
+      "shift": 3.1,
+      "model": [
+        "74",
+        0
+      ]
+    }
+  },
+  "64": {
+    "class_type": "CFGNorm",
+    "inputs": {
+      "strength": 1,
+      "model": [
+        "67",
+        0
+      ]
+    }
+  },
+  "41": {
+    "class_type": "LoadImage",
+    "_meta": {
+      "title": "Reference still (runner-provided)"
+    },
+    "inputs": {
+      "image": "sonoranlab/reference.png"
+    }
+  },
+  "42": {
+    "class_type": "LoadImage",
+    "_meta": {
+      "title": "Depth source image (Track D bake RGB render, runner-provided)"
+    },
+    "inputs": {
+      "image": "sonoranlab/control_depth_source.png"
+    }
+  },
+  "43": {
+    "class_type": "DepthAnythingV2Preprocessor",
+    "_meta": {
+      "title": "Depth Anything V2 Small - vits ONLY (docs/04 P3)"
+    },
+    "inputs": {
+      "image": [
+        "42",
+        0
+      ],
+      "ckpt_name": "depth_anything_v2_vits.pth",
+      "resolution": 512
+    }
+  },
+  "44": {
+    "class_type": "SaveImage",
+    "inputs": {
+      "filename_prefix": "p1/C/qwen_edit_controlnet_union_depth/control",
+      "images": [
+        "43",
+        0
+      ]
+    }
+  },
+  "68": {
+    "class_type": "TextEncodeQwenImageEditPlus",
+    "inputs": {
+      "prompt": "Redraw this exact character matching the depth map's pose and silhouette: same face, hair, armour, colours and accessories, full body, side-view game sprite, flat shading, plain flat magenta background.",
+      "clip": [
+        "61",
+        0
+      ],
+      "vae": [
+        "10",
+        0
+      ],
+      "image1": [
+        "41",
+        0
+      ]
+    }
+  },
+  "69": {
+    "class_type": "TextEncodeQwenImageEditPlus",
+    "inputs": {
+      "prompt": "",
+      "clip": [
+        "61",
+        0
+      ],
+      "vae": [
+        "10",
+        0
+      ],
+      "image1": [
+        "41",
+        0
+      ]
+    }
+  },
+  "70": {
+    "class_type": "FluxKontextMultiReferenceLatentMethod",
+    "inputs": {
+      "reference_latents_method": "index_timestep_zero",
+      "conditioning": [
+        "68",
+        0
+      ]
+    }
+  },
+  "71": {
+    "class_type": "FluxKontextMultiReferenceLatentMethod",
+    "inputs": {
+      "reference_latents_method": "index_timestep_zero",
+      "conditioning": [
+        "69",
+        0
+      ]
+    }
+  },
+  "80": {
+    "class_type": "ControlNetLoader",
+    "inputs": {
+      "control_net_name": "Qwen-Image-InstantX-ControlNet-Union.safetensors"
+    }
+  },
+  "81": {
+    "class_type": "ControlNetApplyAdvanced",
+    "inputs": {
+      "strength": 0.9,
+      "start_percent": 0,
+      "end_percent": 1,
+      "positive": [
+        "70",
+        0
+      ],
+      "negative": [
+        "71",
+        0
+      ],
+      "control_net": [
+        "80",
+        0
+      ],
+      "image": [
+        "43",
+        0
+      ],
+      "vae": [
+        "10",
+        0
+      ]
+    }
+  },
+  "75": {
+    "class_type": "EmptySD3LatentImage",
+    "inputs": {
+      "width": 736,
+      "height": 736,
+      "batch_size": 1
+    }
+  },
+  "65": {
+    "class_type": "KSampler",
+    "inputs": {
+      "seed": 1,
+      "steps": 4,
+      "cfg": 1,
+      "sampler_name": "euler",
+      "scheduler": "simple",
+      "denoise": 1,
+      "model": [
+        "64",
+        0
+      ],
+      "positive": [
+        "81",
+        0
+      ],
+      "negative": [
+        "81",
+        1
+      ],
+      "latent_image": [
+        "75",
+        0
+      ]
+    }
+  },
+  "8": {
+    "class_type": "VAEDecode",
+    "inputs": {
+      "samples": [
+        "65",
+        0
+      ],
+      "vae": [
+        "10",
+        0
+      ]
+    }
+  },
+  "9": {
+    "class_type": "SaveImage",
+    "inputs": {
+      "filename_prefix": "p1/C/qwen_edit_controlnet_union_depth/raw",
+      "images": [
+        "8",
+        0
+      ]
+    }
+  }
+}

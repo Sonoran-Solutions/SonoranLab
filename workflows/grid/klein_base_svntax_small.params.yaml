@@ -1,0 +1,27 @@
+# Track B: FLUX.2 klein-base-4B (undistilled, K1) + svntax small LoRA, 512x512 text-to-image.
+# Graph = workflows/static/klein_base_4b_t2i.json + one LoraLoaderModelOnly between UNET and CFGGuider, 512x512.
+# Reference-image arm: klein_base_svntax_small_ref.json (same params plus reference_image / reference_megapixels).
+# This ComfyUI build (0.31.0 @ 62b3c94) does support a klein reference: the stock template
+# image_flux2_klein_image_edit_4b_base wires VAEEncode(ref) -> ReferenceLatent on positive and negative; the _ref
+# variant copies that. Whether the svntax LoRA was trained with a reference (edit) or text-only is UNVERIFIED, so both arms exist.
+#
+# UNVERIFIED (no local copy of the svntax card; not fetched):
+#   - prompt: written from docs/02 + docs/05 (4x4 grid, 4 directions, 512 -> 128). Replace with the card's prompt.
+#   - steps 20 / cfg 5 / euler: the stock klein-base recipe, not the card's.
+# Verified locally (safetensors metadata): S5 un-suffixed file = step 3000; S6 = step 2750. Both files carry the internal
+# name "pixel_4walk_24x24_flux2_klein_4b_v1" (24x24, not the 32x32 docs/05 assumes; check the card before slicing).
+#
+# prompt: the runner substitutes {character} with a text description, e.g. from benchmark/characters/2026-10-18.yaml
+# roles: "samurai with a one-handed katana held low", "armoured knight with a kite shield and a sword",
+# "floating bell-shaped lantern construct with tassels". Keep game art and palette values out of committed prompts (ADR-0007).
+prompt:          {node: "74", input: "text"}
+negative_prompt: {node: "67", input: "text"}
+seed:            {node: "73", input: "noise_seed"}
+steps:           {node: "62", input: "steps"}
+cfg:             {node: "63", input: "cfg"}
+width:           [{node: "62", input: "width"}, {node: "66", input: "width"}]
+height:          [{node: "62", input: "height"}, {node: "66", input: "height"}]
+lora_name:       {node: "75", input: "lora_name"}       # pixel_4walk_small_flux2_klein_base_4b_v1.safetensors (3000)
+                                                         # | pixel_4walk_small_flux2_klein_base_4b_v1_000002750.safetensors
+lora_strength:   {node: "75", input: "strength_model"}
+output_prefix:   {node: "9",  input: "filename_prefix"}

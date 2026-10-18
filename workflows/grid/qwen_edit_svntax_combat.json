@@ -1,0 +1,194 @@
+{
+  "10": {
+    "class_type": "VAELoader",
+    "inputs": {
+      "vae_name": "qwen_image_vae.safetensors"
+    }
+  },
+  "12": {
+    "class_type": "UNETLoader",
+    "inputs": {
+      "unet_name": "qwen_image_edit_2511_fp8mixed.safetensors",
+      "weight_dtype": "default"
+    }
+  },
+  "61": {
+    "class_type": "CLIPLoader",
+    "inputs": {
+      "clip_name": "qwen_2.5_vl_7b_fp8_scaled.safetensors",
+      "type": "qwen_image",
+      "device": "default"
+    }
+  },
+  "74": {
+    "class_type": "LoraLoaderModelOnly",
+    "_meta": {
+      "title": "Lightning 4-step (stock position: directly on the UNET)"
+    },
+    "inputs": {
+      "lora_name": "Qwen-Image-Edit-2511-Lightning-4steps-V1.0-bf16.safetensors",
+      "strength_model": 1,
+      "model": [
+        "12",
+        0
+      ]
+    }
+  },
+  "76": {
+    "class_type": "LoraLoaderModelOnly",
+    "_meta": {
+      "title": "svntax combat LoRA (S1, experimental-no-ship)"
+    },
+    "inputs": {
+      "lora_name": "pixel_4walk_32x48_qwen_image_edit_2511_v1.safetensors",
+      "strength_model": 1,
+      "model": [
+        "74",
+        0
+      ]
+    }
+  },
+  "67": {
+    "class_type": "ModelSamplingAuraFlow",
+    "inputs": {
+      "shift": 3.1,
+      "model": [
+        "76",
+        0
+      ]
+    }
+  },
+  "64": {
+    "class_type": "CFGNorm",
+    "inputs": {
+      "strength": 1,
+      "model": [
+        "67",
+        0
+      ]
+    }
+  },
+  "41": {
+    "class_type": "LoadImage",
+    "_meta": {
+      "title": "Reference still (runner-provided)"
+    },
+    "inputs": {
+      "image": "sonoranlab/reference.png"
+    }
+  },
+  "68": {
+    "class_type": "TextEncodeQwenImageEditPlus",
+    "inputs": {
+      "prompt": "Turn this character into a pixel art sprite sheet on a 6 column by 4 row grid. Each row is one facing direction: down, left, right, up. In each row: three walking frames, two attack frames, one hurt frame. Every cell holds one full-body 32x48 pixel character, same character in every cell, flat solid background, no text.",
+      "clip": [
+        "61",
+        0
+      ],
+      "vae": [
+        "10",
+        0
+      ],
+      "image1": [
+        "41",
+        0
+      ]
+    }
+  },
+  "69": {
+    "class_type": "TextEncodeQwenImageEditPlus",
+    "inputs": {
+      "prompt": "",
+      "clip": [
+        "61",
+        0
+      ],
+      "vae": [
+        "10",
+        0
+      ],
+      "image1": [
+        "41",
+        0
+      ]
+    }
+  },
+  "70": {
+    "class_type": "FluxKontextMultiReferenceLatentMethod",
+    "inputs": {
+      "reference_latents_method": "index_timestep_zero",
+      "conditioning": [
+        "68",
+        0
+      ]
+    }
+  },
+  "71": {
+    "class_type": "FluxKontextMultiReferenceLatentMethod",
+    "inputs": {
+      "reference_latents_method": "index_timestep_zero",
+      "conditioning": [
+        "69",
+        0
+      ]
+    }
+  },
+  "75": {
+    "class_type": "EmptySD3LatentImage",
+    "inputs": {
+      "width": 768,
+      "height": 768,
+      "batch_size": 1
+    }
+  },
+  "65": {
+    "class_type": "KSampler",
+    "inputs": {
+      "seed": 1,
+      "steps": 4,
+      "cfg": 1,
+      "sampler_name": "euler",
+      "scheduler": "simple",
+      "denoise": 1,
+      "model": [
+        "64",
+        0
+      ],
+      "positive": [
+        "70",
+        0
+      ],
+      "negative": [
+        "71",
+        0
+      ],
+      "latent_image": [
+        "75",
+        0
+      ]
+    }
+  },
+  "8": {
+    "class_type": "VAEDecode",
+    "inputs": {
+      "samples": [
+        "65",
+        0
+      ],
+      "vae": [
+        "10",
+        0
+      ]
+    }
+  },
+  "9": {
+    "class_type": "SaveImage",
+    "inputs": {
+      "filename_prefix": "p1/A/qwen_edit_svntax_combat/raw",
+      "images": [
+        "8",
+        0
+      ]
+    }
+  }
+}

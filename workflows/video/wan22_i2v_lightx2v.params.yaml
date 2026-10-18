@@ -1,0 +1,22 @@
+# Track E (mor-o W2 + W3): Wan 2.2 I2V A14B Q5_K_M GGUF experts + Lightx2v 4-step LoRAs, then BiRefNet -> RGBA frames.
+# Graph = toolbox /opt/comfy-workflows/Wan2.2-I2V-A14B-4steps-lora-rank64-Seko-V1-FP16.json (same shape as the ComfyUI
+# template video_wan2_2_14B_i2v, Lightning branch): UNET -> Lightx2v LoRA -> ModelSamplingSD3 shift 5 -> KSamplerAdvanced,
+# 4 steps split 2/2, cfg 1, euler/simple. Changes: UNETLoader -> UnetLoaderGGUF (ComfyUI-GGUF-H3), fp16 -> Q5_K_M/fp8
+# weights, SaveVideo -> PNG frame sequences + BiRefNet (settings from workflows/smoke/nodes_pose_depth_alpha.json).
+# Base model only; not the pixel-animate LoRA.
+# Outputs: raw RGB frames (node 90), RGBA frames (node 92), APNG preview at fps (node 93). One PNG per frame, in order.
+start_image:     {node: "71", input: "image"}            # posed first frame (Track C output or a restyled Track D bake), RGB
+prompt:          {node: "6",  input: "text"}
+negative_prompt: {node: "7",  input: "text"}             # inert at cfg 1 (Lightx2v); kept for a cfg > 1 run
+seed:            [{node: "57", input: "noise_seed"}, {node: "58", input: "noise_seed"}]   # 58 adds no noise; kept equal
+steps:           [{node: "57", input: "steps"}, {node: "58", input: "steps"}]             # total, default 4
+split_step:      [{node: "57", input: "end_at_step"}, {node: "58", input: "start_at_step"}]  # high->low hand-off, default 2
+cfg:             [{node: "57", input: "cfg"}, {node: "58", input: "cfg"}]
+width:           {node: "73", input: "width"}            # 544 for the first smoke; 704 / 736 later (multiples of 16)
+height:          {node: "73", input: "height"}
+length:          {node: "73", input: "length"}           # frames, must be 4n+1; 17 for a smoke
+fps:             {node: "93", input: "fps"}              # preview only; Wan 2.2 A14B native rate is 16
+lora_strength:   [{node: "67", input: "strength_model"}, {node: "68", input: "strength_model"}]
+output_prefix_raw:     {node: "90", input: "filename_prefix"}
+output_prefix_rgba:    {node: "92", input: "filename_prefix"}
+output_prefix_preview: {node: "93", input: "filename_prefix"}
