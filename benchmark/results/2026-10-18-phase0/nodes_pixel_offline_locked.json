@@ -1,0 +1,34 @@
+{
+  "status": "success",
+  "exit_code": 0,
+  "prompt_id": "8b3de6ff-6f0a-472f-b7e4-99b3be610c5b",
+  "wall_s": 0.513,
+  "images": [
+    "p0/nodes_median_fixer_00002_.png",
+    "p0/nodes_pixeloe_palette_00002_.png"
+  ],
+  "errors": [],
+  "detail": "Execution completed and outputs validated",
+  "tag": "nodes_pixel_offline_locked",
+  "date": "2026-10-18T14:45:20-07:00",
+  "workflow": "workflows/smoke/nodes_pixel.json",
+  "workflow_sha256": "07aea8bdddb2fa69b231901b66d64927330a15a5f5bbb876dcaef24627add1e0",
+  "image": "localhost/sonoranlab-comfy:p0 a4b70c4d9727b1074d0e7716806e74b48091f3964f9efd2b6e1604c06ec2fe70",
+  "network": "none",
+  "gpu_vram_used_gib": {
+    "before": 3.64,
+    "peak": 3.64
+  },
+  "gpu_gtt_used_gib": {
+    "before": 1.09,
+    "peak": 1.51
+  },
+  "host_mem_available_gib": {
+    "before": 73.4,
+    "min": 72.79
+  },
+  "output_sha256": {
+    "p0/nodes_median_fixer_00002_.png": "abf9ae3941c23d1a711dff06eb583568076fbf483f60d6fd81085259ad5be2b5",
+    "p0/nodes_pixeloe_palette_00002_.png": "339d3cc9b228d26bb537e454a690e5e8ca3dfca3013f357e53cb6786a04dfa2e"
+  }
+}

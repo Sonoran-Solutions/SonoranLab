@@ -1,0 +1,32 @@
+{
+  "status": "success",
+  "exit_code": 0,
+  "prompt_id": "d6f96c11-794f-4ea2-8d18-449d7047caf9",
+  "wall_s": 98.344,
+  "images": [
+    "p0/klein_base_4b_t2i_00004_.png"
+  ],
+  "errors": [],
+  "detail": "Execution completed and outputs validated",
+  "tag": "klein_offline_locked",
+  "date": "2026-10-18T14:40:55-07:00",
+  "workflow": "workflows/static/klein_base_4b_t2i.json",
+  "workflow_sha256": "be14ac1603d41ed1039625816c8d7844e7a9714f0646d5ca2644b43f5bc549aa",
+  "image": "localhost/sonoranlab-comfy:p0 a4b70c4d9727b1074d0e7716806e74b48091f3964f9efd2b6e1604c06ec2fe70",
+  "network": "none",
+  "gpu_vram_used_gib": {
+    "before": 3.56,
+    "peak": 3.59
+  },
+  "gpu_gtt_used_gib": {
+    "before": 19.98,
+    "peak": 43.17
+  },
+  "host_mem_available_gib": {
+    "before": 64.14,
+    "min": 38.27
+  },
+  "output_sha256": {
+    "p0/klein_base_4b_t2i_00004_.png": "1918e034c00ba02d02e1528d5b066e8f36047b95fd3b88dc54b62e5e300b1536"
+  }
+}

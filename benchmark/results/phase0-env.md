@@ -68,7 +68,7 @@ Deleting hardlinks in `~/comfy-models` never deletes the originals in `~/ComfyUI
 ## Custom nodes installed
 
 Recorded 2026-10-18 (DYL-67). Baked into `localhost/sonoranlab-comfy:p0` by [`env/Containerfile`](../../env/Containerfile)
-(each commit verified with `git rev-parse` at build time; image id `1e37559bc4f2`). A container restart or rebuild loads
+(each commit verified with `git rev-parse` at build time; original image id `1e37559bc4f2`, locked rebuild `a4b70c4d9727`). A container restart or rebuild loads
 the same commits. Full pip freeze of the image: `/opt/sonoranlab-pip-freeze.txt` inside it.
 
 | node pack | commit | notes |
@@ -96,6 +96,46 @@ Operational tests (manifests in [`2026-10-18-phase0/`](2026-10-18-phase0/)):
   t2i that makes the full-body test character): DWPose (ONNX, CPU) skeleton, Depth Anything V2 Small depth, BiRefNet-general
   RGBA with binary-capable alpha (min 0 / max 255). Contact sheet: `nodes_pose_depth_alpha_contact.jpg`. Non-blocking
   warning: depth model triggers a hipBLASLt `HIPBLAS_STATUS_NOT_SUPPORTED` fallback to hipBLAS on gfx1151.
+
+### Operational safety and reproducibility (senior review, 2026-10-18)
+
+- **Run-window guard** [`env/runwindow.py`](../../env/runwindow.py) wraps every heavy run, e.g.
+  `python3 env/runwindow.py --need-gib 52 [--allow-pause llama-gemory] -- bash env/smoke.sh WF TAG`. In order, it:
+  1. inventories GPU-memory holders (amdgpu fdinfo → systemd unit) and checks `MemAvailable` and memory PSI;
+  2. **refuses with exit 3, stopping and running nothing** if `need + 8 GiB margin` doesn't fit;
+  3. pauses only user units named with `--allow-pause`, and only if that is needed to fit;
+  4. restores each paused unit to its original state on success, failure, or INT/TERM/HUP;
+  5. persists paused units to `~/sonoranlab-work/runwindow.state.json`, so a SIGKILLed run is repaired by
+     `--restore` (recover.sh runs it first);
+  6. takes a lock, so two heavy runs can't overlap (exit 4).
+
+  Budgets from the measurements above: Qwen Edit FP8 `--need-gib 52`, klein and the node chain `--need-gib 30`.
+  The guard keeps a desktop-sized margin before anything runs. That is the protection the container memory cap
+  alone can't give.
+- **Smoke client** [`env/comfy_client.py`](../../env/comfy_client.py), used by `env/smoke.sh`:
+  - validates `status_str == success` **and** `completed`, and the absence of execution_error/interrupted messages;
+  - checks at least N output images exist and are non-empty;
+  - applies per-request HTTP timeouts and an overall deadline (on timeout it interrupts and dequeues the job);
+  - exit codes: 0 success, 2 rejected, 3 execution_error, 4 timeout, 5 missing_outputs, 6 http_error / no response.
+  
+  `smoke.sh` exits with that code. Live check: a workflow naming a missing model → exit 2 (`rejected`).
+- **`comfy.sh up` / `down`** refuse (exit 5) to destroy a running container unless `--replace`, and refuse even then
+  while ComfyUI has a running or pending job, or can't report its queue, unless `--force`. Live check: a second `up` →
+  exit 5.
+- **Dependency lock.** [`env/requirements.lock.txt`](../../env/requirements.lock.txt) lists the image's 64-package pip
+  layer with exact versions and SHA-256, installed with `--require-hashes --no-deps`. The build then fails if the
+  environment differs from [`env/pip-freeze.p0.txt`](../../env/pip-freeze.p0.txt) (163 packages) or if the base's ROCm
+  torch stack moved ([`env/check_lock.py`](../../env/check_lock.py)). Regenerate deliberately with
+  [`env/lock_deps.sh`](../../env/lock_deps.sh).
+  - Known ceiling: 5 sdists are hash-pinned but built with unpinned build backends.
+  - The locked rebuild is image `a4b70c4d9727`, now tagged `:p0`. The pre-lock image `1e37559bc4f2` is kept as
+    `:p0-resolved-20261018` for rollback.
+  - Equivalence: Qwen Edit, klein, the node chain and the pixel test, run offline on the locked image, are all
+    **byte-identical** to the pre-lock outputs. Manifests `*_offline_locked.json` are in
+    [`2026-10-18-phase0/`](2026-10-18-phase0/).
+- **Regression tests:**
+  `uv run --no-project --with pytest pytest -q tests/ops` runs the fake-/proc run-window tests, the fake-ComfyUI
+  client tests and the fake-podman guard tests. No GPU, network or real services are touched.
 
 Unsupported / not exercised in Phase 0: onnxruntime GPU execution on ROCm (CPU only), SAM3 segmentation (Phase 6),
 ControlNet-Union conditioning and Wan 2.2 video (Phase 1 Tracks C/E test them; weights are present and hash-verified).
