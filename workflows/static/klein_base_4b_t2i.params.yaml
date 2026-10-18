@@ -1,0 +1,8 @@
+prompt:          {node: "74", input: "text"}
+negative_prompt: {node: "67", input: "text"}
+seed:            {node: "73", input: "noise_seed"}
+steps:           {node: "62", input: "steps"}
+cfg:             {node: "63", input: "cfg"}
+width:           [{node: "62", input: "width"}, {node: "66", input: "width"}]
+height:          [{node: "62", input: "height"}, {node: "66", input: "height"}]
+output_prefix:   {node: "9",  input: "filename_prefix"}

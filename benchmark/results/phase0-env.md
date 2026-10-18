@@ -203,10 +203,32 @@ official Qwen2.5-VL file (9.38 GB); the audit found it byte-identical to the Qwe
 
 ## First-run timings
 
-| workflow | resolution | steps | seconds | peak mem | notes |
+Dated evidence (run manifests with workflow hash, image id, memory samples, output SHA-256, previews):
+[`benchmark/results/2026-10-18-phase0/`](2026-10-18-phase0/). Full-size PNGs stay in `~/sonoranlab-work/output/p0/`
+(their hashes are in the manifests). Runs go through `bash env/smoke.sh <workflow> <tag>`.
+
+Conditions on 2026-10-18: image `localhost/sonoranlab-comfy:p0` (`1e37559bc4f2`), toolbox flags unchanged, container
+capped at 64 GiB; `llama-gemory` paused for the run window, owner's host ComfyUI down, a model download writing to
+NVMe at ~30 MB/s in parallel. "Repeat" is the second run in the same container; `--cache-none` reloads every model on
+every run, so repeat ≈ steady state.
+
+| workflow | resolution | steps | seconds (cold / repeat) | peak mem | notes |
 |---|---|---|---|---|---|
-| Qwen Image Edit 2511 FP8 + Lightning (stock) | | | | | |
-| FLUX.2 klein-4B (stock) | | | | | |
+| Qwen Image Edit 2511 FP8 + Lightning (stock) | input scaled to 1.6 MP → 1720×968 | 4 (euler/simple, CFG 1, shift 3.1) | 122.9 / 106.1 | GTT 39.8 GiB; container cgroup 51.2 GiB; host MemAvailable 73.4 → 36.7 GiB | [`workflows/static/qwen_edit_2511_fp8_lightning_4step.json`](../../workflows/static/qwen_edit_2511_fp8_lightning_4step.json): toolbox `Qwen-Image-Edit-2511-BF16-4-Step-LoRA.json` with one input changed (UNET → `qwen_image_edit_2511_fp8mixed`). Stock seed 224883477692338, stock prompt/input `ai-server.jpg`. No `--force-fp32` needed, no NaN. Both runs byte-identical (`fea3c149…`). |
+| FLUX.2 klein-base-4B (stock template, base variant) | 1024×1024 | 20 (euler, CFG 5) | 116.3 / 116.2 | GTT 23.6 GiB; host MemAvailable 59.7 → 36.8 GiB | [`workflows/static/klein_base_4b_t2i.json`](../../workflows/static/klein_base_4b_t2i.json): API conversion of ComfyUI template `image_flux2_klein_text_to_image`, base 4B subgraph (the toolbox ships no klein workflow). Seed fixed to 42 (template randomizes). Undistilled base `flux-2-klein-base-4b.safetensors` + `qwen_3_4b` + Apache-tagged `flux2-vae` (K3) loads fine. No `--force-fp32`, no NaN. Both runs byte-identical (`1918e034…`). |
+
+### Memory incident (2026-10-18 12:08) and the guardrails it produced
+
+The first Qwen load, run while the owner's host ComfyUI and `llama-gemory` held ~30 GiB GTT, drove host
+MemAvailable to 1.2 GiB. systemd-oomd then killed the whole Claude desktop app scope, which also contained the
+owner's host ComfyUI (started from a terminal in that app) and this container's `conmon`/port forwarder.
+Guardrails now in `env/comfy.sh`:
+- `--memory 64g --memory-swap 64g --oom-score-adj 1000`: GTT is charged to the container's memcg (Qwen peak 51.2 GiB),
+  so an overshoot kills ComfyUI, not a desktop scope.
+- `podman run` is wrapped in `systemd-run --user --scope`, so `conmon`/`rootlessport` live in their own scope.
+- Heavy runs pause `llama-gemory` (`systemctl --user stop llama-gemory` … `start`) and are launched with
+  `systemd-run --user --wait` so they finish and restart the service even if the controlling session dies.
+- Rule of thumb: Qwen Edit FP8 needs ≈ 50 GiB free; do not run it next to another model-holding service.
 
 ## Offline test
 
