@@ -213,3 +213,50 @@ def test_dry_run_never_pauses_or_runs(fake):
     r = fake.run("--need-gib", "52", "--allow-pause", "llama-gemory", "--dry-run")
     assert r.returncode == 0
     assert not any(c.startswith(("stop", "start")) for c in fake.calls())
+
+
+def test_restore_during_active_window_refuses_and_keeps_unit_stopped(fake):
+    fake.holder(100, "llama-gemory.service", 25)
+    fake.unit("llama-gemory.service", "active")
+    (fake.root / "free_on_stop").write_text(meminfo(70))
+    release = fake.root / "release"
+    p = subprocess.Popen([sys.executable, str(RUNWINDOW), "--own-cgroup", "", "--need-gib", "52",
+                          "--allow-pause", "llama-gemory", "--", "bash", "-c",
+                          f"touch {fake.root}/started; while [ ! -f {release} ]; do sleep 0.1; done"],
+                         env=fake.environ, stderr=subprocess.PIPE, text=True)
+    for _ in range(100):
+        if (fake.root / "started").exists():
+            break
+        time.sleep(0.1)
+    unit = fake.root / "units" / "llama-gemory.service"
+    assert unit.read_text().strip() == "inactive"           # paused by the live window
+    r = fake.run("--restore")                                # e.g. recover.sh starting meanwhile
+    assert r.returncode == 4 and "untouched" in r.stderr
+    assert unit.read_text().strip() == "inactive"           # still paused: no competing model loaded
+    assert (fake.root / "work" / "runwindow.state.json").exists()
+    assert fake.calls().count("start llama-gemory.service") == 0
+    release.write_text("")
+    p.wait(20)
+    assert p.returncode == 0
+    assert unit.read_text().strip() == "active"             # restored by the owner of the window
+    assert fake.calls().count("start llama-gemory.service") == 1
+    assert fake.run("--restore").returncode == 0             # lock free again: restore runs (nothing to do)
+
+
+def test_restore_after_killed_window_proceeds(fake):
+    fake.holder(100, "llama-gemory.service", 25)
+    fake.unit("llama-gemory.service", "active")
+    (fake.root / "free_on_stop").write_text(meminfo(70))
+    p = subprocess.Popen([sys.executable, str(RUNWINDOW), "--own-cgroup", "", "--need-gib", "52",
+                          "--allow-pause", "llama-gemory", "--", "bash", "-c", f"touch {fake.root}/started; sleep 30"],
+                         env=fake.environ, stderr=subprocess.PIPE, start_new_session=True)
+    for _ in range(100):
+        if (fake.root / "started").exists():
+            break
+        time.sleep(0.1)
+    os.killpg(p.pid, signal.SIGKILL)                         # no cleanup runs; kernel releases the lock
+    p.wait(10)
+    assert (fake.root / "units" / "llama-gemory.service").read_text().strip() == "inactive"
+    r = fake.run("--restore")
+    assert r.returncode == 0, r.stderr
+    assert (fake.root / "units" / "llama-gemory.service").read_text().strip() == "active"

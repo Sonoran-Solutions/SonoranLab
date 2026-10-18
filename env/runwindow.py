@@ -16,6 +16,7 @@ systemd-oomd from killing *other* scopes when the host runs out. This wrapper:
     python3 env/runwindow.py --need-gib 52 [--allow-pause llama-gemory] -- bash env/smoke.sh WF TAG
     python3 env/runwindow.py --need-gib 52 --dry-run          # report only
     python3 env/runwindow.py --restore                        # restore units left paused by a killed run
+                                                              # (refuses with exit 4 while any window is live)
 
 Exit codes: the command's own code; 3 preflight refused; 4 another run window is active; 128+N on signal N.
 Test hooks: SONORANLAB_PROC (proc root), SONORANLAB_SYSTEMCTL (systemctl command), SONORANLAB_WORK (state dir).
@@ -157,6 +158,18 @@ def restore_from_state() -> int:
     return 0 if restore(units) else 1
 
 
+def acquire_lock():
+    """Non-blocking exclusive lock shared by runs and --restore; returns the open file (keep it) or None if held."""
+    WORK.mkdir(parents=True, exist_ok=True)
+    f = open(LOCK, "w")
+    try:
+        fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        f.close()
+        return None
+    return f
+
+
 def norm(u: str) -> str:
     return u if "." in u else f"{u}.service"
 
@@ -204,19 +217,18 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--own-cgroup", default=None, help="cgroup substring of our own container (auto-detected)")
     ap.add_argument("cmd", nargs=argparse.REMAINDER)
     a = ap.parse_args(argv)
-    if a.restore:
-        return restore_from_state()
     cmd = a.cmd[1:] if a.cmd[:1] == ["--"] else a.cmd
-    if not cmd and not a.dry_run:
+    if not cmd and not a.dry_run and not a.restore:
         ap.error("no command given (put it after --)")
 
-    WORK.mkdir(parents=True, exist_ok=True)
-    lock = open(LOCK, "w")
-    try:
-        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except BlockingIOError:
-        log("another run window is active; refusing to start a second heavy run")
+    # Every path that can touch service state, including --restore, holds the same exclusive lock. A live window
+    # owns its paused units until it exits; the kernel drops the lock when that process dies, even on SIGKILL.
+    lock = acquire_lock()
+    if lock is None:
+        log("another run window is active; refusing (service state left untouched)")
         return 4
+    if a.restore:
+        return restore_from_state()
     if STATE.exists() and restore_from_state() != 0:
         log("could not restore units from a previous interrupted run; refusing")
         return 3
