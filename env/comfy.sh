@@ -1,0 +1,64 @@
+#!/usr/bin/env bash
+# SonoranLab ComfyUI container (kyuz0 Strix Halo toolbox, pinned by digest).
+# Runs alongside the owner's host ComfyUI (:8188) without touching it.
+#   env/comfy.sh up            start on 127.0.0.1:8189
+#   env/comfy.sh up --offline  start with --network=none (DYL-69 offline test; API reachable only via `exec`)
+#   env/comfy.sh down | status | logs | exec <cmd...>
+set -euo pipefail
+
+NAME=sonoranlab-comfy
+IMAGE="${SONORANLAB_COMFY_IMAGE:-docker.io/kyuz0/amd-strix-halo-comfyui@sha256:384aa1fecef6a841832e0d5552949977330308d8c25e212a94f5e8dfcc061cae}"
+MODELS="${SONORANLAB_MODELS:-$HOME/comfy-models}"   # local NVMe only; never the CIFS share
+WORK="${SONORANLAB_WORK:-$HOME/sonoranlab-work}"    # outputs + generated config
+PORT="${SONORANLAB_PORT:-8189}"
+# Toolbox-documented flags (start_comfy_ui alias / benchmark_workflows.py). Change one at a time and record it.
+FLAGS="${SONORANLAB_COMFY_FLAGS:---disable-mmap --gpu-only --disable-smart-memory --cache-none --bf16-vae}"
+
+up() {
+  local net=(-p "127.0.0.1:${PORT}:8188")
+  [[ "${1:-}" == "--offline" ]] && net=(--network=none)
+  mkdir -p "$WORK/output" "$MODELS"/{checkpoints,text_encoders,vae,diffusion_models,unet,loras,controlnet,clip_vision,latent_upscale_models}
+  cat > "$WORK/extra_model_paths.yaml" <<YAML
+sonoranlab:
+    base_path: /models
+    checkpoints: checkpoints
+    text_encoders: text_encoders
+    clip: text_encoders
+    vae: vae
+    diffusion_models: diffusion_models
+    unet: unet
+    loras: loras
+    controlnet: controlnet
+    clip_vision: clip_vision
+    latent_upscale_models: latent_upscale_models
+YAML
+  podman rm -f "$NAME" >/dev/null 2>&1 || true
+  podman run -d --name "$NAME" "${net[@]}" \
+    --device /dev/kfd --device /dev/dri --group-add keep-groups \
+    --security-opt seccomp=unconfined \
+    -v "$MODELS:/models:ro" \
+    -v "$WORK/output:/work/output" \
+    -v "$WORK/extra_model_paths.yaml:/work/extra_model_paths.yaml:ro" \
+    "$IMAGE" bash -lc "cd /opt/ComfyUI && exec python main.py --listen 0.0.0.0 --port 8188 \
+      --output-directory /work/output --extra-model-paths-config /work/extra_model_paths.yaml $FLAGS"
+  echo "waiting for ComfyUI..."
+  for _ in $(seq 1 180); do
+    if podman exec "$NAME" curl -sf http://127.0.0.1:8188/system_stats >/dev/null 2>&1; then status; return; fi
+    podman container exists "$NAME" && [[ "$(podman inspect -f '{{.State.Running}}' "$NAME")" == true ]] || { logs; exit 1; }
+    sleep 2
+  done
+  echo "timed out waiting for ComfyUI" >&2; logs; exit 1
+}
+
+status() { podman exec "$NAME" curl -sf http://127.0.0.1:8188/system_stats; echo; }
+logs()   { podman logs --tail 80 "$NAME"; }
+down()   { podman rm -f "$NAME"; }
+
+case "${1:-}" in
+  up) shift; up "$@" ;;
+  down) down ;;
+  status) status ;;
+  logs) logs ;;
+  exec) shift; podman exec -it "$NAME" "$@" ;;
+  *) sed -n '2,7p' "$0"; exit 2 ;;
+esac
