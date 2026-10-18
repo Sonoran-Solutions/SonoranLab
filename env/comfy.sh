@@ -13,6 +13,9 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 MODELS="${SONORANLAB_MODELS:-$HOME/comfy-models}"   # local NVMe only; never the CIFS share
 WORK="${SONORANLAB_WORK:-$HOME/sonoranlab-work}"    # outputs + generated config
 PORT="${SONORANLAB_PORT:-8189}"
+# Unified memory is shared with the desktop and other AI services. Cap the container (no swap) and make it the
+# preferred OOM victim, so an overshooting load kills ComfyUI instead of systemd-oomd killing a desktop app scope.
+MEM="${SONORANLAB_MEM:-64g}"
 # Toolbox-documented flags (start_comfy_ui alias / benchmark_workflows.py). Change one at a time and record it.
 FLAGS="${SONORANLAB_COMFY_FLAGS:---disable-mmap --gpu-only --disable-smart-memory --cache-none --bf16-vae}"
 
@@ -39,9 +42,13 @@ YAML
   mkdir -p "$MODELS/RMBG" "$MODELS/controlnet_aux_ckpts" "$WORK/RMBG"
   cp -a -u "$MODELS/RMBG/." "$WORK/RMBG/"
   podman rm -f "$NAME" >/dev/null 2>&1 || true
-  podman run -d --name "$NAME" "${net[@]}" \
+  # Own systemd scope for conmon/port forwarder, so killing the launching terminal's scope (e.g. an oomd kill of
+  # the app that hosts the terminal) doesn't orphan the container.
+  local scope=(); command -v systemd-run >/dev/null && scope=(systemd-run --user --scope --quiet --collect)
+  "${scope[@]}" podman run -d --name "$NAME" "${net[@]}" \
     --device /dev/kfd --device /dev/dri --group-add keep-groups \
     --security-opt seccomp=unconfined \
+    --memory "$MEM" --memory-swap "$MEM" --oom-score-adj 1000 \
     -v "$MODELS:/models:ro" \
     -v "$MODELS/controlnet_aux_ckpts:/opt/ComfyUI/custom_nodes/comfyui_controlnet_aux/ckpts:ro" \
     -v "$WORK/RMBG:/opt/ComfyUI/models/RMBG" \
