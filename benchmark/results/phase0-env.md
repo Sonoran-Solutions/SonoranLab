@@ -270,7 +270,7 @@ Runbook = "Start / recover" above, scripted step for step in [`env/recover.sh`](
 | date | scenario | runbook time | since reboot issued | result |
 |---|---|---|---|---|
 | 2026-10-18 13:28 | container teardown + recreate (host up) | 193 s | n/a | PASS (hash match) |
-| pending | host reboot (owner runs `bash ~/src/SonoranLab-local/env/recover.sh` after login) | | | pending |
+| 2026-10-18 | host reboot | not run | n/a | **WAIVED by owner** ("I authorize continuing without doing the reboot validation"). The container-level PASS above is the only recovery evidence. Run `env/recover.sh` after the next reboot that happens anyway, and add the row here. |
 
 After a reboot, run `recover.sh` **before** starting other model-holding services, e.g. the owner's host ComfyUI.
 That ComfyUI has no unit file; since 2026-10-18 it is started as

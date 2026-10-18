@@ -4,20 +4,25 @@ Scope: DYL-64 … DYL-69 (Linear project "Sonoran Lab", milestone "Phase 0 — E
 Exit criterion (PLAN.md): one Qwen Edit 2511 image and one klein-4B image generated **offline**, with timing
 recorded; the box can be rebooted and brought back to this state from written notes in under 30 minutes.
 
-## Recommendation: **GO for Phase 1, conditional**
+## Recommendation: **GO for Phase 1** (owner waived the host reboot test)
 
 Both models run reliably and reproducibly on the Strix Halo box. They also run fully offline, and every weight is
-pinned and verified by hash. One exit-criterion item is still open: the **host reboot** recovery test. The scripted runbook already
-passes a container-level restart in 193 s, against a 30-minute target. GO becomes unconditional when:
+pinned and verified by hash. The exit criterion's offline half is met. The restart half is met only at **container
+level**: the scripted runbook (`env/recover.sh`) goes from a stopped container to a hash-verified Qwen image in 193 s,
+against a 30-minute target.
 
-1. The owner reboots, runs `bash ~/src/SonoranLab-local/env/recover.sh`, and it prints `RECOVERY PASS` in under
-   30 minutes. Add the row to `phase0-env.md` → "Restart / reboot recovery".
-2. The owner reviews the stacked PRs (#1 → #2 → #3 → #4 → DYL-69 PR) and merges them in that order.
-3. The owner accepts the operating constraint below: Qwen Edit needs ≈ 50 GiB free, so other model-holding services
-   pause during heavy runs.
+**Owner waiver, recorded 2026-10-18:** the owner authorized continuing without the host-reboot validation ("I authorize
+continuing without doing the reboot validation"). So the following is **not verified**: cold boot → working
+ComfyUI from the written notes. What is unverified covers boot-time state only: kernel/GTT parameters, podman storage, the
+CIFS automount, and user services coming back. The container, image, weights and runbook are all covered by the
+container-level test. Recommended follow-up: run `bash ~/src/SonoranLab-local/env/recover.sh` after the next reboot
+that happens anyway, and append the row to `phase0-env.md`.
 
-If the reboot test fails or takes longer than 30 minutes, the recommendation becomes **HOLD**. Then fix the
-runbook and re-test. Phase 1 tickets stay in Backlog until the owner records GO on DYL-69.
+Still required before Phase 1 work starts:
+1. The owner reviews the stacked PRs (#1 → #2 → #3 → #4 → #5) and merges them in that order. Nothing is merged yet.
+2. The owner accepts the memory run-window constraint: Qwen Edit needs ≈ 50 GiB free, so `llama-gemory` pauses and the host
+   ComfyUI stays idle during heavy runs.
+3. The owner moves Phase 1 tickets out of Backlog. DYL-70 needs owner-approved Twos Are Up references.
 
 ## Tickets
 
@@ -56,8 +61,8 @@ Phase 1 can test removing `--cache-none` (one flag at a time) to speed up seed s
 
 ## Unresolved items and risks
 
-Blocking GO:
-- **Host reboot recovery test**: owner action, see above.
+Waived (not blocking, by owner decision):
+- **Host reboot recovery test**: not run, see the recommendation above.
 
 Operating constraints (not blocking):
 - **Memory coexistence.** The first Qwen load ran next to the owner's ComfyUI and llama-gemory (~30 GiB GTT). It
