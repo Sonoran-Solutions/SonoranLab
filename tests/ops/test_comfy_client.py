@@ -271,9 +271,42 @@ def test_smoke_sh_propagates_client_result(tmp_path, fake_out, fake_rc, want_rc,
     wf = tmp_path / "wf.json"
     wf.write_text("{}")
     env = {**os.environ, "SONORANLAB_PODMAN": f"bash {podman}", "SONORANLAB_WORK": str(tmp_path / "work"),
-           "FAKE_OUT": fake_out, "FAKE_RC": str(fake_rc)}
+           "FAKE_OUT": fake_out, "FAKE_RC": str(fake_rc), "SONORANLAB_UNGUARDED": "1"}
     r = subprocess.run(["bash", str(ROOT / "env" / "smoke.sh"), str(wf), "t"], env=env,
                        capture_output=True, text=True, timeout=60)
     assert r.returncode == want_rc, r.stderr
     manifest = json.loads((tmp_path / "work" / "runs" / "t.json").read_text())
     assert manifest["status"] == want_status
+
+
+def _guarded_smoke(tmp_path, avail_gib):
+    podman = tmp_path / "podman.sh"
+    podman.write_text(FAKE_PODMAN_FOR_SMOKE.replace("exec) cat > /dev/null;", 'exec) echo exec >> "$CALLS"; cat > /dev/null;'))
+    proc = tmp_path / "proc"
+    (proc / "pressure").mkdir(parents=True)
+    (proc / "meminfo").write_text(f"MemAvailable: {int(avail_gib * (1 << 20))} kB\n")
+    (proc / "pressure" / "memory").write_text("some avg10=0.00 avg60=0.00 avg300=0.00 total=1\n")
+    wf = tmp_path / "wf.json"
+    wf.write_text("{}")
+    env = {k: v for k, v in os.environ.items() if k not in ("SONORANLAB_RUNWINDOW", "SONORANLAB_UNGUARDED")}
+    env.update({"SONORANLAB_PODMAN": f"bash {podman}", "SONORANLAB_WORK": str(tmp_path / "work"),
+                "SONORANLAB_PROC": str(proc), "SONORANLAB_SYSTEMCTL": "false", "CALLS": str(tmp_path / "calls"),
+                "FAKE_OUT": '{"status": "success", "exit_code": 0, "images": [], "errors": []}', "FAKE_RC": "0",
+                "SMOKE_NEED_GIB": "30"})
+    r = subprocess.run(["bash", str(ROOT / "env" / "smoke.sh"), str(wf), "t"], env=env,
+                       capture_output=True, text=True, timeout=60)
+    calls = (tmp_path / "calls").read_text().split() if (tmp_path / "calls").exists() else []
+    return r, calls
+
+
+def test_smoke_sh_direct_call_is_guarded_and_refuses_when_memory_is_short(tmp_path):
+    r, calls = _guarded_smoke(tmp_path, avail_gib=20)
+    assert r.returncode == 3 and "REFUSED" in r.stderr
+    assert calls == []                      # nothing was submitted to ComfyUI
+
+
+def test_smoke_sh_direct_call_runs_inside_one_window(tmp_path):
+    r, calls = _guarded_smoke(tmp_path, avail_gib=80)
+    assert r.returncode == 0, r.stderr
+    assert calls == ["exec"]                # exactly one submission, no re-entry loop
+    assert '"preflight"' in r.stderr

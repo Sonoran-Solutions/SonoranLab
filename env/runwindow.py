@@ -292,7 +292,8 @@ def run_window(pause: list[str], paused: list[str], cmd: list[str], a: argparse.
             log(f"REFUSED: still only {mem_available() / GIB:.1f} GiB available after pausing {paused}")
             return 3
         time.sleep(1)
-    state["child"] = subprocess.Popen(cmd)
+    # Marks the child as guarded, so env/smoke.sh runs directly instead of re-entering a window.
+    state["child"] = subprocess.Popen(cmd, env={**os.environ, "SONORANLAB_RUNWINDOW": str(os.getpid())})
     state["child"].wait()
     return state["rc"] if state["rc"] >= 128 else state["child"].returncode
 

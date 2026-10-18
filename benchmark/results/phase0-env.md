@@ -107,7 +107,13 @@ Operational tests (manifests in [`2026-10-18-phase0/`](2026-10-18-phase0/)):
   4. restores each paused unit to its original state on success, failure, or INT/TERM/HUP;
   5. persists paused units to `~/sonoranlab-work/runwindow.state.json`, so a SIGKILLed run is repaired by
      `--restore` (recover.sh runs it first);
-  6. takes a lock, so two heavy runs can't overlap (exit 4).
+  6. takes an exclusive lock, so two heavy runs can't overlap (exit 4). `--restore` takes the **same** lock: while a
+     window is live it refuses (exit 4) and leaves the paused units stopped. Once the window's process is gone (the
+     kernel drops the lock even on SIGKILL), restore proceeds.
+
+  **Guarded by default:** `bash env/smoke.sh WF TAG` re-runs itself inside the window unless it is already in one, using
+  `SMOKE_NEED_GIB` (default 52) and `SMOKE_ALLOW_PAUSE="llama-gemory"` (owner-approved units only). That makes it the
+  single canonical command; only `SONORANLAB_UNGUARDED=1` (tests) skips the preflight.
 
   Budgets from the measurements above: Qwen Edit FP8 `--need-gib 52`, klein and the node chain `--need-gib 30`.
   The guard keeps a desktop-sized margin before anything runs. That is the protection the container memory cap
@@ -115,7 +121,9 @@ Operational tests (manifests in [`2026-10-18-phase0/`](2026-10-18-phase0/)):
 - **Smoke client** [`env/comfy_client.py`](../../env/comfy_client.py), used by `env/smoke.sh`:
   - validates `status_str == success` **and** `completed`, and the absence of execution_error/interrupted messages;
   - checks at least N output images exist and are non-empty;
-  - applies per-request HTTP timeouts and an overall deadline (on timeout it interrupts and dequeues the job);
+  - applies per-request HTTP timeouts and an overall deadline. On timeout it sends `/interrupt` with **its own
+    `prompt_id`**, which ComfyUI 0.31.0 honours only if that prompt is the running one, so another client's job is never
+    stopped. It also deletes its own prompt from the queue;
   - exit codes: 0 success, 2 rejected, 3 execution_error, 4 timeout, 5 missing_outputs, 6 http_error / no response.
   
   `smoke.sh` exits with that code. Live check: a workflow naming a missing model → exit 2 (`rejected`).
@@ -135,7 +143,8 @@ Operational tests (manifests in [`2026-10-18-phase0/`](2026-10-18-phase0/)):
     [`2026-10-18-phase0/`](2026-10-18-phase0/).
 - **Regression tests:**
   `uv run --no-project --with pytest pytest -q tests/ops` runs the fake-/proc run-window tests, the fake-ComfyUI
-  client tests and the fake-podman guard tests. No GPU, network or real services are touched.
+  client tests and the fake-podman guard tests. No GPU, network or real services are touched. The same suite runs on
+  GitHub Actions (`.github/workflows/ops-tests.yml`) for every PR.
 
 Unsupported / not exercised in Phase 0: onnxruntime GPU execution on ROCm (CPU only), SAM3 segmentation (Phase 6),
 ControlNet-Union conditioning and Wan 2.2 video (Phase 1 Tracks C/E test them; weights are present and hash-verified).
