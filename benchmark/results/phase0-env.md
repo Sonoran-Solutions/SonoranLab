@@ -77,8 +77,45 @@ Deleting hardlinks in `~/comfy-models` never deletes the originals in `~/ComfyUI
 
 ## Models downloaded
 
-| file | SHA-256 | size | license row in docs/04 |
-|---|---|---|---|
+Recorded 2026-10-18 (DYL-68). Authoritative manifest: [`env/models.tsv`](../../env/models.tsv) (repo, pinned revision,
+remote path, destination, size, SHA-256, status). Fetched with `bash env/fetch_models.sh` into `~/comfy-models`
+(local NVMe, mounted read-only into the container); `bash env/fetch_models.sh --verify` re-hashes everything without
+network (28/28 ok, 59 s, 2026-10-18). 86.9 GB listed, 81 GB on disk because two files are hardlinks.
+License status per row lives in [`docs/04-models-and-licensing.md`](../../docs/04-models-and-licensing.md).
+
+| id | file (under `~/comfy-models/`) | size | SHA-256 | status | notes |
+|---|---|---|---|---|---|
+| Q1 | `diffusion_models/qwen_image_edit_2511_fp8mixed.safetensors` | 20.53 GB | `c9fdc158e46d3b61ef75f21ae866ca2fe808bf4a53643120d1c1e87c19280a4e` | default |  |
+| Q2 | `text_encoders/qwen_2.5_vl_7b_fp8_scaled.safetensors` | 9.38 GB | `cb5636d852a0ea6a9075ab1bef496c0db7aef13c02350571e388aea959c5c0b4` | default |  |
+| Q3 | `vae/qwen_image_vae.safetensors` | 0.25 GB | `a70580f0213e67967ee9c95f05bb400e8fb08307e017a924bf3441223e023d1f` | default | hardlinked from ~/ComfyUI/models (hash match) |
+| Q4 | `loras/Qwen-Image-Edit-2511-Lightning-4steps-V1.0-bf16.safetensors` | 0.85 GB | `22226e8d05d354bb356627d428809f5afd7819399b077238a2b70a82883a904f` | default |  |
+| Q5 | `controlnet/Qwen-Image-InstantX-ControlNet-Union.safetensors` | 3.54 GB | `d51dca0073366a675108d5b83c3b7ef941cf2214c9a1c95c23f1e9a228ddbdb0` | default |  |
+| K1 | `diffusion_models/flux-2-klein-base-4b.safetensors` | 7.75 GB | `9c5fed22b76baea749d88fc2abe3ad53245e7b21a0d353a762665eea00043b92` | default |  |
+| K2 | `text_encoders/qwen_3_4b.safetensors` | 8.04 GB | `6c671498573ac2f7a5501502ccce8d2b08ea6ca2f661c458e708f36b36edfc5a` | default |  |
+| K3 | `vae/flux2-vae.safetensors` | 0.34 GB | `868fe7b343cc8f3a19dbcfcafbc3d5f888802be3f89bd81b65b3621a066ce8f3` | default |  |
+| S1 | `loras/pixel_4walk_32x48_qwen_image_edit_2511_v1.safetensors` | 0.59 GB | `906e7b128071e38f05432bacbe30dc9be4d52d42b8aeb415a249b1754d27a8b3` | experimental-no-ship |  |
+| S2 | `loras/pixel_4walk_32x48_qwen_image_edit_2511_v1_000001750.safetensors` | 0.59 GB | `565abf7be5387bfbaef604f141b9ee2ef4d0380c7a8ffca3c049734db92ee338` | experimental-no-ship |  |
+| S3 | `loras/pixel_4walk_32x48_qwen_image_edit_2511_v1_000002000.safetensors` | 0.59 GB | `3377510f799e667242a5eddc8ff20b4f3fc5c3201ff8d4978f63586af8e57667` | experimental-no-ship |  |
+| S4 | `loras/pixel_4walk_32x48_qwen_image_edit_2511_v1_000002500.safetensors` | 0.59 GB | `340042b2d86bdf2696daf311b4990c4a02403bec973857d7b497cebd08c9483f` | experimental-no-ship |  |
+| S5 | `loras/pixel_4walk_small_flux2_klein_base_4b_v1.safetensors` | 0.09 GB | `a968c042c2443bf6bfed41ce833a0e06bf5bbb7961ac40b88fb7257a940ae54e` | experimental-no-ship |  |
+| S6 | `loras/pixel_4walk_small_flux2_klein_base_4b_v1_000002750.safetensors` | 0.09 GB | `d7aaf9acb9c2d8b028110d8bbc5524f49103b92e99398b8c5905bbf8ddd21961` | experimental-no-ship |  |
+| W1 | `unet/Wan2.2-I2V-A14B-HighNoise-Q5_K_M.gguf` | 10.79 GB | `163e9e5ae7ff83a4598d55242c767384be8909749dc07240d388a24838e8bac6` | default |  |
+| W2 | `unet/Wan2.2-I2V-A14B-LowNoise-Q5_K_M.gguf` | 10.79 GB | `c5affcba15576959fa6d63c18261275b6407c3edd5ad3d8ab1c420e96f9d05d0` | default |  |
+| W3 | `text_encoders/umt5_xxl_fp8_e4m3fn_scaled.safetensors` | 6.74 GB | `c3355d30191f1f066b26d93fba017ae9809dce6c627dda5f6a66eaa651204f68` | default |  |
+| W4 | `vae/wan_2.1_vae.safetensors` | 0.25 GB | `2fc39d31359a4b0a64f55876d8ff7fa8d780956ae2cb13463b0223e15148976b` | default | hardlinked from ~/ComfyUI/models (hash match) |
+| W5 | `loras/wan2.2_i2v_lightx2v_4steps_lora_v1_high_noise.safetensors` | 1.23 GB | `d176c808d6fc461999b68e321efcb7501b20b8c3797523ed0df14f7d1deff11e` | default |  |
+| W6 | `loras/wan2.2_i2v_lightx2v_4steps_lora_v1_low_noise.safetensors` | 1.23 GB | `024f21de095bc8fad9809ded3e9e49a2e170dcf27075da8145ba7d60d8aab7f9` | default |  |
+| B1 | `RMBG/BiRefNet/BiRefNet-general.safetensors` | 0.44 GB | `9ab37426bf4de0567af6b5d21b16151357149139362e6e8992021b8ce356a154` | default |  |
+| B1a | `RMBG/BiRefNet/birefnet.py` | 0.00 GB | `208771ae626f653d64128fbf2d6ac9f8e645c5cc5e286258a73ec3322bbfe5ef` | default |  |
+| B1b | `RMBG/BiRefNet/BiRefNet_config.py` | 0.00 GB | `e7b8c2a74f6cea6a59553d517f71d47f2c1d90e670a13416af17c25fe2f3dc52` | default |  |
+| B1c | `RMBG/BiRefNet/config.json` | 0.00 GB | `c97ea21569daf66b205491a4635147dd3bc42c7c168b89d7d75b53f67ef548ae` | default |  |
+| P1 | `controlnet_aux_ckpts/yzd-v/DWPose/yolox_l.onnx` | 0.22 GB | `7860ae79de6c89a3c1eb72ae9a2756c0ccfbe04b7791bb5880afabd97855a411` | default |  |
+| P2 | `controlnet_aux_ckpts/yzd-v/DWPose/dw-ll_ucoco_384.onnx` | 0.13 GB | `724f4ff2439ed61afb86fb8a1951ec39c6220682803b4a8bd4f598cd913b1843` | default |  |
+| P3 | `controlnet_aux_ckpts/depth-anything/Depth-Anything-V2-Small/depth_anything_v2_vits.pth` | 0.10 GB | `715fade13be8f229f8a70cc02066f656f2423a59effd0579197bbf57860e1378` | default |  |
+| M1 | `checkpoints/sam3.1_multiplex_fp16.safetensors` | 1.75 GB | `9ba99c92703c2e8b4f47de2d34a539bb8e18923049e238b780d70dbe6368eb03` | experimental-no-ship |  |
+
+Not reused: the owner's `~/ComfyUI/models/text_encoders/qwen_2.5_vl_7b_fp8_scaled.safetensors` (8.66 GB) is not the
+official Qwen2.5-VL file (9.38 GB); the audit found it byte-identical to the Qwen3-8B klein-9B encoder. Q2 was downloaded fresh.
 
 ## First-run timings
 
