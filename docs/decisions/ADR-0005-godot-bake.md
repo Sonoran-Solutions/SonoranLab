@@ -24,3 +24,13 @@ bones. Sprite Sage is not a dependency or a reference implementation.
   they are exact for unusual proportions.
 - Rig/animation sourcing (Mixamo-style libraries or hand-authored) needs its
   own license check in `docs/04`.
+
+## Addendum (2026-10-18, DYL-74)
+
+- `godot --headless` cannot render (dummy rasterizer), and this box has no Xvfb. `tools/godot/bake.sh` starts a
+  private headless GNOME Shell (mutter) compositor on its own D-Bus session (no activatable services), runtime
+  dir and XDG dirs, and Godot draws into it with Mesa llvmpipe. No window reaches the user's desktop.
+- Rig and animation: Quaternius Universal Base Characters + Universal Animation Library (CC0 1.0, recorded
+  in `docs/04`), taken from the Twos Are Up history, not downloaded. `Jog_Fwd_Loop` is the game's own run.
+- Two bakes of the same inputs give identical joints and byte-identical PNGs (1170 files), so the bake output
+  is reproducible from the command line in `templates/poses/run/template.yaml`.

@@ -1,0 +1,18 @@
+; Minimal Godot 4 project for the Track D rig bake (ADR-0005). No imported assets:
+; rigs are loaded at runtime with GLTFDocument from paths outside the repo.
+config_version=5
+
+[application]
+config/name="SonoranLab rig bake"
+config/features=PackedStringArray("4.7")
+
+[display]
+window/size/viewport_width=64
+window/size/viewport_height=64
+window/size/no_focus=true
+window/vsync/vsync_mode=0
+
+[rendering]
+renderer/rendering_method="gl_compatibility"
+renderer/rendering_method.mobile="gl_compatibility"
+anti_aliasing/quality/msaa_3d=0
