@@ -270,3 +270,10 @@ Runbook = "Start / recover" above, scripted step for step in [`env/recover.sh`](
 | date | scenario | runbook time | since reboot issued | result |
 |---|---|---|---|---|
 | 2026-10-18 13:28 | container teardown + recreate (host up) | 193 s | n/a | PASS (hash match) |
+| pending | host reboot (owner runs `bash ~/src/SonoranLab-local/env/recover.sh` after login) | | | pending |
+
+After a reboot, run `recover.sh` **before** starting other model-holding services, e.g. the owner's host ComfyUI.
+That ComfyUI has no unit file; since 2026-10-18 it is started as
+`systemd-run --user --unit=host-comfyui …` with its original command and environment, so it no longer lives inside a terminal app's scope.
+
+Phase 0 GO/HOLD: see [`2026-10-18-phase0/phase0-readiness.md`](2026-10-18-phase0/phase0-readiness.md).
