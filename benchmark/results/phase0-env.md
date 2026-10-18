@@ -262,18 +262,27 @@ The incident was not reproduced deliberately (no repeat OOM testing).
 
 ## Restart / reboot recovery
 
-Runbook = "Start / recover" above, scripted step for step in [`env/recover.sh`](../../env/recover.sh): image present
-(else rebuild from `env/Containerfile`) → `fetch_models.sh --verify` → `comfy.sh up` → Qwen Edit smoke with
-`llama-gemory` paused → compare the output SHA-256 with the reference `fea3c149…`. Run it from either checkout
-(the NVMe clone does not depend on the NAS being up).
+Runbook = "Start / recover" above, scripted step for step in [`env/recover.sh`](../../env/recover.sh)
+(`bash env/recover.sh [--allow-pause llama-gemory]`, from either checkout; the NVMe clone does not depend on the NAS):
+1. `runwindow.py --restore` (units left paused by a killed run)
+2. image present, else rebuild from `env/Containerfile` (hash-locked)
+3. `fetch_models.sh --verify`
+4. `comfy.sh up --replace` (refuses to destroy a busy container)
+5. Qwen Edit smoke inside `runwindow.py --need-gib 52`
+6. compare the output SHA-256 with the reference `fea3c149…`
+
+The script never calls `systemctl` itself. Service state is owned by the run window, which pauses only `--allow-pause`
+units and restores each to its original state, including on failure and interruption. Every step logs its rc,
+and a failure ends with `RECOVERY FAIL at: <step>`. Log: `~/sonoranlab-work/recovery.log`.
 
 | date | scenario | runbook time | since reboot issued | result |
 |---|---|---|---|---|
-| 2026-10-18 13:28 | container teardown + recreate (host up) | 193 s | n/a | PASS (hash match) |
-| 2026-10-18 | host reboot | not run | n/a | **WAIVED by owner** ("I authorize continuing without doing the reboot validation"). The container-level PASS above is the only recovery evidence. Run `env/recover.sh` after the next reboot that happens anyway, and add the row here. |
+| 2026-10-18 13:28 | container teardown + recreate (host up), pre-review script | 193 s | n/a | PASS (hash match) |
+| 2026-10-18 14:58 | revised script, container replace (host up), owner's host ComfyUI holding GPU memory | 110 s to refusal | n/a | **Correctly refused** at the Qwen step: approved `llama-gemory` paused, only 42.7 GiB free after 30 s, so the run was refused and `llama-gemory` restored (active). Log: [`recovery-2026-10-18-1458-refused.log`](2026-10-18-phase0/recovery-2026-10-18-1458-refused.log). The Qwen-in-run-window path itself passed in the locked-image equivalence run (`qwen_edit_offline_locked`, byte-identical). |
+| 2026-10-18 | host reboot | not run | n/a | **WAIVED by owner** ("I authorize continuing without doing the reboot validation"). Run `env/recover.sh` after the next reboot that happens anyway, and add the row here. |
 
-After a reboot, run `recover.sh` **before** starting other model-holding services, e.g. the owner's host ComfyUI.
-That ComfyUI has no unit file; since 2026-10-18 it is started as
-`systemd-run --user --unit=host-comfyui …` with its original command and environment, so it no longer lives inside a terminal app's scope.
+After a reboot, run `recover.sh` **before** starting other model-holding services. If they are already running, the
+run window refuses rather than starving them. The owner's host ComfyUI has no unit file; since 2026-10-18 it is started as
+`systemd-run --user --unit=host-comfyui …` with its original command and environment.
 
 Phase 0 GO/HOLD: see [`2026-10-18-phase0/phase0-readiness.md`](2026-10-18-phase0/phase0-readiness.md).
