@@ -20,10 +20,23 @@ echo "$*" >> "$FAKE/calls"
 f="$FAKE/units/$2"
 case "$1" in
   is-active) s=$(cat "$f" 2>/dev/null || echo inactive); echo "$s"; [ "$s" = active ] ;;
-  stop) echo inactive > "$f"; [ -f "$FAKE/free_on_stop" ] && cp "$FAKE/free_on_stop" "$FAKE/proc/meminfo"; exit 0 ;;
+  stop) [ -f "$FAKE/slow_stop" ] && { touch "$FAKE/stopping"; sleep 2; }
+        echo inactive > "$f"; [ -f "$FAKE/free_on_stop" ] && cp "$FAKE/free_on_stop" "$FAKE/proc/meminfo"; exit 0 ;;
   start) [ -f "$FAKE/start_fails" ] && exit 1; echo active > "$f" ;;
 esac
 """
+
+
+FAKE_PODMAN = r"""#!/usr/bin/env bash
+# sonoranlab-comfy exists/running iff $FAKE/container exists; /queue body from $FAKE/queue (absent = curl fails)
+case "$1" in
+  container) [ -f "$FAKE/container" ] ;;
+  inspect) echo true ;;
+  exec) [ -f "$FAKE/queue" ] && cat "$FAKE/queue" || exit 7 ;;
+esac
+"""
+BUSY = '{"queue_running": [[0, "p", {}, {}, []]], "queue_pending": []}'
+IDLE = '{"queue_running": [], "queue_pending": []}'
 
 
 def meminfo(avail_gib: float) -> str:
@@ -39,8 +52,10 @@ def fake(tmp_path):
     (tmp_path / "units").mkdir()
     sc = tmp_path / "fake_systemctl.sh"
     sc.write_text(FAKE_SYSTEMCTL)
+    pm = tmp_path / "fake_podman.sh"
+    pm.write_text(FAKE_PODMAN)
     work = tmp_path / "work"
-    env = {**os.environ, "FAKE": str(tmp_path), "SONORANLAB_PROC": str(proc),
+    env = {**os.environ, "FAKE": str(tmp_path), "SONORANLAB_PROC": str(proc), "SONORANLAB_PODMAN": f"bash {pm}",
            "SONORANLAB_SYSTEMCTL": f"bash {sc}", "SONORANLAB_WORK": str(work)}
 
     class F:
@@ -58,12 +73,38 @@ def fake(tmp_path):
         def unit(self, name, state):
             (tmp_path / "units" / name).write_text(state)
 
+        def container(self, queue):
+            (tmp_path / "container").write_text("")
+            if queue is None:
+                (tmp_path / "queue").unlink(missing_ok=True)
+            else:
+                (tmp_path / "queue").write_text(queue)
+
+        def state(self):
+            return (tmp_path / "units" / "llama-gemory.service").read_text().strip()
+
+        def window(self, script, *extra):
+            """Start a guarded run in its own session that pauses llama-gemory; returns once the command started."""
+            self.holder(100, "llama-gemory.service", 25)
+            self.unit("llama-gemory.service", "active")
+            (tmp_path / "free_on_stop").write_text(meminfo(70))
+            p = subprocess.Popen([sys.executable, str(RUNWINDOW), "--own-cgroup", "", "--need-gib", "52",
+                                  "--allow-pause", "llama-gemory", "--drain-s", "3", *extra, "--", "bash", "-c",
+                                  f"touch {tmp_path}/started; {script}"],
+                                 env=env, stderr=subprocess.PIPE, text=True, start_new_session=True)
+            for _ in range(150):
+                if (tmp_path / "started").exists() or p.poll() is not None:
+                    break
+                time.sleep(0.1)
+            return p
+
         def calls(self):
             p = tmp_path / "calls"
             return p.read_text().splitlines() if p.exists() else []
 
         def run(self, *args, timeout=30):
-            return subprocess.run([sys.executable, str(RUNWINDOW), "--own-cgroup", "", "--settle-s", "2", *args],
+            return subprocess.run([sys.executable, str(RUNWINDOW), "--own-cgroup", "", "--settle-s", "2",
+                                   "--drain-s", "3", *args],
                                   env=env, capture_output=True, text=True, timeout=timeout)
 
     return F()
@@ -260,3 +301,89 @@ def test_restore_after_killed_window_proceeds(fake):
     r = fake.run("--restore")
     assert r.returncode == 0, r.stderr
     assert (fake.root / "units" / "llama-gemory.service").read_text().strip() == "active"
+
+
+# --- container-drain gate (review B1/S1/S2), stop race (S3), signal safety (S5), corrupt state -----------------
+
+
+def test_ctrl_c_with_container_job_still_running_keeps_unit_stopped(fake):
+    fake.container(BUSY)                                   # the ComfyUI prompt outlives the host-side client
+    p = fake.window("sleep 30")
+    os.killpg(p.pid, signal.SIGINT)                         # terminal Ctrl-C hits the whole process group
+    _, err = p.communicate(timeout=30)
+    assert p.returncode != 0
+    assert fake.state() == "inactive"                       # NOT restarted next to the running job
+    assert "NOT restarting" in err
+    assert (fake.root / "work" / "runwindow.state.json").exists()
+    fake.container(IDLE)                                    # job finished
+    assert fake.run("--restore").returncode == 0
+    assert fake.state() == "active"
+
+
+def test_restore_waits_for_container_job_to_drain(fake):
+    fake.container(BUSY)
+    p = fake.window("true")
+    time.sleep(1)
+    fake.container(IDLE)                                    # job finishes during the drain wait
+    _, err = p.communicate(timeout=30)
+    assert p.returncode == 0, err
+    assert "waiting up to" in err and fake.state() == "active"
+
+
+def test_restore_refuses_while_orphaned_job_runs(fake):
+    fake.unit("llama-gemory.service", "inactive")
+    (fake.root / "work").mkdir()
+    (fake.root / "work" / "runwindow.state.json").write_text(json.dumps({"paused": ["llama-gemory.service"]}))
+    fake.container(BUSY)                                    # e.g. runwindow was SIGKILLed, container kept going
+    assert fake.run("--restore").returncode == 1
+    assert fake.state() == "inactive" and (fake.root / "work" / "runwindow.state.json").exists()
+    fake.container(None)                                    # running container that can't report its queue
+    assert fake.run("--restore").returncode == 1 and fake.state() == "inactive"
+    fake.container(IDLE)
+    assert fake.run("--restore").returncode == 0 and fake.state() == "active"
+
+
+def test_auto_restore_before_new_run_also_waits_for_drain(fake):
+    fake.unit("llama-gemory.service", "inactive")
+    (fake.root / "work").mkdir()
+    (fake.root / "work" / "runwindow.state.json").write_text(json.dumps({"paused": ["llama-gemory.service"]}))
+    (fake.root / "proc" / "meminfo").write_text(meminfo(80))
+    fake.container(BUSY)
+    r = fake.run("--need-gib", "20", *marker_cmd(fake.root / "ran"))
+    assert r.returncode == 3 and not (fake.root / "ran").exists() and fake.state() == "inactive"
+
+
+def test_signal_during_slow_stop_is_still_restored(fake):
+    (fake.root / "slow_stop").write_text("")
+    fake.holder(100, "llama-gemory.service", 25)
+    fake.unit("llama-gemory.service", "active")
+    (fake.root / "free_on_stop").write_text(meminfo(70))
+    p = subprocess.Popen([sys.executable, str(RUNWINDOW), "--own-cgroup", "", "--need-gib", "52", "--drain-s", "3",
+                          "--allow-pause", "llama-gemory", "--", "true"], env=fake.environ,
+                         stderr=subprocess.PIPE, text=True)
+    for _ in range(100):
+        if (fake.root / "stopping").exists():
+            break
+        time.sleep(0.1)
+    p.send_signal(signal.SIGINT)                            # arrives while `systemctl stop` is in progress
+    _, err = p.communicate(timeout=30)
+    assert p.returncode == 130
+    assert fake.state() == "active", err                   # it was recorded before the stop, so it is restored
+
+
+def test_second_signal_does_not_abort_restore(fake):
+    fake.container(BUSY)
+    p = fake.window("sleep 30", "--drain-s", "4")
+    p.send_signal(signal.SIGTERM)                           # first signal: forwarded to the command
+    time.sleep(1)
+    fake.container(IDLE)
+    p.send_signal(signal.SIGTERM)                           # second signal during the drain/restore: ignored
+    _, err = p.communicate(timeout=30)
+    assert fake.state() == "active", err
+
+
+def test_corrupt_state_file_fails_closed_with_guidance(fake):
+    (fake.root / "work").mkdir()
+    (fake.root / "work" / "runwindow.state.json").write_text("{not json")
+    r = fake.run("--restore")
+    assert r.returncode == 1 and "unreadable" in r.stderr and "Traceback" not in r.stderr

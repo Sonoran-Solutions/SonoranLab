@@ -112,3 +112,15 @@ def test_down_refuses_busy_and_force_overrides(fake):
 def test_unknown_up_option_rejected(fake):
     assert fake.run("up", "--bogus").returncode == 2
 
+
+
+def test_up_and_down_refuse_while_a_run_window_holds_the_lock(fake):
+    import fcntl
+    fake.container(True, IDLE)
+    (fake.root / "work").mkdir(exist_ok=True)
+    with open(fake.root / "work" / "runwindow.lock", "w") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)    # a guarded smoke run is active
+        r = fake.run("up", "--replace")
+        assert r.returncode == 5 and "run window" in r.stderr and not fake.destroyed()
+        assert fake.run("down", "--force").returncode == 5 and not fake.destroyed()
+    assert fake.run("up", "--replace").returncode == 0 and fake.destroyed()

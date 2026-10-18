@@ -51,8 +51,9 @@ def main(argv=None, stdin=None, stdout=None) -> int:
             remaining = deadline - time.monotonic()
             if not cleanup and remaining <= 0:
                 raise TimeoutError("Overall deadline exceeded")
-            # Cap request time at the remaining run budget; cleanup gets a short grace.
-            timeout = min(args.http_timeout, 0.1 if cleanup else remaining)
+            # Cap request time at the remaining run budget; cleanup gets its own short budget so the
+            # prompt-scoped interrupt/dequeue is actually delivered (runwindow still waits for the queue to drain).
+            timeout = min(args.http_timeout, 5.0) if cleanup else min(args.http_timeout, remaining)
             req = urllib.request.Request(
                 args.base.rstrip("/") + path,
                 data=None if body is None else json.dumps(body).encode(),

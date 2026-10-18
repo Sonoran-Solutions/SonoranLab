@@ -16,7 +16,8 @@ systemd-oomd from killing *other* scopes when the host runs out. This wrapper:
     python3 env/runwindow.py --need-gib 52 [--allow-pause llama-gemory] -- bash env/smoke.sh WF TAG
     python3 env/runwindow.py --need-gib 52 --dry-run          # report only
     python3 env/runwindow.py --restore                        # restore units left paused by a killed run
-                                                              # (refuses with exit 4 while any window is live)
+                                                              # (refuses with exit 4 while any window is live; waits
+                                                              #  --drain-s for the container job to finish first)
 
 Exit codes: the command's own code; 3 preflight refused; 4 another run window is active; 128+N on signal N.
 Test hooks: SONORANLAB_PROC (proc root), SONORANLAB_SYSTEMCTL (systemctl command), SONORANLAB_WORK (state dir).
@@ -44,7 +45,10 @@ LOCK = WORK / "runwindow.lock"
 
 
 def log(msg: str) -> None:
-    print(f"[runwindow] {msg}", file=sys.stderr, flush=True)
+    try:
+        print(f"[runwindow] {msg}", file=sys.stderr, flush=True)
+    except OSError:
+        pass  # terminal gone (EIO/EPIPE): never let logging abort a restore
 
 
 def mem_available() -> int:
@@ -133,11 +137,58 @@ def own_container_cgroup() -> str | None:
 def save_state(units: list[str]) -> None:
     WORK.mkdir(parents=True, exist_ok=True)
     tmp = STATE.with_suffix(".tmp")
-    tmp.write_text(json.dumps({"paused": units, "pid": os.getpid(), "since": time.time()}))
+    with open(tmp, "w") as f:
+        f.write(json.dumps({"paused": units, "pid": os.getpid(), "since": time.time()}))
+        f.flush()
+        os.fsync(f.fileno())
     tmp.replace(STATE)
 
 
-def restore(units: list[str]) -> bool:
+def container_busy() -> bool:
+    """True if the SonoranLab container has a running/pending ComfyUI job, or is running but can't say (fail closed).
+
+    The heavy work is a prompt inside the container, which outlives an interrupted host-side client; restoring a
+    paused model service while it still runs would recreate the 2026-10-18 memory exhaustion."""
+    podman = shlex.split(os.environ.get("SONORANLAB_PODMAN", "podman"))
+    name = "sonoranlab-comfy"
+    try:
+        if subprocess.run([*podman, "container", "exists", name], capture_output=True, timeout=15).returncode != 0:
+            return False
+        r = subprocess.run([*podman, "inspect", "-f", "{{.State.Running}}", name], capture_output=True, text=True, timeout=15)
+        if r.stdout.strip() != "true":
+            return False
+        r = subprocess.run([*podman, "exec", name, "curl", "-sf", "-m", "5", "http://127.0.0.1:8188/queue"],
+                           capture_output=True, text=True, timeout=20)
+        q = json.loads(r.stdout) if r.returncode == 0 else None
+        return q is None or bool(q["queue_running"] or q["queue_pending"])
+    except (OSError, subprocess.TimeoutExpired, ValueError, KeyError, TypeError):
+        return True
+
+
+def wait_idle(drain_s: float) -> bool:
+    """Wait up to drain_s for the container to go idle. Ctrl-C ends the wait early (answering "not idle")."""
+    deadline, announced = time.monotonic() + drain_s, False
+    old = signal.signal(signal.SIGINT, signal.default_int_handler)
+    try:
+        while container_busy():
+            if time.monotonic() >= deadline:
+                return False
+            if not announced:
+                log(f"waiting up to {drain_s:.0f} s for the sonoranlab-comfy job to finish before restoring")
+                announced = True
+            time.sleep(2)
+        return True
+    except KeyboardInterrupt:
+        return False
+    finally:
+        signal.signal(signal.SIGINT, old)
+
+
+def restore(units: list[str], drain_s: float) -> bool:
+    if not wait_idle(drain_s):
+        log(f"WARNING: sonoranlab-comfy still has a running/pending job (or its queue is unreadable); NOT restarting "
+            f"{units}. They stay stopped and recorded in {STATE}; run `python3 env/runwindow.py --restore` once it is idle.")
+        return False
     ok = True
     for u in units:
         r = systemctl("start", u)
@@ -149,13 +200,19 @@ def restore(units: list[str]) -> bool:
     return ok
 
 
-def restore_from_state() -> int:
+def restore_from_state(drain_s: float) -> int:
     if not STATE.exists():
         log("nothing to restore")
         return 0
-    units = json.loads(STATE.read_text()).get("paused", [])
+    try:
+        units = json.loads(STATE.read_text())["paused"]
+        assert isinstance(units, list) and all(isinstance(u, str) for u in units)
+    except (OSError, ValueError, KeyError, AssertionError):
+        log(f"state file {STATE} is unreadable; check `systemctl --user status` of the units you allowed to pause, "
+            "start them yourself, then delete the file")
+        return 1
     log(f"restoring units left paused by an interrupted run: {units}")
-    return 0 if restore(units) else 1
+    return 0 if restore(units, drain_s) else 1
 
 
 def acquire_lock():
@@ -214,6 +271,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--settle-s", type=float, default=30.0, help="wait this long for memory to free after pausing")
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--restore", action="store_true", help="restore units left paused by a killed run, then exit")
+    ap.add_argument("--drain-s", type=float, default=1800.0,
+                    help="before restoring, wait this long for the container's ComfyUI job to finish (else keep paused)")
     ap.add_argument("--own-cgroup", default=None, help="cgroup substring of our own container (auto-detected)")
     ap.add_argument("cmd", nargs=argparse.REMAINDER)
     a = ap.parse_args(argv)
@@ -228,8 +287,8 @@ def main(argv: list[str] | None = None) -> int:
         log("another run window is active; refusing (service state left untouched)")
         return 4
     if a.restore:
-        return restore_from_state()
-    if STATE.exists() and restore_from_state() != 0:
+        return restore_from_state(a.drain_s)
+    if STATE.exists() and restore_from_state(a.drain_s) != 0:
         log("could not restore units from a previous interrupted run; refusing")
         return 3
 
@@ -261,6 +320,9 @@ def main(argv: list[str] | None = None) -> int:
     except KeyboardInterrupt:
         state["rc"] = state["rc"] if state["rc"] >= 128 else 130
     finally:
+        for s in (signal.SIGTERM, signal.SIGHUP):   # a second signal must not abort the restore half-way
+            signal.signal(s, signal.SIG_IGN)
+        signal.signal(signal.SIGINT, signal.SIG_IGN)   # wait_idle() re-enables Ctrl-C just for its wait
         child = state["child"]
         if child and child.poll() is None:
             child.terminate()
@@ -268,7 +330,7 @@ def main(argv: list[str] | None = None) -> int:
                 child.wait(30)
             except subprocess.TimeoutExpired:
                 child.kill()
-        restored = restore(paused) if paused else True
+        restored = restore(paused, a.drain_s) if paused else True
     if not restored:
         log("WARNING: some units were not restored; run `python3 env/runwindow.py --restore`")
         return state["rc"] or 1
@@ -278,12 +340,13 @@ def main(argv: list[str] | None = None) -> int:
 def run_window(pause: list[str], paused: list[str], cmd: list[str], a: argparse.Namespace, state: dict) -> int:
     for u in pause:
         if is_active(u):
-            save_state(paused + [u])  # recorded before stopping, so a SIGKILL mid-way is still restorable
+            # Recorded (state file and in-memory) before stopping, so a signal or SIGKILL mid-stop still restores it.
+            paused.append(u)
+            save_state(paused)
             r = systemctl("stop", u)
             if r.returncode != 0:
                 log(f"could not stop {u}: {r.stderr.strip()}")
                 return 3
-            paused.append(u)
             log(f"paused {u} (was active)")
     target = int((a.need_gib + a.margin_gib) * GIB)
     deadline = time.monotonic() + a.settle_s

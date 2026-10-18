@@ -14,7 +14,8 @@ set -euo pipefail
 HERE=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 read -r -a PODMAN <<<"${SONORANLAB_PODMAN:-podman}"   # test hook
 wf=${1:?workflow.json}; tag=${2:?tag}
-if [[ -z "${SONORANLAB_RUNWINDOW:-}" && "${SONORANLAB_UNGUARDED:-}" != 1 ]]; then
+# Guarded only if our *direct* parent is the run window (an inherited/leaked variable doesn't count).
+if [[ "${SONORANLAB_RUNWINDOW:-}" != "$PPID" && "${SONORANLAB_UNGUARDED:-}" != 1 ]]; then
   allow=(); for u in ${SMOKE_ALLOW_PAUSE:-}; do allow+=(--allow-pause "$u"); done
   exec python3 "$HERE/runwindow.py" --need-gib "${SMOKE_NEED_GIB:-52}" "${allow[@]}" -- bash "$HERE/smoke.sh" "$wf" "$tag"
 fi

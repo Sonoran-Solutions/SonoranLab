@@ -111,9 +111,18 @@ Operational tests (manifests in [`2026-10-18-phase0/`](2026-10-18-phase0/)):
      window is live it refuses (exit 4) and leaves the paused units stopped. Once the window's process is gone (the
      kernel drops the lock even on SIGKILL), restore proceeds.
 
+  **Drain gate.** The heavy work is a ComfyUI prompt *inside the container*, and it outlives an interrupted
+  host-side client (Ctrl-C, a closed terminal, a SIGKILLed window). So every restore path (normal exit, signals,
+  `--restore`, and the automatic restore before a new run) first waits up to `--drain-s` (default 1800 s) for
+  `sonoranlab-comfy` to report an empty queue. A busy or unreadable queue counts as busy. If the job is still running
+  when the wait ends, or the operator presses Ctrl-C, the units **stay stopped**, the state file is kept, and a warning
+  says to re-run `--restore`. Further signals are ignored while restoring. A unit is recorded as paused before
+  `systemctl stop` runs, and the state file is fsynced.
+
   **Guarded by default:** `bash env/smoke.sh WF TAG` re-runs itself inside the window unless it is already in one, using
   `SMOKE_NEED_GIB` (default 52) and `SMOKE_ALLOW_PAUSE="llama-gemory"` (owner-approved units only). That makes it the
-  single canonical command; only `SONORANLAB_UNGUARDED=1` (tests) skips the preflight.
+  single canonical command; only `SONORANLAB_UNGUARDED=1` (tests) skips the preflight. It counts as guarded only
+  when its direct parent is the window (`SONORANLAB_RUNWINDOW == $PPID`), so a leaked variable doesn't bypass it.
 
   Budgets from the measurements above: Qwen Edit FP8 `--need-gib 52`, klein and the node chain `--need-gib 30`.
   The guard keeps a desktop-sized margin before anything runs. That is the protection the container memory cap
@@ -128,8 +137,9 @@ Operational tests (manifests in [`2026-10-18-phase0/`](2026-10-18-phase0/)):
   
   `smoke.sh` exits with that code. Live check: a workflow naming a missing model → exit 2 (`rejected`).
 - **`comfy.sh up` / `down`** refuse (exit 5) to destroy a running container unless `--replace`, and refuse even then
-  while ComfyUI has a running or pending job, or can't report its queue, unless `--force`. Live check: a second `up` →
-  exit 5.
+  while ComfyUI has a running or pending job, or can't report its queue, unless `--force`. The final check and the
+  `podman rm` happen together under the run-window lock, so a guarded run can't start in between; `up`/`down` refuse
+  while a window is live. Live check: a second `up` → exit 5.
 - **Dependency lock.** [`env/requirements.lock.txt`](../../env/requirements.lock.txt) lists the image's 64-package pip
   layer with exact versions and SHA-256, installed with `--require-hashes --no-deps`. The build then fails if the
   environment differs from [`env/pip-freeze.p0.txt`](../../env/pip-freeze.p0.txt) (163 packages) or if the base's ROCm

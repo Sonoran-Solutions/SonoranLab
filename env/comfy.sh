@@ -26,6 +26,14 @@ FLAGS="${SONORANLAB_COMFY_FLAGS:---disable-mmap --gpu-only --disable-smart-memor
 
 running() { "${PODMAN[@]}" container exists "$NAME" && [[ "$("${PODMAN[@]}" inspect -f '{{.State.Running}}' "$NAME")" == true ]]; }
 
+# Take the run-window lock on fd 9 (exit 5 if a guarded run holds it), so no guarded job can start between the busy
+# check and the removal. Released by unlock_window before `podman run`, so conmon never inherits it.
+lock_window() {
+  mkdir -p "$WORK"; exec 9>"$WORK/runwindow.lock"
+  flock -n 9 || { echo "refusing: a guarded run window (env/runwindow.py) is active; try again when it finishes" >&2; exit 5; }
+}
+unlock_window() { exec 9>&-; }
+
 # Exit 5 unless it is safe to remove the current container. $1=replace-approved(0/1) $2=force(0/1)
 guard_replace() {
   running || return 0
@@ -52,7 +60,7 @@ up() {
       *) echo "unknown option: $arg" >&2; exit 2 ;;
     esac
   done
-  guard_replace "$replace" "$force"
+  guard_replace "$replace" "$force"   # early, so a refusal doesn't wait for the image build
   mkdir -p "$WORK/output" "$MODELS"/{checkpoints,text_encoders,vae,diffusion_models,unet,loras,controlnet,clip_vision,latent_upscale_models}
   cat > "$WORK/extra_model_paths.yaml" <<YAML
 sonoranlab:
@@ -72,7 +80,10 @@ YAML
   # ComfyUI-RMBG rewrites birefnet.py in place on load, so it gets a writable copy; the verified originals stay untouched.
   mkdir -p "$MODELS/RMBG" "$MODELS/controlnet_aux_ckpts" "$WORK/RMBG"
   cp -a -u "$MODELS/RMBG/." "$WORK/RMBG/"
+  lock_window
+  guard_replace "$replace" "$force"   # again, atomically with the removal
   "${PODMAN[@]}" rm -f "$NAME" >/dev/null 2>&1 || true
+  unlock_window
   # Own systemd scope for conmon/port forwarder, so killing the launching terminal's scope (e.g. an oomd kill of
   # the app that hosts the terminal) doesn't orphan the container.
   local scope=(); [[ "${SONORANLAB_SCOPE:-1}" == 1 ]] && command -v systemd-run >/dev/null && scope=(systemd-run --user --scope --quiet --collect)
@@ -98,7 +109,7 @@ YAML
 
 status() { "${PODMAN[@]}" exec "$NAME" curl -sf http://127.0.0.1:8188/system_stats; echo; }
 logs()   { "${PODMAN[@]}" logs --tail 80 "$NAME"; }
-down()   { guard_replace 1 "$([[ "${1:-}" == --force ]] && echo 1 || echo 0)"; "${PODMAN[@]}" rm -f "$NAME"; }
+down()   { lock_window; guard_replace 1 "$([[ "${1:-}" == --force ]] && echo 1 || echo 0)"; "${PODMAN[@]}" rm -f "$NAME"; unlock_window; }
 
 case "${1:-}" in
   up) shift; up "$@" ;;

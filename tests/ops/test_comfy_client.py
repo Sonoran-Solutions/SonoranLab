@@ -279,7 +279,7 @@ def test_smoke_sh_propagates_client_result(tmp_path, fake_out, fake_rc, want_rc,
     assert manifest["status"] == want_status
 
 
-def _guarded_smoke(tmp_path, avail_gib):
+def _guarded_smoke(tmp_path, avail_gib, leaked_window=None):
     podman = tmp_path / "podman.sh"
     podman.write_text(FAKE_PODMAN_FOR_SMOKE.replace("exec) cat > /dev/null;", 'exec) echo exec >> "$CALLS"; cat > /dev/null;'))
     proc = tmp_path / "proc"
@@ -293,6 +293,8 @@ def _guarded_smoke(tmp_path, avail_gib):
                 "SONORANLAB_PROC": str(proc), "SONORANLAB_SYSTEMCTL": "false", "CALLS": str(tmp_path / "calls"),
                 "FAKE_OUT": '{"status": "success", "exit_code": 0, "images": [], "errors": []}', "FAKE_RC": "0",
                 "SMOKE_NEED_GIB": "30"})
+    if leaked_window:
+        env["SONORANLAB_RUNWINDOW"] = leaked_window
     r = subprocess.run(["bash", str(ROOT / "env" / "smoke.sh"), str(wf), "t"], env=env,
                        capture_output=True, text=True, timeout=60)
     calls = (tmp_path / "calls").read_text().split() if (tmp_path / "calls").exists() else []
@@ -310,3 +312,8 @@ def test_smoke_sh_direct_call_runs_inside_one_window(tmp_path):
     assert r.returncode == 0, r.stderr
     assert calls == ["exec"]                # exactly one submission, no re-entry loop
     assert '"preflight"' in r.stderr
+
+
+def test_smoke_sh_leaked_window_variable_does_not_bypass_guard(tmp_path):
+    r, calls = _guarded_smoke(tmp_path, avail_gib=20, leaked_window="1")   # inherited from some unrelated process
+    assert r.returncode == 3 and calls == []
