@@ -11,7 +11,7 @@ def test_recover_never_manages_services_directly():
     src = RECOVER.read_text()
     code = "\n".join(l for l in src.splitlines() if not l.lstrip().startswith("#"))
     assert not re.search(r"\bsystemctl\b", code), "recover.sh must leave service state to env/runwindow.py"
-    assert "runwindow.py --restore" in code
+    assert re.search(r"runwindow\.py --restore --drain-s \d+", code)  # fail fast behind an orphaned job
     assert re.search(r"runwindow\.py --need-gib \d+", code)
     assert "comfy.sh up --replace" in code
     assert subprocess.run(["bash", "-n", str(RECOVER)]).returncode == 0

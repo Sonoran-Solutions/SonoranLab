@@ -40,6 +40,19 @@ Before Phase 1 work starts:
 | Hardlink coupling documented | Q3/W4 hardlinks into `~/ComfyUI/models`: in-place edits would propagate, `--verify` detects it, decoupling command given. | #2 |
 | Incident record | Corrected: the owner's host ComfyUI was closed by the owner, not killed by oomd. | #4, this report |
 
+## Senior re-review items (2026-10-18, second round)
+
+| item | resolution | where |
+|---|---|---|
+| P1 `--restore` could restart a unit paused by a live window | `--restore` takes the same exclusive lock; while a window is live it refuses (exit 4) and leaves service state untouched. Test: restore during an active window keeps the unit stopped until the window ends (fails on the old code). | #3 |
+| P1 timeout cleanup sent a global `/interrupt` | Sends `{"prompt_id": <ours>}`; ComfyUI 0.31.0 (verified in our image's `server.py`) interrupts only if that prompt is running. Tests: the fake server models 0.31.0 semantics; another client's running prompt is not interrupted (fails on the old code). | #3 |
+| Phase 1 concern: `smoke.sh` could bypass the guard | `smoke.sh` re-runs itself inside `runwindow.py` unless its direct parent is the window. One canonical command; only `SONORANLAB_UNGUARDED=1` (tests) skips it. | #3 |
+| No hosted checks | `.github/workflows/ops-tests.yml` runs `bash -n` and `tests/ops` on every PR (no GPU needed). | #3 |
+| Independent Opus concurrency review of the fixes | Found that a restore could still start while the container's ComfyUI prompt outlived an interrupted client (Ctrl-C, closed terminal, SIGKILL). Fixed with a **drain gate**: no unit is restarted until the container queue is empty; otherwise units stay stopped with a warning. Also: record before `systemctl stop`, ignore signals while restoring, fsync and fail-closed state file, lock-guarded check-and-remove in `comfy.sh`, parent-checked guard variable. 9 new tests (8 fail on the old code). | #3, #5 |
+
+Tests: 63 at the top head (`uv run --no-project --with pytest pytest -q tests/ops`). No GPU benchmarking, reboot or OOM
+simulation was needed or done for this round; the drain probe was checked read-only against the live idle container.
+
 ## Tickets
 
 | ticket | result | PR |

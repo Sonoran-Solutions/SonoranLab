@@ -19,7 +19,7 @@ allow=(); while [[ $# -gt 0 ]]; do
   case "$1" in --allow-pause) allow+=(--allow-pause "$2"); shift 2 ;; *) echo "unknown option: $1" >&2; exit 2 ;; esac
 done
 echo "### recovery $(date -Is) boot=$(uptime -s) repo=$PWD rev=$(git rev-parse --short HEAD 2>/dev/null)"
-step "restore units left paused by an interrupted run" python3 env/runwindow.py --restore
+step "restore units left paused by an interrupted run" python3 env/runwindow.py --restore --drain-s 60
 step "image present (else rebuild from env/Containerfile)" bash -c 'podman image exists localhost/sonoranlab-comfy:p0 && echo present || podman build -t localhost/sonoranlab-comfy:p0 -f env/Containerfile env/'
 step "weights verify (sha256, no network)" quiet bash env/fetch_models.sh --verify
 step "ComfyUI up (refuses to replace a busy container)" quiet bash env/comfy.sh up --replace
