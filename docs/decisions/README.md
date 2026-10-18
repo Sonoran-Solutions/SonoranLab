@@ -11,3 +11,4 @@ with a new one). Format: Context → Decision → Consequences → Status.
 | 0004 | Lead generation track | **pending Phase 1** |
 | 0005 | Godot-native rig bake instead of Sprite Sage | accepted |
 | 0006 | Apache-2.0-only default model stack | accepted |
+| 0007 | Phase 1 benchmarks the game's real sprite format | accepted |

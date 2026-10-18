@@ -5,7 +5,14 @@ agent never passes canvas, palette, or foot-line values at call time; it reads
 them from here and, if it must change one, edits this file so the change is
 reviewable in git.
 
-Example: `profiles/twos-are-up.yaml` (fill real values during Phase 2).
+Example: `profiles/twos-are-up.yaml`. The real Twos Are Up values (ADR-0007) extend the example below:
+- `cell: per_character` (square, from the game's manifest);
+- `palette.source` + `sha256` instead of an inline hex list (the art is private, this repo is public);
+- 8 directions with `generate` and `mirror_animations`;
+- per-clip registration, and `foot_y: cell_minus_4`;
+- the game's clip names (idle, run, attack, cast, death, channel).
+
+Phase 2 (DYL-79) folds these into the schema.
 
 ```yaml
 id: twos-are-up

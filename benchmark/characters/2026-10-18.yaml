@@ -1,0 +1,90 @@
+# Phase 1 benchmark freeze, 2026-10-18 (DYL-70). Owner-approved in the orchestrator session on 2026-10-18:
+# game-native run target, these three references, PixelLab sheets for benchmark use only, A/B as a reduced floor.
+# Decision record: docs/decisions/ADR-0007-phase1-game-native-target.md.
+#
+# This repo is PUBLIC; the game is private. No game art, palette values or generated images of these characters are
+# committed here. Inputs and outputs live on local NVMe under ~/sonoranlab-work/benchmark/ (manifest hashes below).
+# Re-create the inputs with:
+#   uv run --no-project --with pillow python -I benchmark/tools/extract_refs.py ~/Projects/TwosAreUp \
+#     ~/sonoranlab-work/benchmark/characters/2026-10-18
+# and check manifest.json against inputs_manifest_sha256.
+
+profile: profiles/twos-are-up.yaml          # frozen at the commit that adds this file; change = new dated freeze
+game:
+  repo: Sonoran-Solutions/Twos-Are-Up       # private
+  commit: ebf3272                           # main, 2026-10-16; the 9 newer origin/main commits touch no assets/
+  palette_sha256: bf66d0a9818689706fe4d1c1dff7680b6908d598c6a7921b1727f0c19bea8457
+inputs_dir: ~/sonoranlab-work/benchmark/characters/2026-10-18
+inputs_manifest_sha256: 904450f6b0e8b5514bf5c2ba8698fc422c8dc66862643c2292f60c5ba17bb10d
+
+license_use: >-
+  Benchmark use only (owner, 2026-10-18): PixelLab-generated sheets made from the owner's OpenAI-generated references
+  may be model inputs, style references and comparison ground truth. NOT LoRA training data until the PixelLab ToS is
+  reviewed for that use. Generated, not CC0; no exclusive copyright claim (game SOURCE.md). See docs/04.
+
+characters:
+  1:
+    id: samurai
+    role: humanoid, asymmetric one-handed weapon (katana held low)
+    sheet: assets/pixel/v0/characters/samurai.png
+    sheet_sha256: bafaf4d2015c641e3330cde994a4ae42ab4ae72c8b118ee8535b8bf3c050bc3b
+    cell: 184
+    gen_canvas: 736
+    clip: {name: run, frames: 7, fps: 10, loop: true}
+    model_input: still_south_x4.png   # sha256 891f531f3a80cccb6d9e5a84bf871e11b5566008b2197125e3bc2632b422b089
+    accessories: [katana]
+    provenance: PixelLab v3 character b0903d1f; Codex/OpenAI reference (game SOURCE.md, MC-5 Samurai R94)
+  2:
+    id: oathguard
+    role: humanoid, large silhouette-changing accessory (kite shield) plus sword
+    sheet: assets/pixel/v0/characters/oathguard.png
+    sheet_sha256: 49f5b58908978d864d4789b487b9bc295311ce231c58af3f6d7b7a9b725d0a98
+    cell: 176
+    gen_canvas: 704
+    clip: {name: run, frames: 6, fps: 10, loop: true}
+    model_input: still_south_x4.png   # sha256 b2c0b2267ea10e471e379337c03f58e5f1c643b2e0dcc65d90163748cdbb9db3
+    accessories: [kite_shield, sword]
+    provenance: PixelLab character e5bd8246; ChatGPT reference classes/oathguard_south_v01.png (game SOURCE.md)
+  3:
+    id: relay_sentinel
+    role: non-humanoid, floating bell/lantern construct with tassels (no legs, no run clip)
+    sheet: assets/pixel/v0/characters/relay_sentinel.png
+    sheet_sha256: 1e36546efc28d672ba802fcd3d29ca278b0d37c9a0121632f93cc379d47a5607
+    cell: 136
+    gen_canvas: 544
+    clip: {name: idle, frames: 4, fps: 5, loop: true}   # hover loop stands in for locomotion
+    anchor_mode: bbox_bottom                              # floats: no foot contact
+    model_input: still_south_x4.png   # sha256 0dbe4ccfed96662a749bcbd03245fe9b2953c543847706cb1baacdd3ff1d3612
+    accessories: [tassels]
+    known_quirk: generated north faced front; the shipped north row is the NW back view
+    provenance: PixelLab 8-direction object 1c0d3443; ChatGPT reference bosses/relay_sentinel_south_v02.png
+
+generation:
+  directions: [north, north-east, east, south-east, south]   # west side mirrored from east, as the game does
+  background: "#ff00ff"         # flat key, absent from the palette; BiRefNet alpha where a track has it
+  seeds:
+    C: [1, 2, 3, 4]             # Track C pose-conditioned
+    E: [1, 2, 3, 4]             # Track E Wan 2.2; ONE seed x ONE direction first (smoke) before any sweep
+    A: [1, 2]                   # svntax floor baseline, reduced (owner, 2026-10-18)
+    B: [1, 2]                   # per checkpoint (2750, 3000)
+  smoke_first: true             # every track runs 1 char x 1 seed x 1 direction before its sweep
+
+processing:                     # identical for every track within this date (DYL-71 owns the scripts)
+  chain: [alpha_extract, pixeloe_kcentroid, palette_enforce, alpha_clean, register_per_clip, validate, contact]
+  pixeloe: {mode: k-centroid, scale: 4}
+  thresholds: calibrate_from_ground_truth   # DYL-71 measures the shipped clips, records the limits as an addendum
+                                            # to this file BEFORE the first track row is scored, then they are frozen
+
+usable_rubric:                  # a clip is usable only if every line is yes
+  validator:
+    - frame count equals the clip spec, every generated direction present
+    - exact cell size; binary alpha; 0 off-palette pixels after enforcement; <= 64 colours per cell
+    - lowest opaque row of the clip == cell - 4 (bbox_bottom for #3); no clipping at the cell border
+    - foot slide and bbox drift within the calibrated ground-truth limits
+  human:                        # reviewed at 1x (1 sprite px = 1 screen px, nearest) playing at clip fps, plus 4x contact
+    - identity: face, hair, armour and colour blocking match the reference in every direction
+    - every listed accessory survives in every direction, including north (back view)
+    - correct facing per row; west-side mirrors read correctly
+    - reads as the clip (a run, or #3 a hover) at its fps without popping; the loop closes
+    - no baked VFX, background, sticker border or keyline; outline style matches the shipped sheets
+  cleanup_minutes: stopwatch time in Aseprite/Pixelorama to reach all-yes; > 60 total for character 1 = track out
