@@ -62,6 +62,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--set", action="append", default=[], metavar="PARAM=VALUE", help="JSON value or plain string")
     ap.add_argument("--expect-images", type=int, default=1)
     ap.add_argument("--timeout", type=int, default=1800)
+    ap.add_argument("--settle-s", type=int, help="post-pause settle wait for the run window (env/smoke.sh SMOKE_SETTLE_S)")
     a = ap.parse_args(argv)
 
     wf_path = a.workflow.resolve()
@@ -95,7 +96,8 @@ def main(argv: list[str] | None = None) -> int:
     patched = out / "workflow.json"
     patched.write_text(json.dumps(wf, indent=2) + "\n")
     env = {**os.environ, "SMOKE_NEED_GIB": str(a.need_gib), "SMOKE_ALLOW_PAUSE": " ".join(a.allow_pause),
-           "SMOKE_EXPECT_IMAGES": str(a.expect_images), "SMOKE_TIMEOUT": str(a.timeout)}
+           "SMOKE_EXPECT_IMAGES": str(a.expect_images), "SMOKE_TIMEOUT": str(a.timeout),
+           **({"SMOKE_SETTLE_S": str(a.settle_s)} if a.settle_s else {})}
     rc = subprocess.run(["bash", str(REPO / "env" / "smoke.sh"), str(patched), slug], env=env).returncode
 
     run_manifest = WORK / "runs" / f"{slug}.json"
