@@ -3,7 +3,7 @@
 # Reference-image arm: klein_base_svntax_small_ref.json (same params plus reference_image / reference_megapixels).
 # This ComfyUI build (0.31.0 @ 62b3c94) does support a klein reference: the stock template
 # image_flux2_klein_image_edit_4b_base wires VAEEncode(ref) -> ReferenceLatent on positive and negative; the _ref
-# variant copies that. Whether the svntax LoRA was trained with a reference (edit) or text-only is UNVERIFIED, so both arms exist.
+# variant copies that. The card endorses both the text-to-image and the edit (reference) workflow.
 #
 # Card-verified (https://huggingface.co/svntax-dev/pixel_spritesheet_4walk_small_lora_v1 README.md, read 2026-10-18):
 #   - prompt: the card's text-to-image widget structure verbatim, {character} replacing the knight description;

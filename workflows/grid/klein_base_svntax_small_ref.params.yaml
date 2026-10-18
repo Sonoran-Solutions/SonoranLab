@@ -1,6 +1,6 @@
 # Track B, reference arm: klein_base_svntax_small.json + the reference wiring of the stock ComfyUI template
 # image_flux2_klein_image_edit_4b_base (ImageScaleToTotalPixels -> VAEEncode -> ReferenceLatent on both conds).
-# All UNVERIFIED notes in klein_base_svntax_small.params.yaml apply. The stock template scales the reference to 1 MP;
+# The card notes in klein_base_svntax_small.params.yaml apply. The stock template scales the reference to 1 MP;
 # 0.25 MP (512^2) here keeps it at the output size. The output size is set by width/height, not by the reference.
 reference_image:      {node: "41", input: "image"}
 reference_megapixels: {node: "80", input: "megapixels"}
