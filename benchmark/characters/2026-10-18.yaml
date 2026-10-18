@@ -89,7 +89,7 @@ usable_rubric:                  # a clip is usable only if every line is yes
     - no baked VFX, background, sticker border or keyline; outline style matches the shipped sheets
   cleanup_minutes: stopwatch time in Aseprite/Pixelorama to reach all-yes; > 60 total for character 1 = track out
 
-thresholds_addendum:            # DYL-71, 2026-10-18. PROPOSED, orchestrator to confirm before the first track row.
+thresholds_addendum:            # DYL-71, 2026-10-18. CONFIRMED by the orchestrator 2026-10-18 with the rules below.
   method: >-
     process.py calibrate: validator metrics on the shipped gt clips (5 dirs each) after the same per-clip registration
     tracks get; threshold = observed max rounded up. foot_slide = |contact-frame foot x - cell/2|.
@@ -99,3 +99,16 @@ thresholds_addendum:            # DYL-71, 2026-10-18. PROPOSED, orchestrator to 
     relay_sentinel: {max_foot_slide_px: 15, max_bbox_drift_px: 10, opaque_area_cv_warn: 0.01, loop_closure_ratio_warn: 1.29}
   all:              {max_foot_slide_px: 30, max_bbox_drift_px: 16, opaque_area_cv_warn: 0.13, loop_closure_ratio_warn: 1.29}
   loop_closure_delta_observed: 0.90   # docs/08's "warn > 0.15" fails every shipped loop; gate the ratio instead
+  confirmed_rules:
+    gates: per-character max_foot_slide_px / max_bbox_drift_px above (generated clips may not move more than shipped art)
+    warnings: max(observed, docs/08 default) -> opaque_area_cv_warn 0.10 floor (0.13 humanoids), loop_closure_ratio_warn as above
+    note: >-
+      For a run, foot_slide is a gross-error gate only: the stance foot travels under the body in the shipped clips too.
+      Identity, accessories and readability are decided by the human rubric, not by these numbers.
+    known_offset: >-
+      Shipped clips centre the body, not the bbox; median-bbox centring shifts them -10..+15 px. Recorded per frame; a
+      Phase 2 (DYL-82) registration question, not a Phase 1 score.
+  pixeloe_outline_thickness: >-
+    OPEN until the first real raw frames exist: thickness 0 round-trips shipped pixel art exactly, thickness 2 (Phase 0
+    node default) does not (67.9-87.0% of opaque pixels; 70-91 colours). DYL-77 compares 0/1/2 on the first Track A and
+    Track C smoke frames; the winner is frozen here before any scoring.csv row. Raw outputs are kept, so re-processing is free.
