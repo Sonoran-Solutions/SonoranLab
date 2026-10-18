@@ -65,7 +65,9 @@ def main(argv=None, stdin=None, stdout=None) -> int:
 
         def timed_out():
             if result["prompt_id"] is not None:
-                for path, body in (("/interrupt", {}),
+                # Both calls are scoped to our prompt: a bare /interrupt would stop whatever job is running,
+                # which may belong to another client by the time our deadline fires.
+                for path, body in (("/interrupt", {"prompt_id": result["prompt_id"]}),
                                    ("/queue", {"delete": [result["prompt_id"]]})):
                     try:
                         request(path, body, cleanup=True)

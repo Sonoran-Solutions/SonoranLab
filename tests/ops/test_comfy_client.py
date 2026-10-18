@@ -30,6 +30,7 @@ def comfy():
                "outputs": {"1": {"images": [{"subfolder": "p0", "filename": "test.png"}]}}},
         prompt_status=200, prompt_body=b'{"prompt_id": "test-id"}',
         history_body=None, delays=[], history_calls=0, posts=[],
+        executing=None, interrupted=[],
     )
 
     class Handler(BaseHTTPRequestHandler):
@@ -51,6 +52,13 @@ def comfy():
             state.posts.append((self.path, body))
             if self.path == "/prompt":
                 self.respond(state.prompt_status, state.prompt_body)
+            elif self.path == "/interrupt":
+                # Pinned ComfyUI 0.31.0 semantics: with prompt_id, interrupt only if that prompt is running;
+                # without one, interrupt whatever is running.
+                target = body.get("prompt_id")
+                if state.executing and (not target or target == state.executing):
+                    state.interrupted.append(state.executing)
+                self.respond(200, b"{}")
             else:
                 self.respond(200, b"{}")
 
@@ -138,8 +146,26 @@ def test_history_never_appears(comfy):
     rc, result = run(comfy.base, "--timeout", "1.5", "--poll", "0.1")
     assert (rc, result["status"]) == (4, "timeout")
     assert 1.4 <= time.monotonic() - started < 2.5
-    assert ("/interrupt", {}) in comfy.posts
+    assert ("/interrupt", {"prompt_id": "test-id"}) in comfy.posts
+    assert ("/interrupt", {}) not in comfy.posts
     assert ("/queue", {"delete": ["test-id"]}) in comfy.posts
+
+
+def test_timeout_does_not_interrupt_another_clients_prompt(comfy):
+    comfy.entry = None              # our prompt never completes ...
+    comfy.executing = "other-id"    # ... and by the deadline someone else's job is the one running
+    rc, result = run(comfy.base, "--timeout", "0.8", "--poll", "0.1")
+    assert (rc, result["status"]) == (4, "timeout")
+    assert comfy.interrupted == []
+    assert ("/interrupt", {"prompt_id": "test-id"}) in comfy.posts
+    assert ("/queue", {"delete": ["test-id"]}) in comfy.posts
+
+
+def test_timeout_interrupts_our_own_running_prompt(comfy):
+    comfy.entry = None
+    comfy.executing = "test-id"
+    rc, _ = run(comfy.base, "--timeout", "0.8", "--poll", "0.1")
+    assert rc == 4 and comfy.interrupted == ["test-id"]
 
 
 def test_poll_http_timeout_is_retried(comfy):
