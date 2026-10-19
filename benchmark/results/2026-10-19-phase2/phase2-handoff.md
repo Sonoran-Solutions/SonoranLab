@@ -72,8 +72,8 @@ the individual ticket PRs do not carry them.
 3. **SpriteFrames loses features:** `loop_from` (channel) cannot be represented and is recorded in the sidecar only.
    The sticker border exists only in the game's shader, so a plain SpriteFrames shows no border; contact sheets render
    the border for review.
-4. **The PNG omits the sRGB chunk** that the game's sheets carry. Godot imports both identically (checked). Flag it if
-   other tools care.
+4. **The PNG omits the sRGB chunk** that the game's sheets carry. The pixels round-trip exactly, but an import of
+   the two side by side in the game was not compared. Check this before the first sheet goes into the game.
 5. **`rig` anchor mode** is refused end to end until Track D per-frame anchors and a rig validator rule exist (Phase 6).
 6. **`--sheet` input** (a raw sheet in the game layout) is covered only by synthetic tests. All real Phase 1 E data is
    per-frame. PLAN.md's "768² sheet" wording dates from before ADR-0007.
