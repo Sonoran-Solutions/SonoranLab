@@ -174,3 +174,18 @@ def test_limit_colours_merges_least_used_into_nearest_and_stays_on_palette():
     assert (out[0, 79] == img[0, 79]).all()
     again, _ = P.limit_colours(img, opaque, 64)
     assert (again == out).all()                           # deterministic
+
+
+def test_despill_only_touches_the_edge_band():
+    rgb = np.zeros((12, 12, 3), np.uint8)
+    rgb[...] = (150, 60, 160)                              # purple everywhere (e.g. an orb)
+    alpha = np.zeros((12, 12), np.float32)
+    alpha[2:10, 2:10] = 255                                # opaque 8x8 square
+    alpha[2, 2:10] = 128                                   # soft top edge from the matte
+    out, n = P.despill(rgb, alpha, 2)
+    assert (out[6, 6] == (150, 60, 160)).all()             # interior untouched
+    assert (out[2, 5] == (150 - 90, 60, 160 - 90)).all()  # edge: min(R,B) - G = 90 removed from R and B
+    assert (out[0, 0] == rgb[0, 0]).all()                  # fully transparent pixels untouched
+    assert n == int(((out != rgb).any(-1)).sum())
+    red = rgb.copy(); red[...] = (200, 40, 30)             # a red sash on the edge: min(R,B) < G -> no change
+    assert (P.despill(red, alpha, 2)[0] == red).all()

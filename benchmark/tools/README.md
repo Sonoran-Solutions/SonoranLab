@@ -20,7 +20,8 @@ UV="uv run --no-project --with pillow --with numpy --with pixeloe==1.0.0"
     --stills ~/sonoranlab-work/benchmark/characters/2026-10-18/samurai
   ```
   `--anchor-mode bbox_bottom` for relay_sentinel. `--downscaler k_centroid,contrast,nearest` runs the same frames
-  through each downscaler into `OUT/<name>/` and writes `OUT/compare.json` (DYL-77). `--thickness` is PixelOE
+  through each downscaler into `OUT/<name>/` and writes `OUT/compare.json` (DYL-77). `--despill N` removes magenta key spill within N HD px of the matte edge (Track C/E BiRefNet mattes; interior
+  colours untouched). `--thickness` is PixelOE
   outline expansion (default 2, as the Phase 0 node). `test_nearest` is for tests only.
 - `process.py calibrate INPUTS OUT.json`: the same validator on the shipped ground-truth clips (registration only,
   they are final pixels) -> observed maxima and proposed thresholds (the yaml `thresholds_addendum`).

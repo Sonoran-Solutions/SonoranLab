@@ -76,6 +76,29 @@ def extract_alpha(im: Image.Image, key_tol: float) -> tuple[np.ndarray, np.ndarr
     return np.rint(rgb).astype(np.uint8), alpha
 
 
+def despill(rgb: np.ndarray, alpha: np.ndarray, band: int) -> tuple[np.ndarray, int]:
+    """Remove magenta key spill from the silhouette's edge band (HD px): subtract min(R, B) - G where positive.
+
+    Track C/E mattes (BiRefNet) keep the video's magenta-tinted edge colours, and soft edges are composited over the key
+    here, so thin parts (a katana blade) snapped to purples (DYL-77, 2026-10-18). Only opaque pixels within `band` px of
+    the matte edge are touched, so interior purples (relay_sentinel's orb) survive. Returns pixels changed."""
+    if band <= 0:
+        return rgb, 0
+    solid = alpha >= 255
+    edge = (alpha > 0) & ~solid
+    near = edge | (alpha <= 0)
+    for _ in range(band):   # grow the "near the edge" region into the solid interior
+        p = np.pad(near, 1)
+        near = near | p[:-2, 1:-1] | p[2:, 1:-1] | p[1:-1, :-2] | p[1:-1, 2:]
+    m = (alpha > 0) & near
+    c = rgb.astype(np.int16)
+    spill = np.minimum(c[..., 0], c[..., 2]) - c[..., 1]
+    hit = m & (spill > 0)
+    c[..., 0] -= np.where(hit, spill, 0)
+    c[..., 2] -= np.where(hit, spill, 0)
+    return c.clip(0, 255).astype(np.uint8), int(hit.sum())
+
+
 def downscale(rgb: np.ndarray, scale: int, method: str, thickness: int) -> np.ndarray:
     h, w, _ = rgb.shape
     if method == "test_nearest":  # ponytail: tests only; the benchmark path must use PixelOE k_centroid
@@ -126,10 +149,12 @@ def border(mask: np.ndarray) -> np.ndarray:
 
 
 def process_frame(
-    im: Image.Image, scale: int, pal: np.ndarray, method: str = "k_centroid", thickness: int = 2, key_tol: float = 48
+    im: Image.Image, scale: int, pal: np.ndarray, method: str = "k_centroid", thickness: int = 2, key_tol: float = 48,
+    despill_px: int = 0,
 ) -> tuple[np.ndarray, dict]:
     """One raw HD frame -> RGBA uint8 at (H/scale, W/scale), binary alpha, palette-locked. Not yet registered."""
     rgb, alpha = extract_alpha(im, key_tol)
+    rgb, despilled = despill(rgb, alpha, despill_px)
     h, w = alpha.shape
     assert h % scale == 0 and w % scale == 0, f"raw frame {w}x{h} is not a multiple of scale {scale}"
     small = downscale(rgb, scale, method, thickness)
@@ -147,7 +172,7 @@ def process_frame(
     out = np.zeros((h // scale, w // scale, 4), np.uint8)
     out[opaque, :3] = snapped[opaque]
     out[opaque, 3] = 255
-    return out, {"off_palette_before": off_before, "fringe_removed": int(fringe.sum()), "colours_merged": merged}
+    return out, {"off_palette_before": off_before, "fringe_removed": int(fringe.sum()), "colours_merged": merged, "despilled_hd_px": despilled}
 
 
 # ---------------------------------------------------------------- registration
@@ -391,6 +416,7 @@ def run(
     downscaler: str = "k_centroid",
     thickness: int = 2,
     key_tol: float = 48,
+    despill_px: int = 0,
     loop: bool = True,
     stills: Path | None = None,
     max_foot_slide: float | None = None,
@@ -404,7 +430,7 @@ def run(
     pal = load_palette(palette)
     clips, pre, reg = {}, {}, {}
     for d, ims in load_clips(raw).items():
-        res = [process_frame(im, scale, pal, downscaler, thickness, key_tol) for im in ims]
+        res = [process_frame(im, scale, pal, downscaler, thickness, key_tol, despill_px) for im in ims]
         clips[d], reg[d] = register_clip([f for f, _ in res], cell)
         pre[d] = [s for _, s in res]
     rep = validate(
@@ -535,6 +561,7 @@ def main() -> None:
     r.add_argument("--downscaler", default="k_centroid", help="comma list compares downscalers into out/<name>/")
     r.add_argument("--thickness", type=int, default=2, help="PixelOE outline expansion (Phase 0 node used 2)")
     r.add_argument("--key-tol", type=float, default=48)
+    r.add_argument("--despill", type=int, default=0, help="magenta despill band in HD px around the matte edge (C/E)")
     r.add_argument("--no-loop", action="store_true")
     r.add_argument("--stills", type=Path, help="dir with still_<dir>.png for sheet column 0")
     r.add_argument("--max-foot-slide", type=float)
@@ -567,6 +594,7 @@ def main() -> None:
             downscaler=m,
             thickness=a.thickness,
             key_tol=a.key_tol,
+            despill_px=a.despill,
             loop=not a.no_loop,
             stills=a.stills,
             max_foot_slide=a.max_foot_slide,
