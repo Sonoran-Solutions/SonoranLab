@@ -161,6 +161,7 @@ def test_approved_pause_runs_and_restores(fake):
     r = fake.run("--need-gib", "52", "--allow-pause", "llama-gemory", *marker_cmd(fake.root / "ran"))
     assert r.returncode == 0, r.stderr
     assert (fake.root / "ran").exists()
+    assert "settled: 70.0 GiB available" in r.stderr and "credit" not in r.stderr
     calls = fake.calls()
     assert calls.index("stop llama-gemory.service") < calls.index("start llama-gemory.service")
     assert (fake.root / "units" / "llama-gemory.service").read_text().strip() == "active"
@@ -484,22 +485,48 @@ def test_restore_keeps_units_stopped_when_podman_errors(fake):
     assert fake.run("--restore").returncode == 0 and fake.state() == "active"
 
 
-# --- freed-GTT credit in the settle check (owner-approved 2026-10-18) -----------------------------------------
+# --- opt-in, non-overlapping freed-GTT credit in the settle check --------------------------------------------
 
 
 def gib(x):
     return str(int(x * (1 << 30)))
 
 
+def test_gtt_credit_is_off_by_default(fake):
+    fake.holder(100, "llama-gemory.service", 20)
+    fake.unit("llama-gemory.service", "active")
+    (fake.root / "gtt").write_text(gib(21))
+    (fake.root / "gtt_on_stop").write_text(gib(1.3))
+    (fake.root / "free_on_stop").write_text(meminfo(42))
+    r = fake.run("--need-gib", "52", "--allow-pause", "llama-gemory", *marker_cmd(fake.root / "ran"))
+    assert r.returncode == 3 and not (fake.root / "ran").exists(), r.stderr
+    assert "42.0 GiB available" in r.stderr and "credit" not in r.stderr and "freed GTT" not in r.stderr
+    assert "stop llama-gemory.service" in fake.calls() and fake.state() == "active"
+
+
+def test_gtt_credit_excludes_pages_already_returned_to_host(fake):
+    fake.holder(100, "llama-gemory.service", 25)
+    fake.unit("llama-gemory.service", "active")
+    (fake.root / "gtt").write_text(gib(21))
+    (fake.root / "gtt_on_stop").write_text(gib(1.3))
+    (fake.root / "free_on_stop").write_text(meminfo(60))        # rise 20 >= drop 19.7; still below target 64
+    r = fake.run("--gtt-credit", "--need-gib", "56", "--allow-pause", "llama-gemory",
+                 *marker_cmd(fake.root / "ran"))
+    assert r.returncode == 3 and not (fake.root / "ran").exists(), r.stderr
+    assert "60.0 available + 0.0 freed GTT" in r.stderr and fake.state() == "active"
+
+
 def test_gtt_released_by_paused_unit_counts_toward_settle(fake):
     fake.holder(100, "llama-gemory.service", 20)
     fake.unit("llama-gemory.service", "active")
     (fake.root / "gtt").write_text(gib(21))
-    (fake.root / "gtt_on_stop").write_text(gib(1.3))            # GTT freed into amdgpu's pool...
-    (fake.root / "free_on_stop").write_text(meminfo(42))        # ...but MemAvailable barely moves (40 -> 42)
-    r = fake.run("--need-gib", "52", "--allow-pause", "llama-gemory", *marker_cmd(fake.root / "ran"))
-    assert r.returncode == 0, r.stderr                           # 42 + 19.7 credit >= 52 + 8
-    assert (fake.root / "ran").exists() and "freed GTT credit" in r.stderr
+    (fake.root / "gtt_on_stop").write_text(gib(1.3))
+    (fake.root / "free_on_stop").write_text(meminfo(42))
+    r = fake.run("--gtt-credit", "--need-gib", "51", "--allow-pause", "llama-gemory",
+                 *marker_cmd(fake.root / "ran"))
+    assert r.returncode == 0, r.stderr                           # 42 + (19.7 - 2) credit >= 51 + 8
+    assert (fake.root / "ran").exists()
+    assert "59.7 GiB effective (42.0 available + 17.7 freed GTT credit)" in r.stderr
     assert fake.state() == "active"
 
 
@@ -512,20 +539,23 @@ def test_settle_refuses_when_credit_cap_is_not_enough(fake):
     (fake.root / "free_on_stop").write_text(meminfo(30))
     # target 35.05: preflight 30 + 5.1 (gpu + rss estimate) passes and pauses; settle 30 + min(39, 5) = 35 < 35.05.
     # Without the cap the 39 GiB drop (mostly not ours) would wrongly let it run.
-    r = fake.run("--need-gib", "27.05", "--margin-gib", "8", "--allow-pause", "llama-gemory",
+    r = fake.run("--gtt-credit", "--need-gib", "27.05", "--margin-gib", "8", "--allow-pause", "llama-gemory",
                  *marker_cmd(fake.root / "ran"))
     assert r.returncode == 3 and not (fake.root / "ran").exists(), r.stderr
-    assert "freed GTT" in r.stderr and fake.state() == "active"  # restored after the refusal
+    assert "5.0 freed GTT" in r.stderr and fake.state() == "active"  # restored after the refusal
 
 
-def test_unreadable_gtt_gives_no_credit(fake):
+@pytest.mark.parametrize("before,after", [("garbage", gib(1.3)), (gib(21), "garbage"), ("garbage", "garbage")])
+def test_unreadable_gtt_gives_no_credit(fake, before, after):
     fake.holder(100, "llama-gemory.service", 20)
     fake.unit("llama-gemory.service", "active")
-    (fake.root / "gtt").write_text("garbage")
-    (fake.root / "gtt_on_stop").write_text("also garbage")
+    (fake.root / "gtt").write_text(before)
+    (fake.root / "gtt_on_stop").write_text(after)
     (fake.root / "free_on_stop").write_text(meminfo(42))
-    r = fake.run("--need-gib", "52", "--allow-pause", "llama-gemory", *marker_cmd(fake.root / "ran"))
+    r = fake.run("--gtt-credit", "--need-gib", "52", "--allow-pause", "llama-gemory",
+                 *marker_cmd(fake.root / "ran"))
     assert r.returncode == 3 and not (fake.root / "ran").exists()
+    assert "0.0 freed GTT" in r.stderr and fake.state() == "active"
 
 
 # --- preflight waits for recently (re)started approved units (2026-10-18 race) --------------------------------
