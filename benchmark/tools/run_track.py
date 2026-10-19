@@ -11,15 +11,23 @@ next to a manifest. Every attempt keeps its manifest, failures included. Nothing
 
 Inputs go to $WORK/input/<job>/ (mounted read-only at /opt/ComfyUI/input/sonoranlab by env/comfy.sh); outputs land
 in $WORK/output/bench/<job>/ and are copied to $WORK/benchmark/results/<job>/raw/. Exit code = smoke.sh's.
+
+A job id is used exactly once. Before staging anything the runner atomically reserves $WORK/benchmark/results/<job>/
+(mkdir without exist_ok, then an exclusive reservation.json), so two launches with the same id can never interleave
+their inputs. An interrupted attempt keeps its directory and therefore stays reserved; recovery is a new job id (the
+sweep scripts already retry as <id>-r1, -r2, ...). Exit code 2 on a reservation or job-id validation failure.
 """
 
 from __future__ import annotations
 
 import argparse
+import datetime
 import hashlib
 import json
 import os
+import re
 import shutil
+import socket
 import subprocess
 import sys
 from pathlib import Path
@@ -52,6 +60,42 @@ def value(s: str):
         return s
 
 
+COMPONENT = re.compile(r"^[A-Za-z0-9._-]+$")
+
+
+def refuse(msg: str) -> SystemExit:
+    """Exit code 2 with the message on stderr (see env/smoke.sh's exit-code table)."""
+    print(msg, file=sys.stderr)
+    return SystemExit(2)
+
+
+def job_parts(job: str) -> list[str]:
+    """Validate a job id: slash-separated components, each a safe single path segment."""
+    parts = job.strip("/").split("/")
+    for part in parts:
+        if part in ("", ".", "..") or not COMPONENT.match(part):
+            raise refuse(f"bad job id {job!r}: component {part!r} must match ^[A-Za-z0-9._-]+$ and not be . or ..")
+    return parts
+
+
+def reserve(out: Path, job: str, argv: list[str]) -> dict:
+    """Claim the job's result directory before any other write; a kept directory stays reserved."""
+    taken = f"job {job} is already reserved (in progress, interrupted, or done); use a new job id"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        out.mkdir()
+    except FileExistsError:
+        raise refuse(taken) from None
+    reservation = {"job": job, "pid": os.getpid(), "host": socket.gethostname(),
+                   "created": datetime.datetime.now().astimezone().isoformat(timespec="seconds"), "argv": argv}
+    try:
+        with open(out / "reservation.json", "x") as f:
+            f.write(json.dumps(reservation, indent=2) + "\n")
+    except FileExistsError:
+        raise refuse(taken) from None
+    return reservation
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("--workflow", required=True, type=Path)
@@ -68,12 +112,16 @@ def main(argv: list[str] | None = None) -> int:
     wf_path = a.workflow.resolve()
     wf = json.loads(wf_path.read_text())
     params = yaml.safe_load(wf_path.with_suffix(".params.yaml").read_text())
-    slug = a.job.strip("/").replace("/", "_")
-    out = WORK / "benchmark" / "results" / a.job
-    if (out / "manifest.json").exists():
-        raise SystemExit(f"{out} already has a manifest; raw outputs are never overwritten (pick a new job id)")
-    inp = WORK / "input" / slug
-    inp.mkdir(parents=True, exist_ok=True)
+    job = "/".join(job_parts(a.job))
+    # smoke.sh run tag ($WORK/runs/<tag>.json, read back below): a flat name, made collision-free by the job's hash
+    slug = f"{job.replace('/', '_')}-{hashlib.sha256(job.encode()).hexdigest()[:12]}"
+    out = WORK / "benchmark" / "results" / Path(job)
+    reservation = reserve(out, job, sys.argv)
+    inp = WORK / "input" / Path(job)
+    try:
+        inp.mkdir(parents=True, exist_ok=False)
+    except FileExistsError:
+        raise refuse(f"job {job} is already reserved (in progress, interrupted, or done); use a new job id") from None
     (out / "raw").mkdir(parents=True, exist_ok=True)
 
     inputs = {}
@@ -82,7 +130,7 @@ def main(argv: list[str] | None = None) -> int:
         src = Path(path).expanduser().resolve()
         dst = inp / f"{key}{src.suffix}"
         shutil.copyfile(src, dst)
-        put(wf, params, key, f"sonoranlab/{slug}/{dst.name}")
+        put(wf, params, key, f"sonoranlab/{job}/{dst.name}")
         inputs[key] = {"source": str(src), "sha256": sha(dst)}
     sets = {}
     for kv in a.set:
@@ -91,7 +139,7 @@ def main(argv: list[str] | None = None) -> int:
         put(wf, params, key, sets[key])
     for key in params:
         if key.startswith("output_prefix"):
-            put(wf, params, key, f"bench/{slug}/{key.removeprefix('output_prefix').strip('_') or 'out'}")
+            put(wf, params, key, f"bench/{job}/{key.removeprefix('output_prefix').strip('_') or 'out'}")
 
     patched = out / "workflow.json"
     patched.write_text(json.dumps(wf, indent=2) + "\n")
@@ -112,7 +160,8 @@ def main(argv: list[str] | None = None) -> int:
     rev = subprocess.run(["git", "-C", str(REPO), "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
     manifest = {"job": a.job, "workflow_source": str(wf_path.relative_to(REPO)) if wf_path.is_relative_to(REPO) else str(wf_path), "workflow_source_sha256": sha(wf_path),
                 "workflow_patched_sha256": sha(patched), "repo_rev": rev, "inputs": inputs, "set": sets,
-                "need_gib": a.need_gib, "allow_pause": a.allow_pause, "exit_code": rc, "run": run, "raw": raw}
+                "need_gib": a.need_gib, "allow_pause": a.allow_pause, "exit_code": rc, "run": run, "raw": raw,
+                "reservation": reservation}
     (out / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
     print(json.dumps({k: manifest[k] for k in ("job", "exit_code", "raw")} | {"wall_s": run.get("wall_s")}, indent=1))
     return rc

@@ -49,7 +49,24 @@ It checks class names, required inputs, link arity and types, ranges, combo valu
 the server's list), and that every `params.yaml` entry names a literal input. Re-dump `object_info` after any image
 or node-pack change.
 
+## Job runner (`benchmark/tools/run_track.py`)
+
+The runner turns one workflow + `params.yaml` into one job id `<date>/<track>/<char>/<seed>[/<part>]`. It runs
+through `env/smoke.sh` (memory guard, queue drain, sampling), then keeps outputs, the patched workflow and a manifest
+under `$WORK/benchmark/results/<job>/`.
+
+Reservation semantics: a job id can be used exactly once. Before staging any input the runner atomically reserves
+`$WORK/benchmark/results/<job>/` (`mkdir` without `exist_ok`, then an exclusive `reservation.json` holding job, pid,
+host, creation time and argv), so two launches with the same id can never interleave their staged files. An
+interrupted attempt keeps its directory and therefore stays reserved; retry with a new job id (the sweep scripts
+already do `<id>-r1`, `-r2`, ...). A second launch exits 2 with
+`job <id> is already reserved (in progress, interrupted, or done); use a new job id`. Job id components must match
+`^[A-Za-z0-9._-]+$` and are never `.` or `..` (also exit 2).
+
 ## Estimated memory (from file sizes; measure before trusting)
+
+Observed `--need-gib` values: batched Qwen jobs (`batch_frames.py`, 7 frames per prompt) request `--need-gib 64`
+(measured 60.8 GiB draw); single Qwen 60, Wan 33 frames 40, klein 30.
 
 Phase 0 measured, at 1720×968: Qwen Edit FP8 + Lightning, 31.0 GB of weights, peaked at 39.8 GiB GTT and 51.2 GiB
 container cgroup. klein base, 16.1 GB of weights, peaked at 23.7 GiB GTT at 1024² (`benchmark/results/phase0-env.md`).
@@ -80,9 +97,13 @@ Smallest proposed fix (not applied; `env/` is out of scope for this change): one
 with `mkdir -p "$WORK/input"` next to the existing `mkdir -p "$WORK/output"`. The image's own inputs stay where they
 are, so the Phase 0 smokes are unchanged. It works with `--offline` too, because a mount needs no network. The runner
 then:
-1. copies each input to `$WORK/input/<job>/<name>.png` (never into the repo; ADR-0007);
-2. patches the `params.yaml` image input to `sonoranlab/<job>/<name>.png`;
+1. reserves the job (see "Job runner" above) and copies each input to the nested path
+   `$WORK/input/<date>/<track>/<char>/<seed>[/<part>]/<name>.png` (never into the repo; ADR-0007);
+2. patches the `params.yaml` image input to `sonoranlab/<date>/<track>/<char>/<seed>[/<part>]/<name>.png`;
 3. records each input's sha256 in the job manifest, next to the workflow hash.
+
+Using the job id as a nested path (instead of flattening `/` to `_`) keeps staging collision-free: `a/b_c` and
+`a_b/c` no longer land on the same directory.
 
 Stopgap with no env change: `podman exec sonoranlab-comfy mkdir -p /opt/ComfyUI/input/sonoranlab`, then
 `podman cp <file> sonoranlab-comfy:/opt/ComfyUI/input/sonoranlab/<name>.png`. It writes
