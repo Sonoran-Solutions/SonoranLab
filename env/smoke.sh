@@ -6,9 +6,11 @@
 # Writes $WORK/runs/<tag>.json (manifest) and prints it. Images land in $WORK/output/p0/.
 # SMOKE_TIMEOUT defaults to 1800 seconds; SMOKE_EXPECT_IMAGES defaults to 1.
 # Guarded by default: unless already inside env/runwindow.py, this re-runs itself through it with
-# --need-gib ${SMOKE_NEED_GIB:-52} (Qwen Edit budget; klein / node chain fit in 30) and --allow-pause for each unit in
-# SMOKE_ALLOW_PAUSE (space-separated, owner-approved only);
-# SMOKE_SETTLE_S overrides the run window's post-pause settle wait. SONORANLAB_UNGUARDED=1 skips the guard (tests only).
+# --need-gib ${SMOKE_NEED_GIB:-60} (Qwen Edit single prompt; use 64 for batched Qwen, 30 for klein / node chain)
+# and --allow-pause for each unit in SMOKE_ALLOW_PAUSE (space-separated, owner-approved only).
+# SMOKE_SETTLE_S overrides the run window's post-pause settle wait.
+# SONORANLAB_UNGUARDED=1 skips the guard (tests only).
+# SMOKE_GTT_CREDIT=1 opts in to --gtt-credit (heuristic; default off).
 # Exit codes: 0 success, 2 rejected, 3 execution_error, 4 timeout,
 #             5 missing_outputs, 6 http_error (or no-response); from the guard: 3 refused, 4 another window active.
 set -euo pipefail
@@ -18,8 +20,9 @@ wf=${1:?workflow.json}; tag=${2:?tag}
 # Guarded only if our *direct* parent is the run window (an inherited/leaked variable doesn't count).
 if [[ "${SONORANLAB_RUNWINDOW:-}" != "$PPID" && "${SONORANLAB_UNGUARDED:-}" != 1 ]]; then
   allow=(); for u in ${SMOKE_ALLOW_PAUSE:-}; do allow+=(--allow-pause "$u"); done
+  [[ "${SMOKE_GTT_CREDIT:-0}" == 1 ]] && allow+=(--gtt-credit)
   settle=(); [[ -n "${SMOKE_SETTLE_S:-}" ]] && settle=(--settle-s "$SMOKE_SETTLE_S")
-  exec python3 "$HERE/runwindow.py" --need-gib "${SMOKE_NEED_GIB:-52}" "${allow[@]}" "${settle[@]}" -- bash "$HERE/smoke.sh" "$wf" "$tag"
+  exec python3 "$HERE/runwindow.py" --need-gib "${SMOKE_NEED_GIB:-60}" "${allow[@]}" "${settle[@]}" -- bash "$HERE/smoke.sh" "$wf" "$tag"
 fi
 WORK="${SONORANLAB_WORK:-$HOME/sonoranlab-work}"; mkdir -p "$WORK/runs"
 dev=$(ls -d /sys/class/drm/card*/device 2>/dev/null | head -1 || true)   # absent on CI runners: memory reads as 0

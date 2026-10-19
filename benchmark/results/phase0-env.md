@@ -125,8 +125,8 @@ Operational tests (manifests in [`2026-10-18-phase0/`](2026-10-18-phase0/)):
   when its direct parent is the window (`SONORANLAB_RUNWINDOW == $PPID`), so a leaked variable doesn't bypass it.
 
   Budgets from the measurements above: Qwen Edit FP8 `--need-gib 52`, klein and the node chain `--need-gib 30`.
-  The guard keeps a desktop-sized margin before anything runs. That is the protection the container memory cap
-  alone can't give.
+  The guard keeps a desktop-sized margin before anything runs; the container memory cap bounds CPU RAM only,
+  excluding amdgpu GTT from memory.current.
 - **Smoke client** [`env/comfy_client.py`](../../env/comfy_client.py), used by `env/smoke.sh`:
   - validates `status_str == success` **and** `completed`, and the absence of execution_error/interrupted messages;
   - checks at least N output images exist and are non-empty;
@@ -208,8 +208,8 @@ Dated evidence (run manifests with workflow hash, image id, memory samples, outp
 (their hashes are in the manifests). Runs go through `bash env/smoke.sh <workflow> <tag>`.
 
 Conditions on 2026-10-18: image `localhost/sonoranlab-comfy:p0` (`1e37559bc4f2`), toolbox flags unchanged, container
-capped at 64 GiB; `llama-gemory` paused for the run window, owner's host ComfyUI down, a model download writing to
-NVMe at ~30 MB/s in parallel. "Repeat" is the second run in the same container; `--cache-none` reloads every model on
+CPU RAM capped at 64 GiB (amdgpu GTT excluded); `llama-gemory` paused for the run window, owner's host ComfyUI down,
+a model download writing to NVMe at ~30 MB/s in parallel. "Repeat" is the second run in the same container; `--cache-none` reloads every model on
 every run, so repeat ≈ steady state.
 
 | workflow | resolution | steps | seconds (cold / repeat) | peak mem | notes |
@@ -228,9 +228,9 @@ been launched from that scope. The container's ComfyUI survived.
 after saving its queue. An earlier version of this note said otherwise.
 
 Guardrails:
-- `env/comfy.sh`: `--memory 64g --memory-swap 64g --oom-score-adj 1000`. GTT is charged to the container's memcg (Qwen
-  peak 51.2 GiB), so an overshoot inside the container kills ComfyUI. On its own, this does **not** protect other
-  apps from oomd when the host as a whole runs short.
+- `env/comfy.sh`: `--memory 64g --memory-swap 64g --oom-score-adj 1000`. The cap bounds CPU RAM only;
+  memory.current excludes amdgpu GTT. The GTT backstop is the guard's preflight margin plus
+  `--oom-score-adj 1000` making ComfyUI the kernel OOM victim; the cap cannot prevent host exhaustion from GTT.
 - `env/comfy.sh`: `podman run` is wrapped in `systemd-run --user --scope`, so `conmon`/`rootlessport` live in their own scope.
 - **`env/runwindow.py`** (see "Operational safety" above) is the host-level protection. It refuses heavy runs that
   don't fit with a desktop margin, pauses only owner-approved user units (e.g. `llama-gemory`), and restores them
