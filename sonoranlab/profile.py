@@ -21,6 +21,7 @@ import yaml
 ANCHOR_MODES = ("foot", "rig", "bbox_bottom")
 TRACKS = ("A", "B", "C", "D", "E")
 LIMIT_KEYS = ("max_foot_slide_px", "max_bbox_drift_px", "opaque_area_cv_warn", "loop_closure_ratio_warn")
+HOVER_KEYS = ("hover_x_drift_warn_px", "hover_min_bob_px")  # ADR-0008 F2: required for anchor_mode bbox_bottom
 NAME_RE = re.compile(r"^[a-z0-9_]+$")
 HEX_RE = re.compile(r"^#[0-9a-fA-F]{6}$")
 CELL_MINUS_RE = re.compile(r"^cell_minus_(\d+)$")
@@ -54,12 +55,14 @@ class ProfileError(ValueError):
 
 @dataclass(frozen=True)
 class Limits:
-    """Validator limits: two gates (px) and two warnings (ratios)."""
+    """Validator limits: two gates (px) and two warnings (ratios); bbox_bottom adds two hover warnings (px)."""
 
     max_foot_slide_px: float
     max_bbox_drift_px: float
     opaque_area_cv_warn: float
     loop_closure_ratio_warn: float
+    hover_x_drift_warn_px: float | None = None  # warn: core centre x range over the loop above this
+    hover_min_bob_px: float | None = None  # warn: centroid y range over the loop below this
 
 
 @dataclass(frozen=True)
@@ -364,9 +367,12 @@ def _parse(path: Path, check_paths: bool) -> tuple[Profile | None, list[str]]:
     templates: dict[Path, dict | None] = {}
     animations = _animations(raw, generate, templates, base, errs)
     validator = None
-    v = _section(raw, "validator", ("label", *LIMIT_KEYS), errs)
+    v = _section(raw, "validator", ("label", *LIMIT_KEYS, *HOVER_KEYS), errs)
     if v is not None:
-        validator = Validator(label=_val(v, "validator", "label", "str", errs), defaults=_limits(v, "validator", errs))
+        hover = bool(anchor and anchor.mode == "bbox_bottom")
+        validator = Validator(
+            label=_val(v, "validator", "label", "str", errs), defaults=_limits(v, "validator", errs, hover=hover)
+        )
     characters = _characters(raw, canvas, anchor, animations, generate, templates, base, errs)
 
     r = _section(raw, "references", ("style_refs", "proportions", "outline", "camera", "vfx"), errs, required=False)
@@ -529,7 +535,7 @@ def _characters(
         errs.append(f"characters: expected a mapping of name -> row, got {chars!r}")
         return {}
     out = {}
-    keys = ("cell", "anchor_mode", "animations", "locomotion", *LIMIT_KEYS)
+    keys = ("cell", "anchor_mode", "animations", "locomotion", *LIMIT_KEYS, *HOVER_KEYS)
     for name, row in chars.items():
         where = f"characters.{name}"
         if not (isinstance(name, str) and NAME_RE.match(name)):
@@ -561,21 +567,25 @@ def _characters(
         size = cell or (canvas.cell if canvas else None)
         if anchor and canvas and size:
             _anchor_rows(anchor, size, canvas.padding or 0, where, errs)
+        mode = _val(row, where, "anchor_mode", "str", errs, choices=ANCHOR_MODES, required=False)
         out[name] = CharacterRow(
             cell=cell,
-            anchor_mode=_val(row, where, "anchor_mode", "str", errs, choices=ANCHOR_MODES, required=False),
-            limits=_limits(row, where, errs),
+            anchor_mode=mode,
+            limits=_limits(row, where, errs, hover=(mode or (anchor.mode if anchor else None)) == "bbox_bottom"),
             animations=anims,
             locomotion=loco,
         )
     return out
 
 
-def _limits(d: dict, where: str, errs: list[str]) -> Limits:
+def _limits(d: dict, where: str, errs: list[str], *, hover: bool = False) -> Limits:
+    """LIMIT_KEYS are always required; HOVER_KEYS when the row's anchor_mode is bbox_bottom (ADR-0008 F2)."""
     vals = {}
-    for k in LIMIT_KEYS:
-        if k not in d:
+    for k in LIMIT_KEYS + HOVER_KEYS:
+        if k in LIMIT_KEYS and k not in d:
             errs.append(f"{where}.{k}: missing (no validator threshold may be unset)")
+        elif hover and k not in d:
+            errs.append(f"{where}.{k}: missing (anchor_mode bbox_bottom needs the hover warnings, ADR-0008 F2)")
         vals[k] = _val(d, where, k, "num", errs, lo=0, required=False)
     return Limits(**vals)
 

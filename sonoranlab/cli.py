@@ -13,7 +13,8 @@ from pathlib import Path
 
 import numpy as np
 
-from sonoranlab.profile import ProfileError, check_profile, load_profile
+from sonoranlab.profile import ProfileError, check_profile, load_palette, load_profile, sha256_file
+from sonoranlab.validate import read_frames, validate
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -80,6 +81,15 @@ def build_parser() -> argparse.ArgumentParser:
     g.add_argument("--forbid-under", type=Path, help="refuse any --out inside this tree (the shipped game)")
     g.add_argument("--anim-name", default="{animation}_{direction}")
     g.set_defaults(func=export_godot_cmd)
+
+    v = verbs.add_parser("validate", help="validate registered <direction>_<i>.png cells (docs/08); exit 1 on failure")
+    v.add_argument("frames_dir", type=Path)
+    v.add_argument("--profile", type=Path, required=True)
+    v.add_argument("--character", required=True)
+    v.add_argument("--anim", required=True, help="clip name in the character's animations (frame count, loop)")
+    v.add_argument("--cell", type=int, help="cell size for a character without a profile row")
+    v.add_argument("--out", type=Path, help="write the report here (never overwrites) instead of printing it")
+    v.set_defaults(func=validate_frames)
     return p
 
 
@@ -210,6 +220,66 @@ def export_godot_cmd(args: argparse.Namespace) -> int:
         return 2
     print(json.dumps(paths, indent=2))
     return 0
+
+
+def validate_frames(args: argparse.Namespace) -> int:
+    try:
+        prof = load_profile(args.profile)
+        spec = prof.character(args.character, cell=args.cell)
+        pal = load_palette(prof)
+    except ProfileError as e:
+        for msg in e.problems:
+            print(f"{args.profile}: {msg}", file=sys.stderr)
+        return 2
+    anim = spec.animations.get(args.anim)
+    if anim is None:
+        print(f"{args.anim!r} is not a clip of {spec.name} ({', '.join(spec.animations)})", file=sys.stderr)
+        return 2
+    if args.out and args.out.exists():
+        print(f"{args.out}: exists; reports are never overwritten", file=sys.stderr)
+        return 2
+    kw = {
+        "cell": spec.cell,
+        "frames": anim.frames,
+        "directions": list(prof.directions.generate),
+        "foot_y": spec.foot_y,
+        "anchor_x": spec.anchor_x,
+        "padding": spec.padding,
+        "max_colours": prof.palette.max_colors_per_cell,
+        "loop": anim.loop,
+        "anchor_mode": spec.anchor_mode,
+        "fringe_tolerance": prof.alpha.fringe_tolerance,
+        "mirror": dict(prof.directions.mirror_animations),
+    }
+    try:
+        clips, files = read_frames(args.frames_dir, prof.directions.order)
+        rep = validate(clips, palette=pal, limits=spec.limits, limits_source=spec.limits_source, **kw)
+    except (ValueError, OSError) as e:
+        print(f"validate: {e}", file=sys.stderr)
+        return 2
+    rep = {
+        "pass": rep["pass"],
+        "character": spec.name,
+        "animation": args.anim,
+        **rep,
+        "params": {"frames_dir": str(args.frames_dir.resolve()), **kw},
+        "provenance": {
+            "profile": {"path": str(args.profile.resolve()), "sha256": sha256_file(args.profile)},
+            "inputs": {p.name: sha256_file(p) for p in files},
+        },
+    }
+    text = json.dumps(rep, indent=1) + "\n"
+    if args.out:
+        try:
+            with args.out.open("x") as fh:
+                fh.write(text)
+        except OSError as e:
+            print(f"{args.out}: {e}", file=sys.stderr)
+            return 2
+        print(f"{args.out}: " + ("pass" if rep["pass"] else f"fail ({len(rep['failures'])} failures)"))
+    else:
+        print(text, end="")
+    return 0 if rep["pass"] else 1
 
 
 def main(argv: list[str] | None = None) -> int:
