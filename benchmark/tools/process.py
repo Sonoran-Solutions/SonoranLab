@@ -98,6 +98,26 @@ def snap(rgb: np.ndarray, pal: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     return pal[idx].reshape(rgb.shape), off.reshape(rgb.shape[:2])
 
 
+def limit_colours(rgb: np.ndarray, opaque: np.ndarray, limit: int) -> tuple[np.ndarray, int]:
+    """Merge the least-used colour into its nearest remaining colour until <= limit remain (stays on the palette).
+
+    Shipped Twos Are Up cells use 30-56 colours; a palette snap alone leaves 60-80 on generated frames (DYL-77).
+    Deterministic: ties broken by colour value. Returns the new image and how many colours were merged away."""
+    out = rgb.copy()
+    cols, counts = np.unique(out[opaque].reshape(-1, 3), axis=0, return_counts=True)
+    merged = 0
+    while len(cols) > limit:
+        i = int(np.lexsort((*cols.T[::-1], counts))[0])          # least used, then smallest colour value
+        rest = np.delete(np.arange(len(cols)), i)
+        j = rest[((cols[rest].astype(np.int32) - cols[i].astype(np.int32)) ** 2).sum(1).argmin()]
+        m = opaque & (out == cols[i]).all(-1)
+        out[m] = cols[j]
+        counts[j] += counts[i]
+        cols, counts = cols[rest], counts[rest]
+        merged += 1
+    return out, merged
+
+
 def border(mask: np.ndarray) -> np.ndarray:
     """Opaque pixels with a transparent (or out-of-frame) 4-neighbour."""
     p = np.pad(mask, 1, constant_values=False)
@@ -123,10 +143,11 @@ def process_frame(
     to_pal = np.linalg.norm(pre - snapped, axis=-1)
     fringe = border(opaque) & (to_key < to_pal)  # fringe_passes: 1
     opaque &= ~fringe
+    snapped, merged = limit_colours(snapped, opaque, MAX_COLOURS)
     out = np.zeros((h // scale, w // scale, 4), np.uint8)
     out[opaque, :3] = snapped[opaque]
     out[opaque, 3] = 255
-    return out, {"off_palette_before": off_before, "fringe_removed": int(fringe.sum())}
+    return out, {"off_palette_before": off_before, "fringe_removed": int(fringe.sum()), "colours_merged": merged}
 
 
 # ---------------------------------------------------------------- registration

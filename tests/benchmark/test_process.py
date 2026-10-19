@@ -156,3 +156,21 @@ def test_pixeloe_kcentroid_runs(palette: Path) -> None:
     pal = {INK, RED, SKIN, BLUE}
     assert {tuple(c) for c in f[f[..., 3] > 0, :3].tolist()} <= pal
     assert stats["off_palette_before"] >= 0
+
+
+
+def test_limit_colours_merges_least_used_into_nearest_and_stays_on_palette():
+    rng = np.random.default_rng(0)
+    pal = rng.integers(0, 256, (80, 3)).astype(np.uint8)
+    img = np.repeat(pal[None], 4, 0)                      # 4 x 80 px, every colour used 4 times
+    img[:, :10] = pal[0]                                  # colour 0 dominates
+    opaque = np.ones(img.shape[:2], bool)
+    opaque[0, 79] = False                                 # transparent pixels are ignored and untouched
+    out, merged = P.limit_colours(img, opaque, 64)
+    used = {tuple(c) for c in out[opaque]}
+    assert len(used) <= 64 and merged == len({tuple(c) for c in img[opaque]}) - len(used)
+    assert used <= {tuple(c) for c in pal}                # still on the palette
+    assert (out[:, :10] == pal[0]).all()                  # the dominant colour survives
+    assert (out[0, 79] == img[0, 79]).all()
+    again, _ = P.limit_colours(img, opaque, 64)
+    assert (again == out).all()                           # deterministic
