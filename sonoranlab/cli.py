@@ -30,6 +30,15 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--character", required=True)
     s.add_argument("--cell", type=int, help="cell size for a character without a profile row")
     s.set_defaults(func=profile_show)
+
+    px = verbs.add_parser("pixelize", help="downscale one frame with CPU PixelOE")
+    px.add_argument("input", type=Path, metavar="IN.png")
+    px.add_argument("output", type=Path, metavar="OUT.png")
+    px.add_argument("--scale", type=int, required=True)
+    px.add_argument("--method", choices=("k_centroid", "contrast", "nearest"), default="k_centroid")
+    px.add_argument("--thickness", type=int, default=0)
+    px.add_argument("--bg", default="#ff00ff", help="#rrggbb background for alpha compositing")
+    px.set_defaults(func=pixelize_frame)
     return p
 
 
@@ -45,6 +54,36 @@ def profile_check(args: argparse.Namespace) -> int:
 def profile_show(args: argparse.Namespace) -> int:
     spec = load_profile(args.file).character(args.character, cell=args.cell)
     print(json.dumps(dataclasses.asdict(spec), indent=2, default=str))
+    return 0
+
+
+def pixelize_frame(args: argparse.Namespace) -> int:
+    """Read one frame, composite alpha over the key, and exclusively create an RGB PNG."""
+    import re
+
+    import numpy as np
+    from PIL import Image, ImageColor
+
+    from sonoranlab.pixelize import pixelize
+
+    try:
+        if args.input.resolve() == args.output.resolve():
+            raise ValueError("OUT must differ from IN; raw inputs cannot be overwritten")
+        if args.output.exists():
+            raise ValueError(f"OUT already exists: {args.output}")
+        if not re.fullmatch(r"#[0-9a-fA-F]{6}", args.bg):
+            raise ValueError("--bg must be a #rrggbb colour")
+        bg = np.array(ImageColor.getrgb(args.bg), np.float32)
+        with Image.open(args.input) as im:
+            rgba = np.asarray(im.convert("RGBA")).astype(np.float32)
+        weight = rgba[..., 3:] / 255
+        rgb = np.rint(rgba[..., :3] * weight + bg * (1 - weight)).astype(np.uint8)
+        result = pixelize(rgb, args.scale, method=args.method, thickness=args.thickness)
+        with args.output.open("xb") as out:
+            Image.fromarray(result).save(out, format="PNG")
+    except (OSError, ValueError) as e:
+        print(f"pixelize: {e}", file=sys.stderr)
+        return 2
     return 0
 
 
