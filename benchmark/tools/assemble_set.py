@@ -93,7 +93,7 @@ def main(argv: list[str] | None = None) -> int:
             if manifest["job"] != f"{a.results.name}/{relative}":
                 raise ValueError(f"manifest job does not match attempt directory: {manifest_path}")
             attempt = {"job": manifest["job"], "dir": relative, "part": part, "retry": retry,
-                       "exit_code": manifest["exit_code"], "wall_s": manifest["run"]["wall_s"],
+                       "exit_code": manifest["exit_code"], "wall_s": (manifest.get("run") or {}).get("wall_s"),
                        "manifest_sha256": hashlib.sha256(manifest_bytes).hexdigest(), "selected": False}
             attempts.append(attempt)
             if attempt["exit_code"] == 0:
