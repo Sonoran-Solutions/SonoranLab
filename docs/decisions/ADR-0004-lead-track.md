@@ -1,7 +1,8 @@
 # ADR-0004 — Lead generation track
 
-**Status:** proposed, 2026-10-18. Accepted once the owner's 1× review fills the human columns of
-`benchmark/scoring.csv` and confirms the headline below.
+**Status:** accepted (2026-10-19, owner 1× review). Owner, on the review: Tracks C and E look mostly similar except
+oathguard, which wasn't good in C; they prefer E, mainly for its faster speed, and are close to approving the sets for
+use in the game.
 
 ## Context
 
@@ -26,16 +27,26 @@ and [`benchmark/scoring.csv`](../../benchmark/scoring.csv). The raw data, manife
 Headline, in minutes from "go" to a usable run cycle (generation + processing + human cleanup). Characters #1 and
 #2 decide; #3 is recorded.
 
+Owner usable rate (sets rated usable / sets reviewed): **E 12/12** (samurai 4/4, oathguard 4/4, relay_sentinel
+4/4); **C samurai 2/2, C oathguard 0/2**; A 0/6; B 0/12. The owner did not time cleanup: the cleanup column is empty
+and the E headline below is generation plus processing.
+
 | track | samurai (#1) | oathguard (#2) | relay_sentinel (#3) |
 |---|---|---|---|
-| A | out: format can't ship (4-dir 32×48 grid), no-ship license | out | out |
-| B | out: format can't ship (4-dir 32×32 grid), no-ship license | out | out |
-| C | **out**: 48.0 min (median) of generation before cleanup; N/S need full redraws, so it exceeds the 60-minute rule | out: identity drift (a new face per frame) | n/a |
-| E | 15.9 gen (median of 4 seeds, range 15.6–16.1) + ~1 processing + _cleanup: owner review_ | 13.8 + ~1 + _owner_ | 9.3 + ~1 + _owner_ |
+| A | out: format can't ship (4-dir 32×48 grid), no-ship license; 0/2 usable | out, 0/2 | out, 0/2 |
+| B | out: format can't ship (4-dir 32×32 grid), no-ship license; 0/4 usable | out, 0/4 | out, 0/4 |
+| C | owner rated 2/2 usable, but **48.0 min (median) of generation** for locomotion, 3× E | **out**: 0/2, identity drift (a new face per frame) | n/a |
+| E | **≈17 min** (15.9 gen, median of 4 seeds, range 15.6–16.1, + ~1 processing; owner: usable, cleanup not timed) | **≈15 min** (13.8 + ~1), 4/4 usable | **≈10 min** (9.3 + ~1), 4/4 usable |
 
-_Agent estimate, before owner review, for E samurai: 15–30 min of cleanup (re-placing the katana in about 6–10 frames,
-removing the green cast on metal, one NE facing fix by regenerating that direction). That puts the total at roughly
-32–47 min, under 60. If the owner's review disagrees, the owner's numbers decide._
+**GO for Phase 2.** E is well inside the 60-minute rule for character #1 (≈17 min plus untimed cleanup), with a 100%
+owner-usable rate across 3 characters × 4 seeds.
+
+The white "papercraft" sticker border the owner noted as missing is **drawn at runtime by the game's
+`PixelStandee.gdshader`**: a 1 px dark keyline plus a 1 px white border around the alpha mask. It is not baked into
+shipped sheets (91% of the shipped samurai silhouette edge is dark outline). Generated frames rendered through that
+shader logic get the identical border (orchestrator check, 2026-10-19). The profile keeps `baked_border: forbidden`
+and the 2 px transparent margin the shader needs. Phase 2 contact sheets render through the same border logic, so
+reviews look like the game.
 
 What was cut, and why:
 - **A/B:** the format can't ship into this game; svntax licensing is experimental/no-ship. Kept as the speed floor.

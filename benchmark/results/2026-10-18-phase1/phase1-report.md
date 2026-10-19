@@ -1,4 +1,4 @@
-# Phase 1 benchmark report — 2026-10-18 (DRAFT: owner review pending)
+# Phase 1 benchmark report — 2026-10-18 (owner-reviewed 2026-10-19: GO)
 
 Scope: DYL-70 … DYL-78 and DYL-97 (Linear project "Sonoran Lab", milestone "Phase 1 — Five-track benchmark").
 Decision record: [ADR-0004](../../../docs/decisions/ADR-0004-lead-track.md). Scoring sheet: [`benchmark/scoring.csv`](../../scoring.csv).
@@ -99,6 +99,24 @@ these are outside scoring.csv.
 Result: the green/yellow cast on the steel armour and blades is **gone** in Wan's raw frames, and BiRefNet mattes the
 grey cleanly. One side effect: the samurai NE grey clip sometimes shows a second katana. With n = 2 clips this confirms
 the direction; it isn't a sweep. Recommendation: Phase 3 generates Track E on neutral grey.
+
+## Owner review (2026-10-19, 1× on the local review page)
+
+| track | usable (owner) |
+|---|---|
+| E | **12/12**: samurai 4/4, oathguard 4/4, relay_sentinel 4/4 |
+| C | samurai 2/2, oathguard 0/2 |
+| A / B | 0/6, 0/12 |
+
+- **Owner:** C and E look mostly similar except oathguard, which wasn't good in C. The owner prefers E, mainly for speed,
+  and is close to approving the sets for use in the game. The main gap they named is the missing white papercraft
+  outline.
+- **That outline is drawn by the game's `PixelStandee.gdshader` at runtime** (1 px dark keyline + 1 px white border
+  from the alpha mask), not baked into sheets. Generated frames rendered through that shader logic get the same border
+  as shipped frames. The local preview is `~/sonoranlab-work/benchmark/review-2026-10-18/standee_preview.png`.
+- **Cleanup minutes were not timed**, so the E headline is generation + processing: samurai ≈17 min, oathguard ≈15,
+  relay_sentinel ≈10.
+- **Decision:** ADR-0004 accepted; **GO for Phase 2**.
 
 ## Safety and operations (DYL-97 + follow-ups, PRs #6 and #12)
 
