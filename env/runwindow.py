@@ -343,7 +343,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--max-psi", type=float, default=10.0, help="refuse if memory PSI some avg10 is above this")
     ap.add_argument("--allow-pause", action="append", default=[], metavar="UNIT", help="user unit you approve pausing")
     ap.add_argument("--settle-s", type=float, default=30.0, help="wait this long for memory to free after pausing")
-    ap.add_argument("--started-settle-s", type=float, default=120.0,
+    ap.add_argument("--started-settle-s", type=float, default=60.0,
                     help="before the preflight, wait until approved units have been active this long (model reloads)")
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--restore", action="store_true", help="restore units left paused by a killed run, then exit")
