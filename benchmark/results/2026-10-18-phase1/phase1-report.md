@@ -1,4 +1,4 @@
-# Phase 1 benchmark report — 2026-10-18 (owner-reviewed 2026-10-19; lead E owner-approved; 60-minute criterion not yet demonstrated)
+# Phase 1 benchmark report — 2026-10-18 (owner-reviewed 2026-10-19; lead E owner-approved; 60-minute criterion waived by owner exception, not met)
 
 Scope: DYL-70 … DYL-78 and DYL-97 (Linear project "Sonoran Lab", milestone "Phase 1 — Five-track benchmark").
 Decision record: [ADR-0004](../../../docs/decisions/ADR-0004-lead-track.md). Scoring sheet: [`benchmark/scoring.csv`](../../scoring.csv).
@@ -117,9 +117,10 @@ the direction; it isn't a sweep. Recommendation: Phase 3 generates Track E on ne
 - **Cleanup minutes were not timed**, so the end-to-end headline (generation + processing + cleanup ≤ 60 min) is not
   demonstrated. E's measured part is generation (samurai 15.9 min median) plus processing; that is headroom, not
   compliance.
-- **Decision (ADR-0004):** owner-approved lead selection E. The recommendation is to proceed to Phase 2 with the
-  validation limitations carried forward. Open: a timed cleanup on one representative E samurai set, unless the owner
-  records an explicit exception.
+- **Decision (ADR-0004):** owner-approved lead selection E. On 2026-10-19 the owner recorded an **explicit exception**
+  to the 60-minute end-to-end criterion instead of timing a cleanup. The criterion is waived, not met. The E validator
+  failures (humanoid bbox drift / foot slide, sentinel hover foot slide) are carried forward to Phase 2 as named open
+  items, and cleanup time is to be measured on the first Phase 3 production run.
 
 ## Evidence regeneration (2026-10-19, after senior review; no new inference)
 
