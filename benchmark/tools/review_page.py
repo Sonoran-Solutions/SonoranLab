@@ -5,12 +5,18 @@ playing at the clip fps, at true 1x and 3x (nearest), next to column 0 (the ship
 usable rubric (benchmark/characters/2026-10-18.yaml). Answers autosave in the browser and export as review.json,
 which benchmark/tools/score.py --review reads. The page references the sheets by relative path; nothing is uploaded.
 
+Sets come from SET dirs (SET/selection.json + SET/processed/sheet.png, see benchmark/tools/README.md). Each set's sheet
+sha256 is shown on the page and exported as "artifact_sha256" with the answers, so score.py can tell a review of the
+current artifact (bound) from one of an older sheet (stale). Answers keep the hash of the sheet that was on screen when
+they were typed. Directories without selection.json fall back to the old path rules (their reviews score as stale).
+
     uv run --no-project python -I benchmark/tools/review_page.py ~/sonoranlab-work/benchmark/results/2026-10-18 \
       ~/sonoranlab-work/benchmark/review-2026-10-18
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import sys
@@ -21,7 +27,29 @@ CLIP = {"samurai": (184, 7, 10), "oathguard": (176, 6, 10), "relay_sentinel": (1
 GRID = {"A": (48, 3, 6), "B": (32, 3, 6)}   # svntax walk columns, cell after /4, fps for a 3-frame walk
 
 
+def sha256(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
 def find_sets(date_dir: Path) -> list[dict]:
+    """Assembled sets (selection.json + processed/sheet.png) first, then legacy processed dirs for the rest."""
+    sets, seen = [], set()
+    for sel in sorted(date_dir.rglob("selection.json")):
+        sheet = sel.parent / "processed" / "sheet.png"
+        s = json.loads(sel.read_text())
+        track, char, seed, variant = s["track"], s["character"], str(s["seed"]), s.get("variant") or ""
+        if not sheet.exists() or track not in "ABCE" or char not in CLIP:
+            continue
+        cell, frames, fps = GRID[track] if track in "AB" else CLIP[char]
+        key = "/".join(x for x in (track, char, seed, variant) if x)
+        seen.add(key)
+        sets.append({"key": key, "track": track, "char": char, "seed": seed, "sheet": str(sheet), "cell": cell,
+                     "frames": frames, "fps": fps, "rows": ROWS, "sha256": sha256(sheet)})
+    sets += [s for s in find_legacy_sets(date_dir) if s["key"] not in seen]
+    return sets
+
+
+def find_legacy_sets(date_dir: Path) -> list[dict]:
     sets = []
     for sheet in sorted(date_dir.rglob("sheet.png")):
         rel = sheet.relative_to(date_dir).parts
@@ -40,7 +68,7 @@ def find_sets(date_dir: Path) -> list[dict]:
         cell, frames, fps = GRID[track] if track in "AB" else CLIP[char]
         key = "/".join(x for x in (track, char, seed, variant) if x)
         sets.append({"key": key, "track": track, "char": char, "seed": seed, "sheet": str(sheet), "cell": cell,
-                     "frames": frames, "fps": fps, "rows": ROWS})
+                     "frames": frames, "fps": fps, "rows": ROWS, "sha256": sha256(sheet)})
     return sets
 
 
@@ -73,7 +101,10 @@ function save(){ try { localStorage.setItem(KEY, JSON.stringify(store)); documen
 const root = document.getElementById('sets');
 for (const s of SETS) {
   const div = document.createElement('div'); div.className = 'set';
-  div.innerHTML = `<b>${s.key}</b> <span class="rub">${s.frames} frames @ ${s.fps} fps, cell ${s.cell}</span>`;
+  const v = store[s.key] || {};
+  const stale = v.artifact_sha256 && v.artifact_sha256 !== s.sha256;
+  div.innerHTML = `<b>${s.key}</b> <span class="rub">${s.frames} frames @ ${s.fps} fps, cell ${s.cell}, sheet sha256 ${s.sha256.slice(0, 12)}</span>` +
+    (stale ? ` <b style="color:#ff9d5c">answers below were typed for sheet ${v.artifact_sha256.slice(0, 12)}, not this one: re-check, then edit any field to rebind</b>` : '');
   const img = new Image(); img.src = s.rel;
   const cans = [];
   for (const [dir, row] of Object.entries(s.rows)) {
@@ -92,7 +123,6 @@ for (const s of SETS) {
     }
     f++;
   }, 1000 / s.fps);
-  const v = store[s.key] || {};
   const form = document.createElement('form');
   form.innerHTML = `
    <label>usable<select name="usable"><option></option><option>yes</option><option>no</option></select></label>
@@ -101,7 +131,7 @@ for (const s of SETS) {
    <label>back_row_accessories_kept<input name="back_row_accessories_kept" placeholder="katana:yes,shield:no"></label>
    <label style="grid-column:1/-1">notes<textarea name="notes" rows="2"></textarea></label>`;
   for (const el of form.elements) { if (v[el.name] !== undefined) el.value = v[el.name];
-    el.addEventListener('input', () => { store[s.key] = Object.fromEntries(new FormData(form)); save(); }); }
+    el.addEventListener('input', () => { store[s.key] = {...Object.fromEntries(new FormData(form)), artifact_sha256: s.sha256}; save(); }); }
   div.appendChild(form); root.appendChild(div);
 }
 function exportJson(){
