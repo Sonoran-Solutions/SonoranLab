@@ -1,8 +1,9 @@
 # ADR-0004 — Lead generation track
 
-**Status:** owner-approved lead selection: **E** (2026-10-19). Recommended to proceed to Phase 2 with the validation
-limitations below carried forward. **Compliance with the original end-to-end 60-minute criterion has not yet been
-demonstrated**: cleanup was not timed and no Track E set passes both the validator and the human review.
+**Status:** owner-approved lead selection: **E** (2026-10-19). Phase 1 closes under an **explicit owner-approved
+exception** to the 60-minute end-to-end criterion (see "Owner exception" below). The criterion was **waived, not
+met**: cleanup was not timed, and only one Track E set (relay_sentinel seed 2) passes both the validator and the human
+review. The validator failures are carried forward to Phase 2 as named open items.
 
 Owner, on the 1× review: Tracks C and E look mostly similar except oathguard, which wasn't good in C; they prefer E,
 mainly for its faster speed, and are close to approving the sets for use in the game.
@@ -55,14 +56,45 @@ attempts are listed separately in scoring.csv):
 | C | 48.0: out for locomotion (no front/back run) | 39.3: out (identity drift, a new face per frame) | n/a |
 | E | 15.9 | 13.8 | 9.3 |
 
-### Limitations carried into Phase 2 (open items)
+### Owner exception to the 60-minute criterion
 
-1. **Timed cleanup on one representative E samurai set**, to close the 60-minute criterion, unless the owner records an
-   explicit exception to it.
-2. **E validator failures:** weapon/shield-driven bbox drift and foot offsets. Phase 2's validator and Phase 3's
-   weapon-retention work must bring a humanoid E set to a validator pass.
-3. **E failure modes seen in review:** weapon flicker/loss, NE facing drift, the magenta-induced green cast (fixed on
-   a grey background in a 2-clip test).
+On 2026-10-19 the owner chose, in the orchestrator session, to "record an explicit owner-approved exception to the
+60-minute criterion in ADR-0004, with the validator failures carried forward to Phase 2", in preference to timing a
+cleanup.
+
+- **What is waived:** PLAN.md's and ADR-0007's requirement that the lead's best character-#1 run reaches a usable run
+  cycle (validator **and** human pass) within 60 minutes of generation + processing + **timed** cleanup.
+- **What it rests on:**
+  - the owner's 1× visual review (E 12/12 human-usable);
+  - their stated near-approval for in-game use;
+  - E's measured generation time (15.9 min median for samurai, about 43 min under the cut-off before cleanup).
+- **What it does not claim:** that E met the criterion. No cleanup time was measured. The scorecard keeps
+  `cleanup_minutes` empty and `usable` (combined) at E 1/12.
+- **Scope:** Phase 1's gate only. Phase 2/3 acceptance uses the rubric as written unless the owner records another
+  exception.
+
+### Validation failures carried forward to Phase 2
+
+Validator results for every Track E set (bound reports in `set/processed/report.json`, processing-v1):
+
+| set | result | failures |
+|---|---|---|
+| samurai 1 / 2 / 3 / 4 | FAIL | bbox_drift 2 / 5 / 6 / 5; foot_slide 1 each |
+| oathguard 1 / 2 / 3 / 4 | FAIL | bbox_drift 6 / 7 / 8 / 5; foot_slide 1 / 3 / 1 / 1 |
+| relay_sentinel 1 / 3 / 4 | FAIL | foot_slide 2 each (hover, bbox_bottom anchor) |
+| relay_sentinel 2 | pass | none |
+
+Open items for Phase 2 and Phase 3:
+1. **Humanoid bbox drift and foot slide** come from the weapon and shield swing exceeding the shipped-clip limits
+   (samurai 16 px / 30 px, oathguard 8 px / 20 px). Phase 2's validator (DYL-83) must keep these checks and report
+   them per frame. Phase 3's E adapter must bring at least one humanoid set to a validator pass: weapon-retention
+   seed selection, or a C-posed first frame. Alternatively, a recorded decision that these limits are wrong for
+   weapon-bearing runs.
+2. **relay_sentinel foot slide** on the east hover (`bbox_bottom` anchor). Check in Phase 2 whether that metric is
+   meaningful for a floating subject.
+3. **E failure modes seen in review:** weapon flicker/loss, NE facing drift, and the magenta-induced green cast (fixed
+   on a grey background in a 2-clip test; grey is the Phase 3 default).
+4. **Cleanup time** is still unmeasured. Time it on the first Phase 3 production run.
 
 The white "papercraft" sticker border the owner noted as missing is **drawn at runtime by the game's
 `PixelStandee.gdshader`**: a 1 px dark keyline plus a 1 px white border around the alpha mask. It is not baked into
