@@ -139,6 +139,32 @@ def systemctl(*args: str) -> subprocess.CompletedProcess:
     return subprocess.run([*SYSTEMCTL, *args], capture_output=True, text=True)
 
 
+def active_for_s(unit: str) -> float | None:
+    """Seconds since the unit last became active (systemd's monotonic clock = CLOCK_MONOTONIC), None if not active."""
+    r = systemctl("show", "-p", "ActiveEnterTimestampMonotonic", "--value", unit)
+    try:
+        usec = int(r.stdout.strip())
+    except ValueError:
+        return None
+    return time.monotonic() - usec / 1e6 if usec > 0 and is_active(unit) else None
+
+
+def wait_started_units_settle(units: set[str], settle_s: float) -> None:
+    """Block until every active approved unit has been up for settle_s.
+
+    A unit that just (re)started may still be loading its model: MemAvailable read now would count memory it is
+    about to take. 2026-10-18: a window restored llama-gemory, the next window's preflight ran 9 s later, saw 77.5
+    GiB "available", skipped the pause, and llama-gemory's 19.5 GiB reload drove MemAvailable to 2.9 GiB until the
+    container's cgroup cap OOM-killed ComfyUI."""
+    while True:
+        young = {u: t for u in units if (t := active_for_s(u)) is not None and t < settle_s}
+        if not young:
+            return
+        wait = settle_s - min(young.values())
+        log(f"waiting {wait:.0f} s for recently started {sorted(young)} to finish loading before the preflight")
+        time.sleep(min(max(wait, 0.5), 5))
+
+
 def is_active(unit: str) -> bool:
     return systemctl("is-active", unit).stdout.strip() == "active"
 
@@ -317,6 +343,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--max-psi", type=float, default=10.0, help="refuse if memory PSI some avg10 is above this")
     ap.add_argument("--allow-pause", action="append", default=[], metavar="UNIT", help="user unit you approve pausing")
     ap.add_argument("--settle-s", type=float, default=30.0, help="wait this long for memory to free after pausing")
+    ap.add_argument("--started-settle-s", type=float, default=120.0,
+                    help="before the preflight, wait until approved units have been active this long (model reloads)")
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--restore", action="store_true", help="restore units left paused by a killed run, then exit")
     ap.add_argument("--drain-s", type=float, default=1800.0,
@@ -340,6 +368,7 @@ def main(argv: list[str] | None = None) -> int:
         log("could not restore units from a previous interrupted run; refusing")
         return 3
 
+    wait_started_units_settle({norm(u) for u in a.allow_pause}, a.started_settle_s)
     own = a.own_cgroup if a.own_cgroup is not None else own_container_cgroup()
     p = plan(int(a.need_gib * GIB), int(a.margin_gib * GIB), a.max_psi, {norm(u) for u in a.allow_pause}, own)
     print(json.dumps({"preflight": p}, default=str), file=sys.stderr, flush=True)

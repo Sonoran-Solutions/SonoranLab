@@ -5,6 +5,7 @@ import os
 import signal
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -19,6 +20,7 @@ FAKE_SYSTEMCTL = r"""#!/usr/bin/env bash
 echo "$*" >> "$FAKE/calls"
 f="$FAKE/units/$2"
 case "$1" in
+  show) cat "$FAKE/started_${@: -1}" 2>/dev/null || echo 0 ;;   # ActiveEnterTimestampMonotonic (usec) of the last arg
   is-active) s=$(cat "$f" 2>/dev/null || echo inactive); echo "$s"; [ "$s" = active ] ;;
   stop) [ -f "$FAKE/slow_stop" ] && { touch "$FAKE/stopping"; sleep 2; }
         echo inactive > "$f"; [ -f "$FAKE/free_on_stop" ] && cp "$FAKE/free_on_stop" "$FAKE/proc/meminfo"
@@ -524,3 +526,36 @@ def test_unreadable_gtt_gives_no_credit(fake):
     (fake.root / "free_on_stop").write_text(meminfo(42))
     r = fake.run("--need-gib", "52", "--allow-pause", "llama-gemory", *marker_cmd(fake.root / "ran"))
     assert r.returncode == 3 and not (fake.root / "ran").exists()
+
+
+# --- preflight waits for recently (re)started approved units (2026-10-18 race) --------------------------------
+
+
+def test_preflight_waits_for_a_just_restarted_unit_to_reload(fake):
+    fake.unit("llama-gemory.service", "active")
+    (fake.root / "started_llama-gemory.service").write_text(str(int(time.monotonic() * 1e6)))   # restarted just now
+    (fake.root / "proc" / "meminfo").write_text(meminfo(80))      # model not loaded yet: memory looks free
+    (fake.root / "free_on_stop").write_text(meminfo(70))
+
+    def reload():                                                   # 1 s later the model is back in GTT
+        time.sleep(1)
+        fake.holder(100, "llama-gemory.service", 20)
+        (fake.root / "proc" / "meminfo").write_text(meminfo(50))
+
+    t = threading.Thread(target=reload)
+    t.start()
+    r = fake.run("--need-gib", "52", "--allow-pause", "llama-gemory", "--started-settle-s", "2.5",
+                 *marker_cmd(fake.root / "ran"))
+    t.join()
+    assert r.returncode == 0, r.stderr
+    assert "waiting" in r.stderr and "recently started" in r.stderr
+    assert "stop llama-gemory.service" in fake.calls()               # old code ran at 80 GiB without pausing
+
+
+def test_long_running_unit_does_not_delay_the_preflight(fake):
+    fake.holder(100, "llama-gemory.service", 19)
+    fake.unit("llama-gemory.service", "active")
+    (fake.root / "started_llama-gemory.service").write_text(str(int((time.monotonic() - 3600) * 1e6)))
+    t0 = time.monotonic()
+    r = fake.run("--need-gib", "20", "--margin-gib", "4", "--allow-pause", "llama-gemory", *marker_cmd(fake.root / "ran"))
+    assert r.returncode == 0 and time.monotonic() - t0 < 10 and "recently started" not in r.stderr
