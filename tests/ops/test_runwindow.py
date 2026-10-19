@@ -28,10 +28,12 @@ esac
 
 
 FAKE_PODMAN = r"""#!/usr/bin/env bash
-# sonoranlab-comfy exists/running iff $FAKE/container exists; /queue body from $FAKE/queue (absent = curl fails)
+# sonoranlab-comfy exists iff $FAKE/container exists; its .State.Status from $FAKE/status (default running);
+# /queue body from $FAKE/queue (absent = curl fails). $FAKE/exists_rc / $FAKE/inspect_rc inject podman errors.
 case "$1" in
-  container) [ -f "$FAKE/container" ] ;;
-  inspect) echo true ;;
+  container) [ -f "$FAKE/exists_rc" ] && exit "$(cat "$FAKE/exists_rc")"; [ -f "$FAKE/container" ] ;;
+  inspect) [ -f "$FAKE/inspect_rc" ] && { echo "Error: boom" >&2; exit "$(cat "$FAKE/inspect_rc")"; }
+           cat "$FAKE/status" 2>/dev/null || echo running ;;
   exec) [ -f "$FAKE/queue" ] && cat "$FAKE/queue" || exit 7 ;;
 esac
 """
@@ -83,8 +85,12 @@ def fake(tmp_path):
         def state(self):
             return (tmp_path / "units" / "llama-gemory.service").read_text().strip()
 
-        def window(self, script, *extra):
-            """Start a guarded run in its own session that pauses llama-gemory; returns once the command started."""
+        def window(self, script, *extra, submits_prompt=False):
+            """Start a guarded run in its own session that pauses llama-gemory; returns once the command started.
+            submits_prompt: the command leaves a running prompt in the (idle at preflight) container."""
+            if submits_prompt:
+                self.container(IDLE)
+                script = f"echo '{BUSY}' > {tmp_path}/queue; {script}"
             self.holder(100, "llama-gemory.service", 25)
             self.unit("llama-gemory.service", "active")
             (tmp_path / "free_on_stop").write_text(meminfo(70))
@@ -307,8 +313,7 @@ def test_restore_after_killed_window_proceeds(fake):
 
 
 def test_ctrl_c_with_container_job_still_running_keeps_unit_stopped(fake):
-    fake.container(BUSY)                                   # the ComfyUI prompt outlives the host-side client
-    p = fake.window("sleep 30")
+    p = fake.window("sleep 30", submits_prompt=True)        # the ComfyUI prompt outlives the host-side client
     os.killpg(p.pid, signal.SIGINT)                         # terminal Ctrl-C hits the whole process group
     _, err = p.communicate(timeout=30)
     assert p.returncode != 0
@@ -321,8 +326,7 @@ def test_ctrl_c_with_container_job_still_running_keeps_unit_stopped(fake):
 
 
 def test_restore_waits_for_container_job_to_drain(fake):
-    fake.container(BUSY)
-    p = fake.window("true")
+    p = fake.window("true", submits_prompt=True)
     time.sleep(1)
     fake.container(IDLE)                                    # job finishes during the drain wait
     _, err = p.communicate(timeout=30)
@@ -372,8 +376,8 @@ def test_signal_during_slow_stop_is_still_restored(fake):
 
 
 def test_second_signal_does_not_abort_restore(fake):
-    fake.container(BUSY)
-    p = fake.window("sleep 30", "--drain-s", "4")
+    p = fake.window("sleep 30", "--drain-s", "4", submits_prompt=True)
+    assert fake.state() == "inactive"                       # the window really paused the unit
     p.send_signal(signal.SIGTERM)                           # first signal: forwarded to the command
     time.sleep(1)
     fake.container(IDLE)
@@ -387,3 +391,90 @@ def test_corrupt_state_file_fails_closed_with_guidance(fake):
     (fake.root / "work" / "runwindow.state.json").write_text("{not json")
     r = fake.run("--restore")
     assert r.returncode == 1 and "unreadable" in r.stderr and "Traceback" not in r.stderr
+
+
+# --- queue lifecycle (DYL-97): preflight queue check, drain even with nothing paused --------------------------
+
+
+def test_preflight_refuses_while_orphaned_prompt_runs(fake):
+    (fake.root / "proc" / "meminfo").write_text(meminfo(100))   # memory alone would say "fits"
+    fake.container(BUSY)                                         # prompt left behind by a killed client
+    r = fake.run("--need-gib", "20", *marker_cmd(fake.root / "ran"))
+    assert r.returncode == 3 and not (fake.root / "ran").exists()
+    assert "overlap" in r.stderr
+    assert fake.run("--need-gib", "20", "--dry-run").returncode == 3
+    fake.container(None)                                         # running but queue unreadable: fail closed
+    assert fake.run("--need-gib", "20", *marker_cmd(fake.root / "ran")).returncode == 3
+    fake.container(IDLE)
+    assert fake.run("--need-gib", "20", *marker_cmd(fake.root / "ran")).returncode == 0
+    assert (fake.root / "ran").exists()
+
+
+def test_window_without_pauses_still_drains_before_exiting(fake):
+    (fake.root / "proc" / "meminfo").write_text(meminfo(100))
+    fake.container(IDLE)
+    # The command exits but leaves its prompt running in the container (as an interrupted client would).
+    p = subprocess.Popen([sys.executable, str(RUNWINDOW), "--own-cgroup", "", "--need-gib", "20", "--drain-s", "10",
+                          "--", "bash", "-c", f"echo '{BUSY}' > {fake.root}/queue; touch {fake.root}/started"],
+                         env=fake.environ, stderr=subprocess.PIPE, text=True)
+    for _ in range(100):
+        if (fake.root / "started").exists():
+            break
+        time.sleep(0.1)
+    time.sleep(1)
+    assert p.poll() is None                                      # still owns the window while the prompt runs
+    assert fake.run("--need-gib", "20", *marker_cmd(fake.root / "ran")).returncode == 4
+    fake.container(IDLE)
+    _, err = p.communicate(timeout=30)
+    assert p.returncode == 0, err
+    assert "waiting up to" in err
+    assert not any(c.startswith(("stop", "start")) for c in fake.calls())
+
+
+def test_window_without_pauses_that_never_drains_fails_and_blocks_next_run(fake):
+    (fake.root / "proc" / "meminfo").write_text(meminfo(100))
+    fake.container(IDLE)
+    r = fake.run("--need-gib", "20", "--", "bash", "-c", f"echo '{BUSY}' > {fake.root}/queue")
+    assert r.returncode == 1 and "New run windows refuse" in r.stderr
+    r = fake.run("--need-gib", "20", *marker_cmd(fake.root / "ran"))
+    assert r.returncode == 3 and not (fake.root / "ran").exists()
+
+
+# --- fail-closed container inspection (DYL-97) ----------------------------------------------------------------
+
+
+@pytest.mark.parametrize("setup", ["exists_rc=125", "inspect_rc=125", "status=paused", "status=stopping",
+                                   "status=removing", "status=", "podman_missing"])
+def test_unconfirmed_container_state_refuses(fake, setup):
+    (fake.root / "proc" / "meminfo").write_text(meminfo(100))
+    fake.container(IDLE)                                         # even an idle queue must not be reached
+    env = dict(fake.environ)
+    if setup == "podman_missing":
+        env["SONORANLAB_PODMAN"] = str(fake.root / "no-such-podman")
+    else:
+        key, val = setup.split("=")
+        (fake.root / key).write_text(val)
+    r = subprocess.run([sys.executable, str(RUNWINDOW), "--own-cgroup", "", "--need-gib", "20", "--drain-s", "1",
+                        *marker_cmd(fake.root / "ran")], env=env, capture_output=True, text=True, timeout=30)
+    assert r.returncode == 3, r.stderr
+    assert not (fake.root / "ran").exists()
+
+
+@pytest.mark.parametrize("status", ["exited", "stopped", "created", "configured"])
+def test_confirmed_stopped_container_is_idle(fake, status):
+    (fake.root / "proc" / "meminfo").write_text(meminfo(100))
+    fake.container(None)                                         # queue unreadable, but nothing is running
+    (fake.root / "status").write_text(status)
+    r = fake.run("--need-gib", "20", *marker_cmd(fake.root / "ran"))
+    assert r.returncode == 0, r.stderr
+
+
+def test_restore_keeps_units_stopped_when_podman_errors(fake):
+    fake.unit("llama-gemory.service", "inactive")
+    (fake.root / "work").mkdir()
+    (fake.root / "work" / "runwindow.state.json").write_text(json.dumps({"paused": ["llama-gemory.service"]}))
+    (fake.root / "exists_rc").write_text("125")                  # e.g. podman storage locked / broken
+    assert fake.run("--restore").returncode == 1
+    assert fake.state() == "inactive"
+    (fake.root / "exists_rc").unlink()                           # confirmed absent: safe
+    assert fake.run("--restore").returncode == 0 and fake.state() == "active"

@@ -1,5 +1,6 @@
-# Regression tests for the Phase 0 operational tooling (env/*.py, env/*.sh). They use fake /proc, systemctl,
-# podman and ComfyUI, so they need no GPU, models or network services.
+# Phase 0/1 tests: ops tooling (env/*.py, env/*.sh) with fake /proc, systemctl, podman and ComfyUI; the benchmark
+# processing/scoring/runner tests on synthetic fixtures; the Godot rig bake test, which reports SKIPPED here (no Godot,
+# compositor or rig on the runner). No GPU, models or network services are needed. -rs prints every skip reason.
 name: ops-tests
 on:
   pull_request:
@@ -10,12 +11,14 @@ permissions:
 jobs:
   tests:
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: python -m pip install pytest==9.1.1
+      - run: python -m pip install pytest==9.1.1 pyyaml==6.0.2 pillow==13.0.0 numpy==2.5.4
+      - run: python -m pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+      - run: python -m pip install pixeloe==1.0.0
       - run: for f in env/*.sh; do bash -n "$f"; done
-      - run: python -m pytest -q tests/ops
+      - run: python -m pytest -q -rs tests

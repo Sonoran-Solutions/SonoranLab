@@ -5,11 +5,13 @@ Unified memory is shared with the desktop and other AI services; the container's
 systemd-oomd from killing *other* scopes when the host runs out. This wrapper:
 
 1. inventories who holds GPU memory (amdgpu fdinfo, per process, mapped to its systemd unit) and checks
-   MemAvailable and memory pressure (PSI) against what the workload needs;
+   MemAvailable and memory pressure (PSI) against what the workload needs. It also refuses while the sonoranlab-comfy
+   queue is busy (e.g. an orphaned prompt) or the container's state can't be confirmed (podman error = busy);
 2. fails safely (exit 3, nothing stopped, nothing run) when the run does not fit;
 3. pauses only systemd *user* units the caller explicitly approved with --allow-pause, and only if needed;
 4. runs the command, forwarding INT/TERM/HUP to it;
-5. restores every paused unit to its original state afterwards, including on failure and on signals. If this
+5. waits for the container queue to drain before releasing the window, even when nothing was paused, then
+   restores every paused unit to its original state, including on failure and on signals. If this
    process is SIGKILLed, the paused units are listed in a state file and `--restore` (run by recover.sh) brings
    them back.
 
@@ -19,8 +21,10 @@ systemd-oomd from killing *other* scopes when the host runs out. This wrapper:
                                                               # (refuses with exit 4 while any window is live; waits
                                                               #  --drain-s for the container job to finish first)
 
-Exit codes: the command's own code; 3 preflight refused; 4 another run window is active; 128+N on signal N.
-Test hooks: SONORANLAB_PROC (proc root), SONORANLAB_SYSTEMCTL (systemctl command), SONORANLAB_WORK (state dir).
+Exit codes: the command's own code (1 if it was 0 but the queue never drained); 3 preflight refused; 4 another run
+window is active; 128+N on signal N.
+Test hooks: SONORANLAB_PROC (proc root), SONORANLAB_SYSTEMCTL (systemctl command), SONORANLAB_WORK (state dir),
+SONORANLAB_PODMAN (podman command).
 """
 
 from __future__ import annotations
@@ -144,19 +148,39 @@ def save_state(units: list[str]) -> None:
     tmp.replace(STATE)
 
 
+IDLE_STATES = {"created", "configured", "exited", "stopped"}  # podman .State.Status values with no process running
+
+
+def container_state() -> str:
+    """'absent', 'stopped', 'running' or 'unknown'. Only a confirmed answer counts: any podman error, timeout or
+    unexpected state (paused, stopping, removing, ...) is 'unknown', which callers treat as busy."""
+    podman = shlex.split(os.environ.get("SONORANLAB_PODMAN", "podman"))
+    try:
+        rc = subprocess.run([*podman, "container", "exists", "sonoranlab-comfy"], capture_output=True, timeout=15).returncode
+        if rc == 1:   # podman: 0 exists, 1 does not exist, 125 error
+            return "absent"
+        if rc != 0:
+            return "unknown"
+        r = subprocess.run([*podman, "inspect", "-f", "{{.State.Status}}", "sonoranlab-comfy"],
+                           capture_output=True, text=True, timeout=15)
+    except (OSError, subprocess.TimeoutExpired):
+        return "unknown"
+    s = r.stdout.strip() if r.returncode == 0 else ""
+    return "stopped" if s in IDLE_STATES else "running" if s == "running" else "unknown"
+
+
 def container_busy() -> bool:
-    """True if the SonoranLab container has a running/pending ComfyUI job, or is running but can't say (fail closed).
+    """True unless the SonoranLab container is confirmed absent, stopped, or running with an empty queue (fail closed).
 
     The heavy work is a prompt inside the container, which outlives an interrupted host-side client; restoring a
-    paused model service while it still runs would recreate the 2026-10-18 memory exhaustion."""
+    paused model service, or starting another guarded run, while it still runs would recreate the 2026-10-18
+    memory exhaustion."""
     podman = shlex.split(os.environ.get("SONORANLAB_PODMAN", "podman"))
     name = "sonoranlab-comfy"
+    state = container_state()
+    if state != "running":
+        return state == "unknown"
     try:
-        if subprocess.run([*podman, "container", "exists", name], capture_output=True, timeout=15).returncode != 0:
-            return False
-        r = subprocess.run([*podman, "inspect", "-f", "{{.State.Running}}", name], capture_output=True, text=True, timeout=15)
-        if r.stdout.strip() != "true":
-            return False
         r = subprocess.run([*podman, "exec", name, "curl", "-sf", "-m", "5", "http://127.0.0.1:8188/queue"],
                            capture_output=True, text=True, timeout=20)
         q = json.loads(r.stdout) if r.returncode == 0 else None
@@ -185,9 +209,15 @@ def wait_idle(drain_s: float) -> bool:
 
 
 def restore(units: list[str], drain_s: float) -> bool:
+    """Drain the container queue, then restart `units`. Every window ends here, paused units or not."""
     if not wait_idle(drain_s):
-        log(f"WARNING: sonoranlab-comfy still has a running/pending job (or its queue is unreadable); NOT restarting "
-            f"{units}. They stay stopped and recorded in {STATE}; run `python3 env/runwindow.py --restore` once it is idle.")
+        busy = "sonoranlab-comfy still has a running/pending job (or its state/queue can't be read)"
+        if units:
+            log(f"WARNING: {busy}; NOT restarting {units}. They stay stopped and recorded in {STATE}; run "
+                "`python3 env/runwindow.py --restore` once it is idle.")
+        else:
+            log(f"WARNING: {busy} after the command exited. New run windows refuse until it drains; interrupt it "
+                "from the ComfyUI queue if it is an orphan.")
         return False
     ok = True
     for u in units:
@@ -239,6 +269,10 @@ def plan(need: int, margin: int, max_psi: float, allowed: set[str], own: str | N
     p = {"need_gib": need / GIB, "margin_gib": margin / GIB, "available_gib": round(avail / GIB, 2),
          "psi_some_avg10": psi, "holders": [{**h, "gpu_gib": round(h["gpu"] / GIB, 2)} for h in big],
          "pause": [], "ok": False, "reason": ""}
+    if container_busy():
+        p["reason"] = ("sonoranlab-comfy has a running/pending prompt (e.g. an orphan of an interrupted run) or its "
+                       "state/queue can't be read; a second guarded workload must not overlap it")
+        return p
     if psi > max_psi:
         p["reason"] = f"memory pressure some avg10={psi} > {max_psi}: the box is already under pressure"
         return p
@@ -330,9 +364,10 @@ def main(argv: list[str] | None = None) -> int:
                 child.wait(30)
             except subprocess.TimeoutExpired:
                 child.kill()
-        restored = restore(paused, a.drain_s) if paused else True
+        restored = restore(paused, a.drain_s)   # drains even with nothing paused: the window owns its prompt
     if not restored:
-        log("WARNING: some units were not restored; run `python3 env/runwindow.py --restore`")
+        if paused:
+            log("WARNING: some units were not restored; run `python3 env/runwindow.py --restore`")
         return state["rc"] or 1
     return state["rc"]
 

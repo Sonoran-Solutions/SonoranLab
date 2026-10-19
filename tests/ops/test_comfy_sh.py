@@ -10,14 +10,16 @@ REPO = Path(__file__).resolve().parents[2]
 COMFY = REPO / "env" / "comfy.sh"
 
 FAKE_PODMAN = r"""#!/usr/bin/env bash
-# state: $FAKE/exists, $FAKE/running (true/false), $FAKE/queue (JSON or absent = curl fails); calls -> $FAKE/calls
+# state: $FAKE/exists, $FAKE/status (.State.Status), $FAKE/queue (JSON or absent = curl fails); calls -> $FAKE/calls
+# $FAKE/exists_rc / $FAKE/inspect_rc inject podman errors.
 echo "$*" >> "$FAKE/calls"
 case "$1" in
-  container) [ -f "$FAKE/exists" ] ;;
-  inspect) cat "$FAKE/running" 2>/dev/null || echo false ;;
+  container) [ -f "$FAKE/exists_rc" ] && exit "$(cat "$FAKE/exists_rc")"; [ -f "$FAKE/exists" ] ;;
+  inspect) [ -f "$FAKE/inspect_rc" ] && { echo "Error: boom" >&2; exit "$(cat "$FAKE/inspect_rc")"; }
+           cat "$FAKE/status" 2>/dev/null || echo exited ;;
   image) exit 0 ;;
-  rm) rm -f "$FAKE/exists"; echo false > "$FAKE/running" ;;
-  run) touch "$FAKE/exists"; echo true > "$FAKE/running"; echo cid ;;
+  rm) rm -f "$FAKE/exists" "$FAKE/exists_rc" "$FAKE/inspect_rc"; echo exited > "$FAKE/status" ;;
+  run) touch "$FAKE/exists"; echo running > "$FAKE/status"; echo cid ;;
   logs) exit 0 ;;
   exec)
     case "$*" in
@@ -40,7 +42,7 @@ def fake(tmp_path):
 
         def container(self, running: bool, queue: str | None):
             (tmp_path / "exists").write_text("")
-            (tmp_path / "running").write_text("true" if running else "false")
+            (tmp_path / "status").write_text("running" if running else "exited")
             if queue is not None:
                 (tmp_path / "queue").write_text(queue)
 
@@ -124,3 +126,20 @@ def test_up_and_down_refuse_while_a_run_window_holds_the_lock(fake):
         assert r.returncode == 5 and "run window" in r.stderr and not fake.destroyed()
         assert fake.run("down", "--force").returncode == 5 and not fake.destroyed()
     assert fake.run("up", "--replace").returncode == 0 and fake.destroyed()
+
+
+# --- fail-closed container inspection (DYL-97) ----------------------------------------------------------------
+
+
+@pytest.mark.parametrize("setup", ["exists_rc=125", "inspect_rc=125", "status=paused", "status=stopping",
+                                   "status=removing", "status="])
+def test_unconfirmed_state_is_never_treated_as_idle(fake, setup):
+    fake.container(True, IDLE)
+    key, val = setup.split("=")
+    (fake.root / key).write_text(val)
+    for args in (("up",), ("up", "--replace"), ("down",)):
+        r = fake.run(*args)
+        assert r.returncode == 5 and "cannot confirm" in r.stderr, (args, r.stderr)
+    assert not fake.destroyed()
+    assert fake.run("up", "--force").returncode == 0 and fake.destroyed()   # explicit override still works
+
