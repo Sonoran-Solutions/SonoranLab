@@ -65,10 +65,10 @@ Code lands in `sonoranlab/` (Python package) starting in Phase 2. See
 
 ## Status
 
-Pre-code. Phase 0 (environment) has not started. The docs are the deliverable
-right now; they encode a lot of research that would otherwise be re-done, so
-read [docs/02-research-findings.md](docs/02-research-findings.md) before
-changing a model or tool choice.
+Phases 0 (environment) and 1 (benchmark; lead track E, ADR-0004) are done.
+Phase 2, the `sonoranlab` Python package (`uv sync`, `uv run sonoranlab --help`),
+is in progress. Read [docs/02-research-findings.md](docs/02-research-findings.md)
+before changing a model or tool choice.
 
 ## Hardware this is designed for
 

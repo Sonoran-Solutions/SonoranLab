@@ -3,7 +3,8 @@
 #   ~/Projects/TwosAreUp main @ ebf3272, assets/pixel/v0/characters/{characters.json,palette.png,SOURCE.md},
 #   src/Game/PixelStandee.cs, scenes/PixelStandee.gdshader.
 # This repo is public and the game is private: the palette is referenced by path + sha256, never pasted here.
-# Phase 2 (DYL-79) turns this into a schema-checked profile; `sonoranlab profile check` does not exist yet.
+# Schema: sonoranlab/profile.py (DYL-79). Check with `uv run sonoranlab profile check profiles/twos-are-up.yaml`
+# (--no-path-check skips the palette file and the game checkout). Relative paths resolve against this file's directory.
 
 id: twos-are-up
 name: Twos Are Up
@@ -28,8 +29,6 @@ anchor:
   foot_y: cell_minus_4    # lowest opaque row of the clip = cell - 4 (3 empty rows below; engine pivot 3 px up)
   anchor_x: cell_half     # quad is centred horizontally
   registration: per_clip  # the game pivots each clip once (contact frames on foot_y); frames keep their bob
-  max_foot_slide_px: calibrate   # set by DYL-71 from the shipped ground-truth clips before any track is scored
-  max_bbox_drift_px: calibrate
 
 alpha:
   threshold: 128
@@ -48,13 +47,49 @@ directions:
   mirror_right_from_left: false   # superseded by mirror_animations (the game mirrors west from east)
 
 animations:               # names, frame counts and fps as the game's characters.json uses them
-  idle:    {frames: 4, fps: 5,  loop: true}
-  run:     {frames: 6, fps: 10, loop: true,  track_default: pending ADR-0004}
-  attack:  {frames: 8, fps: 12, loop: false}
+  idle:    {frames: 4, fps: 5,  loop: true,  track_default: E}   # ADR-0004: E leads locomotion and the hover idle
+  run:     {frames: 6, fps: 10, loop: true,  track_default: E, template: ../templates/poses/run}   # ADR-0004 lead
+  attack:  {frames: 8, fps: 12, loop: false, track_default: C}   # ADR-0004 held poses; unverified until Phase 6
   cast:    {frames: 8, fps: 10, loop: false}
   death:   {frames: 6, fps: 8,  loop: false, hold_last: true}
   channel: {frames: 8, fps: 8,  loop: false, loop_from: 4}
-  # per-character overrides live in characters.json (e.g. samurai run 7, cleric death 8); no walk or hurt clip exists
+  # no walk or hurt clip exists; per-character overrides go under `characters:` (only for characters SonoranLab
+  # generates; the game's characters.json stays the source for the rest, e.g. cleric death 8)
+
+validator:                # defaults for any character without a row below; no threshold is ever unset
+  label: calibrated `all` row (DYL-71, benchmark/characters/2026-10-18.yaml thresholds_addendum.all)
+  max_foot_slide_px: 30   # gates: generated clips may not move more than the shipped art
+  max_bbox_drift_px: 16
+  opaque_area_cv_warn: 0.13       # warnings
+  loop_closure_ratio_warn: 1.29
+
+# Numbers only. Cells and clip frames match the game's characters.json (and benchmark/characters/2026-10-18.yaml).
+# Gates (foot slide, bbox drift) and anchor_mode: benchmark/characters/2026-10-18-processing-v1.yaml `characters`.
+# Warnings: 2026-10-18.yaml thresholds_addendum.per_character under its confirmed rule, cv = max(observed, 0.10).
+characters:
+  samurai:
+    cell: 184
+    anchor_mode: foot
+    animations: {run: {frames: 7}}
+    max_foot_slide_px: 30
+    max_bbox_drift_px: 16
+    opaque_area_cv_warn: 0.11
+    loop_closure_ratio_warn: 1.18
+  oathguard:
+    cell: 176
+    anchor_mode: foot
+    max_foot_slide_px: 20
+    max_bbox_drift_px: 8
+    opaque_area_cv_warn: 0.13
+    loop_closure_ratio_warn: 1.17
+  relay_sentinel:         # floats: no run clip, its hover idle stands in for locomotion (ADR-0007)
+    cell: 136
+    anchor_mode: bbox_bottom
+    locomotion: idle
+    max_foot_slide_px: 15
+    max_bbox_drift_px: 10
+    opaque_area_cv_warn: 0.10     # observed 0.01, raised to the docs/08 floor by the confirmed rule
+    loop_closure_ratio_warn: 1.29
 
 references:
   style_refs: [samurai, oathguard, relay_sentinel]   # benchmark refs, see benchmark/characters/2026-10-18.yaml
