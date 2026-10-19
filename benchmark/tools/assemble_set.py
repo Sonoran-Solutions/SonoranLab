@@ -22,7 +22,9 @@ from PIL import Image
 
 if __package__:
     from . import select_loop, slice_grid
-else:
+else:  # run as a script, also under `python -I` (which drops the script's directory from sys.path)
+    import sys
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
     import select_loop
     import slice_grid
 
