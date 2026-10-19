@@ -92,6 +92,15 @@ silhouette).
 
 ## Phase 1 benchmark protocol
 
+> **Superseded in part by ADR-0007 (2026-10-18).** The frozen settings are in
+> `benchmark/characters/2026-10-18.yaml`:
+> - the clip is each character's `run` (#3: hover `idle`), over N/NE/E/SE/S with the west side mirrored;
+> - model canvas is cell × 4; registration is per clip;
+> - 4 seeds for C/E and 2 for A/B, smoke-tested on one direction first;
+> - outputs live outside this public repo.
+>
+> The text below is the original protocol.
+
 Characters: three approved Twos Are Up references as listed in `PLAN.md`.
 Animations: `walk_4dir` only (12 frames: 3 per direction for A; 8 per
 direction target for C/E). Seeds: 4 per configuration.
