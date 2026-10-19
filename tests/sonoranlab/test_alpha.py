@@ -92,6 +92,23 @@ def test_despill_parity():
         assert np.array_equal(got, want) and n == m
 
 
+@pytest.mark.parametrize("mode, transparency", [("P", 0), ("P", bytes([0, 128, 255])), ("RGB", RED)])
+def test_extract_alpha_uses_png_transparency(tmp_path, mode, transparency):
+    im = Image.fromarray(np.array([[0, 1, 2]], np.uint8), "P")
+    im.putpalette([*RED, *SKIN, *KEY])
+    if mode == "RGB":
+        im = im.convert("RGB")
+    path = tmp_path / "transparent.png"
+    im.save(path, transparency=transparency)
+    with Image.open(path) as source:
+        assert source.mode == mode
+        rgba = source.convert("RGBA")
+        got = extract_alpha(source, KEY, 48)
+        want = extract_alpha(rgba, KEY, 48)
+        assert np.array_equal(got[1], np.asarray(rgba)[..., 3])
+        assert np.array_equal(got[0], want[0])
+
+
 def test_fringe_rule_parity_with_process_frame():
     """The full pre-registration chain with the fast test_nearest downscaler: every stage and stat matches."""
     rng = np.random.default_rng(83)

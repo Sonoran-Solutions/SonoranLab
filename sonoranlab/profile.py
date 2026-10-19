@@ -9,6 +9,7 @@ Every problem names the field and the bad value. Nothing here writes a file or i
 from __future__ import annotations
 
 import hashlib
+import math
 import os
 import re
 from dataclasses import dataclass, replace
@@ -19,6 +20,7 @@ import numpy as np
 import yaml
 
 ANCHOR_MODES = ("foot", "rig", "bbox_bottom")
+RIG_UNSUPPORTED = "rig anchors need Track D per-frame anchors and a rig validator rule; not supported in Phase 2"
 TRACKS = ("A", "B", "C", "D", "E")
 LIMIT_KEYS = ("max_foot_slide_px", "max_bbox_drift_px", "opaque_area_cv_warn", "loop_closure_ratio_warn")
 HOVER_KEYS = ("hover_x_drift_warn_px", "hover_min_bob_px")  # ADR-0008 F2: required for anchor_mode bbox_bottom
@@ -358,6 +360,8 @@ def _parse(path: Path, check_paths: bool) -> tuple[Profile | None, list[str]]:
             registration=_val(a, "anchor", "registration", "str", errs, choices=("per_clip",)),
             foot_zone=tuple(zone) if zone else None,
         )
+        if anchor.mode == "rig":
+            errs.append(f"anchor.mode: {RIG_UNSUPPORTED}")
 
     al = _section(raw, "alpha", ("threshold", "bg_key", "fringe_passes", "fringe_tolerance"), errs)
     alpha = None
@@ -529,7 +533,9 @@ def _animation(a: Any, where: str, base: Path, errs: list[str], *, parent: Anima
         "track_default": _val(a, where, "track_default", "str", errs, choices=TRACKS, required=False),
         "template": _path(_val(a, where, "template", "str", errs, required=False), base),
     }
-    vals = {k: v for k, v in vals.items() if k in a and v is not None}
+    vals = {
+        k: v for k, v in vals.items() if k in a and (v is not None or k in ("loop_from", "track_default", "template"))
+    }
     if req and any(k not in vals for k in ("frames", "fps", "loop")):
         return None
     anim = replace(parent, **vals) if parent else Animation(**vals)
@@ -592,8 +598,9 @@ def _characters(
                 errs.append(f"{where}.animations.{clip}: not a clip in animations ({', '.join(animations)})")
                 continue
             anim = _animation(spec, f"{where}.animations.{clip}", base, errs, parent=animations[clip])
-            if anim and {"frames", "template"} & set(spec):
-                _check_template(anim, f"{where}.animations.{clip}", generate, templates, errs)
+            if anim:
+                if {"frames", "template"} & set(spec):
+                    _check_template(anim, f"{where}.animations.{clip}", generate, templates, errs)
                 anims[clip] = anim
         loco = _val(row, where, "locomotion", "str", errs, required=False)
         if loco is not None and loco not in anims:
@@ -602,6 +609,8 @@ def _characters(
         if anchor and canvas and size:
             _anchor_rows(anchor, size, canvas.padding or 0, where, errs)
         mode = _val(row, where, "anchor_mode", "str", errs, choices=ANCHOR_MODES, required=False)
+        if mode == "rig":
+            errs.append(f"{where}.anchor_mode: {RIG_UNSUPPORTED}")
         out[name] = CharacterRow(
             cell=cell,
             anchor_mode=mode,
@@ -620,7 +629,7 @@ def _limits(d: dict, where: str, errs: list[str], *, hover: bool = False) -> Lim
             errs.append(f"{where}.{k}: missing (no validator threshold may be unset)")
         elif hover and k not in d:
             errs.append(f"{where}.{k}: missing (anchor_mode bbox_bottom needs the hover warnings, ADR-0008 F2)")
-        vals[k] = _val(d, where, k, "num", errs, lo=0, required=False)
+        vals[k] = _val(d, where, k, "num", errs, lo=0, gt=0 if k in LIMIT_KEYS[:2] else None, required=False)
     return Limits(**vals)
 
 
@@ -751,14 +760,14 @@ def _val(
 ) -> Any:
     """d[key] checked as kind (int|num|bool|str|name|hex|any); records a problem and returns `default` if bad."""
     f = f"{where}.{key}" if where else key
-    if key not in d or d[key] is None:
+    if key not in d or (d[key] is None and kind != "num"):
         if required:
             errs.append(f"{f}: missing")
         return default
     v = d[key]
     ok = {
         "int": _is_int(v),
-        "num": (_is_int(v) or isinstance(v, float)),
+        "num": (_is_int(v) or (isinstance(v, float) and math.isfinite(v))),
         "bool": isinstance(v, bool),
         "str": isinstance(v, str),
         "name": isinstance(v, str) and bool(NAME_RE.match(v.replace("-", "_"))),
@@ -766,7 +775,7 @@ def _val(
         "any": True,
     }[kind]
     if not ok:
-        what = {"num": "a number", "int": "an integer", "hex": "a #rrggbb hex colour", "name": "a lowercase id"}
+        what = {"num": "a finite number", "int": "an integer", "hex": "a #rrggbb hex colour", "name": "a lowercase id"}
         errs.append(f"{f}: {v!r} is not {what.get(kind, 'a ' + kind)}")
         return default
     if choices is not None and v not in choices:

@@ -295,6 +295,7 @@ def test_cli_validate_exit_codes(profile, tmp_path, capsys):
     rep = json.loads(capsys.readouterr().out)
     assert rep["pass"] and (rep["character"], rep["animation"]) == ("hero", "idle") and next(iter(rep)) == "pass"
     assert rep["limits"]["source"] == "characters.hero" and len(rep["provenance"]["inputs"]) == 8
+    assert "registration provenance not supplied: clipping off the cell cannot be checked" in rep["warnings"]
     out = tmp_path / "report.json"
     assert main(["validate", str(frames_dir(tmp_path, "foot_slide")), *args, "--out", str(out)]) == 1
     assert keys(json.loads(out.read_text())["failures"]) == {("foot_slide", "east", 1)}
@@ -306,6 +307,53 @@ def test_cli_validate_exit_codes(profile, tmp_path, capsys):
     assert main(["validate", str(tmp_path / "clean"), *args]) == 2
     assert "numbered [0, 1, 2, 7]" in capsys.readouterr().err
     assert main(["validate", str(tmp_path / "nowhere"), *args]) == 2
+
+
+@pytest.mark.parametrize("clipped_px, expected_exit", [([0, 0, 0, 0], 0), ([0, 0, 7, 0], 1)])
+def test_cli_validate_registration(profile, tmp_path, capsys, clipped_px, expected_exit):
+    registration = {"east": {"shift_px": [0, 0], "clipped_px": clipped_px}}
+    path = tmp_path / "registration.json"
+    path.write_text(json.dumps(registration))
+    args = [
+        "validate",
+        str(frames_dir(tmp_path, "clean")),
+        "--profile",
+        str(profile),
+        "--character",
+        "hero",
+        "--anim",
+        "idle",
+        "--registration",
+        str(path),
+    ]
+    assert main(args) == expected_exit
+    rep = json.loads(capsys.readouterr().out)
+    assert rep["pass"] is (expected_exit == 0) and rep["registration"] == registration
+    assert not any("registration provenance not supplied" in w for w in rep["warnings"])
+    assert keys(rep["failures"]) == ({("registration", "east", 2)} if expected_exit else set())
+
+
+@pytest.mark.parametrize(
+    "registration",
+    [None, [], {"east": None}, {"east": {"clipped_px": [0]}}, {"east": {"clipped_px": [0, 0, -1, 0]}}],
+)
+def test_cli_validate_rejects_bad_registration(profile, tmp_path, capsys, registration):
+    path = tmp_path / "registration.json"
+    path.write_text(json.dumps(registration))
+    args = [
+        "validate",
+        str(frames_dir(tmp_path, "clean")),
+        "--profile",
+        str(profile),
+        "--character",
+        "hero",
+        "--anim",
+        "idle",
+        "--registration",
+        str(path),
+    ]
+    assert main(args) == 2
+    assert "registration must map clip directions" in capsys.readouterr().err
 
 
 def test_read_frames_orders_by_profile_rows(tmp_path):

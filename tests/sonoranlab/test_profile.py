@@ -16,7 +16,7 @@ import yaml
 from PIL import Image
 
 from sonoranlab.cli import main
-from sonoranlab.profile import ProfileError, check_profile, load_palette, load_profile
+from sonoranlab.profile import HOVER_KEYS, LIMIT_KEYS, ProfileError, check_profile, load_palette, load_profile
 
 REPO = Path(__file__).resolve().parents[2]
 REAL = REPO / "profiles" / "twos-are-up.yaml"
@@ -123,6 +123,96 @@ def test_known_character_resolves_with_overrides(make):
     floater = load_profile(make()).character("floater")
     assert (floater.cell, floater.foot_y, floater.anchor_x, floater.anchor_mode) == ((24, 16), 12, 12, "bbox_bottom")
     assert floater.locomotion == "idle" and floater.animations["run"].frames == 3
+
+
+@pytest.mark.parametrize(
+    "clip, override",
+    [
+        ("idle", {"fps": 7.5}),
+        ("idle", {"loop": False}),
+        ("channel", {"loop_from": 1}),
+        ("channel", {"hold_last": True}),
+        ("idle", {"track_default": "D"}),
+        ("channel", {"loop": True, "loop_from": None}),
+        ("run", {"track_default": None, "template": None}),
+    ],
+)
+def test_partial_animation_overrides(make, clip, override):
+    path = make(lambda d: d["characters"]["hero"].update(animations={clip: override}))
+    p = load_profile(path)
+    resolved = p.character("hero").animations[clip]
+    for key, value in override.items():
+        assert getattr(resolved, key) == value
+    assert resolved.frames == p.animations[clip].frames
+
+
+@pytest.mark.parametrize("override, field", [({"loop": True}, "loop_from"), ({"frames": 2}, "loop_from")])
+def test_partial_animation_rechecks_merged_rules(make, override, field):
+    path = make(lambda d: d["characters"]["hero"].update(animations={"channel": override}))
+    assert f"characters.hero.animations.channel.{field}:" in problems(path)
+    path = make(lambda d: d["characters"]["hero"].update(animations={"idle": {"hold_last": True}}))
+    assert "characters.hero.animations.idle.hold_last: needs loop: false" in problems(path)
+
+
+NUMERIC_FIELDS = [
+    *(f"validator.{key}" for key in LIMIT_KEYS + HOVER_KEYS),
+    *(f"characters.hero.{key}" for key in LIMIT_KEYS),
+    *(f"characters.floater.{key}" for key in HOVER_KEYS),
+    "animations.idle.fps",
+    "characters.hero.animations.run.fps",
+    "canvas.density_px_per_m",
+    "processing.key_tol",
+]
+
+
+@pytest.mark.parametrize("field", NUMERIC_FIELDS)
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf"), None, True, "1"])
+def test_numeric_fields_reject_invalid_values(make, capsys, field, value):
+    def edit(d):
+        d["processing"] = {
+            "version": "processing-v1",
+            "downscaler": "nearest",
+            "thickness": 0,
+            "despill_px": 0,
+            "key_tol": 48,
+        }
+        row = d
+        *parents, key = field.split(".")
+        for parent in parents:
+            row = row[parent]
+        row[key] = value
+
+    path = make(edit)
+    assert f"{field}:" in problems(path)
+    assert main(["profile", "check", str(path)]) == 2
+    assert f"{field}:" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("where", ["validator", "characters.hero"])
+@pytest.mark.parametrize("key", LIMIT_KEYS[:2])
+@pytest.mark.parametrize("value", [0, -1])
+def test_validator_gates_must_be_positive(make, where, key, value):
+    def edit(d):
+        row = d["validator"] if where == "validator" else d["characters"]["hero"]
+        row[key] = value
+
+    assert f"{where}.{key}:" in problems(make(edit))
+
+
+@pytest.mark.parametrize("where", ["anchor", "hero"])
+def test_rig_anchor_profile_check(make, capsys, where):
+    def edit(d):
+        if where == "anchor":
+            d["anchor"]["mode"] = "rig"
+        else:
+            d["characters"]["hero"]["anchor_mode"] = "rig"
+
+    path = make(edit)
+    field = "anchor.mode" if where == "anchor" else "characters.hero.anchor_mode"
+    expected = f"{field}: rig anchors need Track D per-frame anchors and a rig validator rule; not supported in Phase 2"
+    assert expected in problems(path)
+    assert main(["profile", "check", str(path)]) == 2
+    assert expected in capsys.readouterr().out
 
 
 def test_unknown_character_uses_labelled_defaults(make):

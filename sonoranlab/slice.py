@@ -14,6 +14,13 @@ import numpy as np
 from PIL import Image
 
 FRAME_RE = re.compile(r"^([a-z]+(?:-[a-z]+)*)_(\d+)\.png$")
+ROW_RE = re.compile(r"^[a-z]+(-[a-z]+)*$")
+
+
+def _check_rows(rows: Sequence[str]) -> None:
+    for row in rows:
+        if not isinstance(row, str) or not ROW_RE.fullmatch(row):
+            raise ValueError(f"row {row!r}: name must match {ROW_RE.pattern}")
 
 
 def read_frame_dir(path: Path, directions: Sequence[str]) -> dict[str, list[Path]]:
@@ -22,6 +29,7 @@ def read_frame_dir(path: Path, directions: Sequence[str]) -> dict[str, list[Path
     ValueError naming the file for a frame-like name with an unknown direction, a duplicate index (`east_1`,
     `east_01`) or an index gap (indices must be 0..n-1). Other files (still_south.png, json) are ignored.
     """
+    _check_rows(directions)
     found: dict[str, dict[int, Path]] = {}
     for p in sorted(Path(path).glob("*.png")):
         m = FRAME_RE.match(p.name)
@@ -63,6 +71,7 @@ def slice_sheet(
 
     The sheet must be exactly len(rows) * cell_h high and (start_col + frames) * cell_w wide.
     """
+    _check_rows(rows)
     cw, ch = cell
     want = (len(rows) * ch, (start_col + frames) * cw)
     if sheet.ndim != 3 or sheet.shape[2] != 4 or sheet.shape[:2] != want:
@@ -107,6 +116,7 @@ def pack_sheet(
     re-mirrored), a clip direction not in `rows`, a `required` row with neither frames nor a mirror source, a wrong
     frame count or frame/still size. Rows with nothing to draw (and not required) stay transparent.
     """
+    _check_rows(rows)
     cw, ch = cell
     both = sorted(set(clips) & set(mirror))
     if both:

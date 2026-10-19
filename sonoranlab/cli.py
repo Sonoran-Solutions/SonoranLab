@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import argparse
 import dataclasses
+import hashlib
 import json
 import sys
 from pathlib import Path
@@ -78,6 +79,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     g.add_argument("--out", type=Path, required=True, help="writes OUT/<character>/; must not already hold files")
     g.add_argument("--provenance", type=Path, help="JSON object copied into the sidecar")
+    g.add_argument("--report", type=Path, help="required: validator report JSON with pass: true")
     g.add_argument("--forbid-under", type=Path, help="refuse any --out inside this tree (the shipped game)")
     g.add_argument("--anim-name", default="{animation}_{direction}")
     g.set_defaults(func=export_godot_cmd)
@@ -89,6 +91,7 @@ def build_parser() -> argparse.ArgumentParser:
     v.add_argument("--anim", required=True, help="clip name in the character's animations (frame count, loop)")
     v.add_argument("--cell", type=int, help="cell size for a character without a profile row")
     v.add_argument("--out", type=Path, help="write the report here (never overwrites) instead of printing it")
+    v.add_argument("--registration", type=Path, help="registration dict JSON from a pipeline report or manifest")
     v.set_defaults(func=validate_frames)
 
     pr = verbs.add_parser(
@@ -162,7 +165,7 @@ def slice_cmd(args: argparse.Namespace) -> int:
     try:
         if args.out_dir.exists():
             raise ValueError(f"{args.out_dir}: already exists; slice never overwrites, pick a new directory")
-        rows = [r for r in args.rows.split(",") if r]
+        rows = args.rows.split(",")
         with Image.open(args.sheet) as im:
             sheet = np.asarray(im.convert("RGBA"))
         clips = slice_sheet(sheet, (args.cell, args.cell), rows, args.frames, start_col=args.start_col)
@@ -216,9 +219,19 @@ def export_godot_cmd(args: argparse.Namespace) -> int:
     from sonoranlab.export.godot import export_godot
 
     try:
+        try:
+            report_bytes = args.report.read_bytes() if args.report else b"null"
+            report = json.loads(report_bytes)
+        except (OSError, ValueError) as e:
+            raise ValueError("export needs a passing validator report") from e
+        if not isinstance(report, dict) or report.get("pass") is not True:
+            raise ValueError("export needs a passing validator report")
         with Image.open(args.sheet) as im:
             sheet = np.asarray(im.convert("RGBA"))
         prov = json.loads(args.provenance.read_text()) if args.provenance else {}
+        if not isinstance(prov, dict):
+            raise ValueError("provenance must be a JSON object")
+        prov["validator"] = {"pass": True, "report_sha256": hashlib.sha256(report_bytes).hexdigest()}
         paths = export_godot(
             sheet,
             character=args.character,
@@ -268,7 +281,24 @@ def validate_frames(args: argparse.Namespace) -> int:
     }
     try:
         clips, files = read_frames(args.frames_dir, prof.directions.order)
-        rep = validate(clips, palette=pal, limits=spec.limits, limits_source=spec.limits_source, **kw)
+        registration = json.loads(args.registration.read_text()) if args.registration else None
+        if args.registration and (
+            not isinstance(registration, dict)
+            or any(
+                d not in clips
+                or not isinstance(info, dict)
+                or not isinstance(info.get("clipped_px"), list)
+                or len(info["clipped_px"]) != anim.frames
+                or any(type(n) is not int or n < 0 for n in info["clipped_px"])
+                for d, info in registration.items()
+            )
+        ):
+            raise ValueError("registration must map clip directions to per-frame non-negative clipped_px counts")
+        rep = validate(
+            clips, palette=pal, limits=spec.limits, limits_source=spec.limits_source, registration=registration, **kw
+        )
+        if not args.registration:
+            rep["warnings"].append("registration provenance not supplied: clipping off the cell cannot be checked")
     except (ValueError, OSError) as e:
         print(f"validate: {e}", file=sys.stderr)
         return 2

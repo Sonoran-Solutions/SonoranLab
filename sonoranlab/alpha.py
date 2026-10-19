@@ -19,7 +19,7 @@ def extract_alpha(im: Image.Image, bg_key: tuple[int, int, int], key_tol: float)
     pixel within Euclidean distance `key_tol` of the key in RGB is transparent (RGB-on-key renders)."""
     a = np.asarray(im.convert("RGBA")).astype(np.float32)
     rgb, alpha = a[..., :3], a[..., 3]
-    if im.mode in ("RGBA", "LA", "PA") and (alpha < 255).any():
+    if (alpha < 255).any():
         w = alpha[..., None] / 255
         rgb = rgb * w + np.array(bg_key, np.float32) * (1 - w)
     else:

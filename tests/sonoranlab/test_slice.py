@@ -166,3 +166,25 @@ def test_cli_slice(tmp_path: Path, capsys) -> None:
         )
         == 2
     )
+
+
+@pytest.mark.parametrize("row", ["../raw/east", "/east", "East", "east_1", "east--west", "east\n", ""])
+def test_invalid_rows_rejected(tmp_path, capsys, row):
+    sheet = np.zeros((6, 6, 4), np.uint8)
+    for call in (
+        lambda: read_frame_dir(tmp_path, [row]),
+        lambda: slice_sheet(sheet, (6, 6), [row], 1),
+        lambda: pack_sheet({}, (6, 6), [row], 1, mirror={}),
+    ):
+        with pytest.raises(ValueError) as exc:
+            call()
+        assert repr(row) in str(exc.value)
+    source, out = tmp_path / "sheet.png", tmp_path / "frames"
+    write(source, sheet)
+    raw = tmp_path / "raw"
+    raw.mkdir()
+    sentinel = raw / "east_0.png"
+    sentinel.write_bytes(b"raw input")
+    assert main(["slice", str(source), str(out), "--cell", "6", "--rows", row, "--frames", "1"]) == 2
+    assert repr(row) in capsys.readouterr().err
+    assert not out.exists() and sentinel.read_bytes() == b"raw input"
