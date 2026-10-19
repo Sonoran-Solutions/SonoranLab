@@ -1,0 +1,271 @@
+{
+  "37": {
+    "class_type": "UnetLoaderGGUF",
+    "_meta": {
+      "title": "Wan 2.2 I2V A14B high-noise expert (W1)"
+    },
+    "inputs": {
+      "unet_name": "Wan2.2-I2V-A14B-HighNoise-Q5_K_M.gguf"
+    }
+  },
+  "56": {
+    "class_type": "UnetLoaderGGUF",
+    "_meta": {
+      "title": "Wan 2.2 I2V A14B low-noise expert (W2)"
+    },
+    "inputs": {
+      "unet_name": "Wan2.2-I2V-A14B-LowNoise-Q5_K_M.gguf"
+    }
+  },
+  "67": {
+    "class_type": "LoraLoaderModelOnly",
+    "inputs": {
+      "lora_name": "wan2.2_i2v_lightx2v_4steps_lora_v1_high_noise.safetensors",
+      "strength_model": 1,
+      "model": [
+        "37",
+        0
+      ]
+    }
+  },
+  "68": {
+    "class_type": "LoraLoaderModelOnly",
+    "inputs": {
+      "lora_name": "wan2.2_i2v_lightx2v_4steps_lora_v1_low_noise.safetensors",
+      "strength_model": 1,
+      "model": [
+        "56",
+        0
+      ]
+    }
+  },
+  "54": {
+    "class_type": "ModelSamplingSD3",
+    "inputs": {
+      "shift": 5,
+      "model": [
+        "67",
+        0
+      ]
+    }
+  },
+  "55": {
+    "class_type": "ModelSamplingSD3",
+    "inputs": {
+      "shift": 5,
+      "model": [
+        "68",
+        0
+      ]
+    }
+  },
+  "38": {
+    "class_type": "CLIPLoader",
+    "inputs": {
+      "clip_name": "umt5_xxl_fp8_e4m3fn_scaled.safetensors",
+      "type": "wan",
+      "device": "default"
+    }
+  },
+  "39": {
+    "class_type": "VAELoader",
+    "inputs": {
+      "vae_name": "wan_2.1_vae.safetensors"
+    }
+  },
+  "6": {
+    "class_type": "CLIPTextEncode",
+    "inputs": {
+      "text": "Side view of this character running in place, a smooth looping run cycle, arms and legs swinging, the character stays centred, static camera, no zoom, flat solid magenta background, 2D game sprite animation.",
+      "clip": [
+        "38",
+        0
+      ]
+    }
+  },
+  "7": {
+    "class_type": "CLIPTextEncode",
+    "inputs": {
+      "text": "camera movement, zoom, pan, background change, scenery, extra limbs, morphing, blurry, text, watermark",
+      "clip": [
+        "38",
+        0
+      ]
+    }
+  },
+  "71": {
+    "class_type": "LoadImage",
+    "_meta": {
+      "title": "Start image: posed first frame (runner-provided)"
+    },
+    "inputs": {
+      "image": "sonoranlab/start_frame.png"
+    }
+  },
+  "73": {
+    "class_type": "WanImageToVideo",
+    "inputs": {
+      "width": 544,
+      "height": 544,
+      "length": 17,
+      "batch_size": 1,
+      "positive": [
+        "6",
+        0
+      ],
+      "negative": [
+        "7",
+        0
+      ],
+      "vae": [
+        "39",
+        0
+      ],
+      "start_image": [
+        "71",
+        0
+      ]
+    }
+  },
+  "57": {
+    "class_type": "KSamplerAdvanced",
+    "_meta": {
+      "title": "High-noise expert: steps 0-2"
+    },
+    "inputs": {
+      "add_noise": "enable",
+      "noise_seed": 1,
+      "steps": 4,
+      "cfg": 1,
+      "sampler_name": "euler",
+      "scheduler": "simple",
+      "start_at_step": 0,
+      "end_at_step": 2,
+      "return_with_leftover_noise": "enable",
+      "model": [
+        "54",
+        0
+      ],
+      "positive": [
+        "73",
+        0
+      ],
+      "negative": [
+        "73",
+        1
+      ],
+      "latent_image": [
+        "73",
+        2
+      ]
+    }
+  },
+  "58": {
+    "class_type": "KSamplerAdvanced",
+    "_meta": {
+      "title": "Low-noise expert: steps 2-end"
+    },
+    "inputs": {
+      "add_noise": "disable",
+      "noise_seed": 1,
+      "steps": 4,
+      "cfg": 1,
+      "sampler_name": "euler",
+      "scheduler": "simple",
+      "start_at_step": 2,
+      "end_at_step": 10000,
+      "return_with_leftover_noise": "disable",
+      "model": [
+        "55",
+        0
+      ],
+      "positive": [
+        "73",
+        0
+      ],
+      "negative": [
+        "73",
+        1
+      ],
+      "latent_image": [
+        "57",
+        0
+      ]
+    }
+  },
+  "8": {
+    "class_type": "VAEDecode",
+    "inputs": {
+      "samples": [
+        "58",
+        0
+      ],
+      "vae": [
+        "39",
+        0
+      ]
+    }
+  },
+  "90": {
+    "class_type": "SaveImage",
+    "_meta": {
+      "title": "Raw RGB frames (never overwritten)"
+    },
+    "inputs": {
+      "filename_prefix": "p1/E/wan22_i2v_lightx2v/raw",
+      "images": [
+        "8",
+        0
+      ]
+    }
+  },
+  "91": {
+    "class_type": "BiRefNetRMBG",
+    "_meta": {
+      "title": "BiRefNet-general (official ZhengPeng7 weights, B1)"
+    },
+    "inputs": {
+      "image": [
+        "8",
+        0
+      ],
+      "model": "BiRefNet-general",
+      "sensitivity": 1.0,
+      "mask_blur": 0,
+      "mask_offset": 0,
+      "invert_output": false,
+      "refine_foreground": false,
+      "unload_model": false,
+      "background": "Alpha",
+      "background_color": "#222222"
+    }
+  },
+  "92": {
+    "class_type": "SaveImage",
+    "_meta": {
+      "title": "RGBA frames"
+    },
+    "inputs": {
+      "filename_prefix": "p1/E/wan22_i2v_lightx2v/rgba",
+      "images": [
+        "91",
+        0
+      ]
+    }
+  },
+  "93": {
+    "class_type": "SaveAnimatedPNG",
+    "_meta": {
+      "title": "Review preview (APNG, RGBA)"
+    },
+    "inputs": {
+      "filename_prefix": "p1/E/wan22_i2v_lightx2v/preview",
+      "fps": 16,
+      "compress_level": 4,
+      "images": [
+        "91",
+        0
+      ]
+    }
+  }
+}

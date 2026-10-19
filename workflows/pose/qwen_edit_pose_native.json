@@ -1,0 +1,228 @@
+{
+  "10": {
+    "class_type": "VAELoader",
+    "inputs": {
+      "vae_name": "qwen_image_vae.safetensors"
+    }
+  },
+  "12": {
+    "class_type": "UNETLoader",
+    "inputs": {
+      "unet_name": "qwen_image_edit_2511_fp8mixed.safetensors",
+      "weight_dtype": "default"
+    }
+  },
+  "61": {
+    "class_type": "CLIPLoader",
+    "inputs": {
+      "clip_name": "qwen_2.5_vl_7b_fp8_scaled.safetensors",
+      "type": "qwen_image",
+      "device": "default"
+    }
+  },
+  "74": {
+    "class_type": "LoraLoaderModelOnly",
+    "_meta": {
+      "title": "Lightning 4-step (stock position: directly on the UNET)"
+    },
+    "inputs": {
+      "lora_name": "Qwen-Image-Edit-2511-Lightning-4steps-V1.0-bf16.safetensors",
+      "strength_model": 1,
+      "model": [
+        "12",
+        0
+      ]
+    }
+  },
+  "67": {
+    "class_type": "ModelSamplingAuraFlow",
+    "inputs": {
+      "shift": 3.1,
+      "model": [
+        "74",
+        0
+      ]
+    }
+  },
+  "64": {
+    "class_type": "CFGNorm",
+    "inputs": {
+      "strength": 1,
+      "model": [
+        "67",
+        0
+      ]
+    }
+  },
+  "41": {
+    "class_type": "LoadImage",
+    "_meta": {
+      "title": "Reference still (runner-provided)"
+    },
+    "inputs": {
+      "image": "sonoranlab/reference.png"
+    }
+  },
+  "42": {
+    "class_type": "LoadImage",
+    "_meta": {
+      "title": "OpenPose control image (Track D bake render, runner-provided)"
+    },
+    "inputs": {
+      "image": "sonoranlab/control_pose.png"
+    }
+  },
+  "68": {
+    "class_type": "TextEncodeQwenImageEditPlus",
+    "inputs": {
+      "prompt": "Picture 1 shows a pose. Redraw the character from Picture 2 exactly - same face, hair, clothes, colours and weapon, and the same size in the frame as in Picture 2 - in the pose of Picture 1, full body with the feet inside the frame, side-view 2D game sprite, flat shading, plain flat magenta background.",
+      "clip": [
+        "61",
+        0
+      ],
+      "vae": [
+        "10",
+        0
+      ],
+      "image1": [
+        "42",
+        0
+      ],
+      "image2": [
+        "41",
+        0
+      ]
+    }
+  },
+  "69": {
+    "class_type": "TextEncodeQwenImageEditPlus",
+    "inputs": {
+      "prompt": "",
+      "clip": [
+        "61",
+        0
+      ],
+      "vae": [
+        "10",
+        0
+      ],
+      "image1": [
+        "42",
+        0
+      ],
+      "image2": [
+        "41",
+        0
+      ]
+    }
+  },
+  "70": {
+    "class_type": "FluxKontextMultiReferenceLatentMethod",
+    "inputs": {
+      "reference_latents_method": "index_timestep_zero",
+      "conditioning": [
+        "68",
+        0
+      ]
+    }
+  },
+  "71": {
+    "class_type": "FluxKontextMultiReferenceLatentMethod",
+    "inputs": {
+      "reference_latents_method": "index_timestep_zero",
+      "conditioning": [
+        "69",
+        0
+      ]
+    }
+  },
+  "75": {
+    "class_type": "EmptySD3LatentImage",
+    "inputs": {
+      "width": 736,
+      "height": 736,
+      "batch_size": 1
+    }
+  },
+  "65": {
+    "class_type": "KSampler",
+    "inputs": {
+      "seed": 1,
+      "steps": 4,
+      "cfg": 1,
+      "sampler_name": "euler",
+      "scheduler": "simple",
+      "denoise": 1,
+      "model": [
+        "64",
+        0
+      ],
+      "positive": [
+        "70",
+        0
+      ],
+      "negative": [
+        "71",
+        0
+      ],
+      "latent_image": [
+        "75",
+        0
+      ]
+    }
+  },
+  "8": {
+    "class_type": "VAEDecode",
+    "inputs": {
+      "samples": [
+        "65",
+        0
+      ],
+      "vae": [
+        "10",
+        0
+      ]
+    }
+  },
+  "9": {
+    "class_type": "SaveImage",
+    "inputs": {
+      "filename_prefix": "p1/C/qwen_edit_pose_native/raw",
+      "images": [
+        "8",
+        0
+      ]
+    }
+  },
+  "91": {
+    "class_type": "BiRefNetRMBG",
+    "_meta": {
+      "title": "BiRefNet-general (official ZhengPeng7 weights, B1)"
+    },
+    "inputs": {
+      "image": [
+        "8",
+        0
+      ],
+      "model": "BiRefNet-general",
+      "sensitivity": 1.0,
+      "mask_blur": 0,
+      "mask_offset": 0,
+      "invert_output": false,
+      "refine_foreground": false,
+      "unload_model": false,
+      "background": "Alpha",
+      "background_color": "#222222"
+    }
+  },
+  "92": {
+    "class_type": "SaveImage",
+    "inputs": {
+      "filename_prefix": "p1/C/qwen_edit_pose_native/rgba",
+      "images": [
+        "91",
+        0
+      ]
+    }
+  }
+}

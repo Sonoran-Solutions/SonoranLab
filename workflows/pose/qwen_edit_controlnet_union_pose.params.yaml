@@ -1,0 +1,22 @@
+# Track C: Qwen Image Edit 2511 FP8 + Lightning 4-step + InstantX ControlNet-Union (Q5), one frame per run.
+# Wiring evidence and caveats: workflows/pose/README.md.
+# reference_image = the character's approved still (still_south_x4.png, already at cell*4, RGB).
+# control_image   = OpenPose render for this frame from the Track D bake, black background, same size as the canvas.
+#                   No DWPose node here: the pose comes from the rig, not from estimation.
+# canvas: width = height = cell * 4 (samurai 736, oathguard 704, relay_sentinel 544; all multiples of 16).
+#   ControlNet resizes the control image to the latent size with a center crop, so keep it square and canvas-sized.
+# Prompt and strength default are UNVERIFIED for sprite proportions: that is the Track C question (docs/02).
+reference_image:     {node: "41", input: "image"}
+control_image:       {node: "42", input: "image"}
+prompt:              {node: "68", input: "prompt"}
+negative_prompt:     {node: "69", input: "prompt"}      # inert at cfg 1
+seed:                {node: "65", input: "seed"}
+steps:               {node: "65", input: "steps"}
+cfg:                 {node: "65", input: "cfg"}
+width:               {node: "75", input: "width"}
+height:              {node: "75", input: "height"}
+control_strength:    {node: "81", input: "strength"}    # default 0.9 (InstantX card: 0.8-1.0)
+control_start:       {node: "81", input: "start_percent"}
+control_end:         {node: "81", input: "end_percent"}
+lightning_strength:  {node: "74", input: "strength_model"}
+output_prefix:       {node: "9",  input: "filename_prefix"}

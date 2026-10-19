@@ -1,0 +1,22 @@
+# Track C depth fallback: qwen_edit_controlnet_union_pose.json with the control image replaced by
+# DepthAnythingV2Preprocessor (pinned to depth_anything_v2_vits.pth; vitl/vitb/vitg are CC-BY-NC, docs/04 P3) run on a
+# Track D bake RGB render. The depth map is also saved (node 44) so the conditioning is auditable.
+# Depth is estimated, not rendered, because the ControlNet card recommends Depth-Anything maps; a Godot depth buffer
+# has a different range and polarity. If the bake ever renders DA-style depth, use the pose graph with that image.
+# All notes in qwen_edit_controlnet_union_pose.params.yaml apply.
+reference_image:      {node: "41", input: "image"}
+control_source_image: {node: "42", input: "image"}
+depth_resolution:     {node: "43", input: "resolution"} # preprocessor working size; the ControlNet resizes to the canvas
+prompt:               {node: "68", input: "prompt"}
+negative_prompt:      {node: "69", input: "prompt"}
+seed:                 {node: "65", input: "seed"}
+steps:                {node: "65", input: "steps"}
+cfg:                  {node: "65", input: "cfg"}
+width:                {node: "75", input: "width"}
+height:               {node: "75", input: "height"}
+control_strength:     {node: "81", input: "strength"}
+control_start:        {node: "81", input: "start_percent"}
+control_end:          {node: "81", input: "end_percent"}
+lightning_strength:   {node: "74", input: "strength_model"}
+output_prefix:        {node: "9",  input: "filename_prefix"}
+control_output_prefix: {node: "44", input: "filename_prefix"}
