@@ -121,6 +121,24 @@ the direction; it isn't a sweep. Recommendation: Phase 3 generates Track E on ne
   validation limitations carried forward. Open: a timed cleanup on one representative E samurai set, unless the owner
   records an explicit exception.
 
+## Evidence regeneration (2026-10-19, after senior review; no new inference)
+
+Every scored set was rebuilt from the existing raw outputs:
+- `benchmark/tools/assemble_set.py` selected attempts by an explicit rule (per part, the successful attempt with the
+  highest retry index) and wrote `set/selection.json`, listing every attempt with its manifest sha256.
+- `process.py --config benchmark/characters/2026-10-18-processing-v1.yaml` reprocessed each set. Every
+  `set/processed/report.json` records the config sha256, the effective parameters (including `despill_px` and
+  `max_colours`), input and output hashes, and the selection it is bound to.
+
+Results:
+- **All 34 reviewed processed sheets came out byte-identical** to the sheets on the owner's review page. The selection
+  rule reproduces the sweep, and the chain is deterministic.
+- The owner's review is bound to those artifacts by sha256 (`review-bound.json`, built from the page's displayed files,
+  all older than the review export): `review_binding = bound` for every reviewed set.
+- `scoring.csv` (35 rows) keeps every attempted set, separates selected-attempt time (`gen_minutes`) from all-attempt
+  time (`attempt_minutes_total`), and splits `human_usable`, `validator_pass` and the combined `usable`.
+- The medians are unchanged.
+
 ## Safety and operations (DYL-97 + follow-ups, PRs #6 and #12)
 
 - Queue lifecycle and fail-closed inspection, as specified. Verified live: an interrupted job's window held the lock
