@@ -2,8 +2,9 @@
 # the viewport after each frame as PNG. Needs a real renderer: run through render.sh, on an already imported project.
 #
 #   render.sh <project copy> -- --tres res://toy/toy_frames.tres --anim run_east --out DIR [--frames 4]
-# Writes DIR/<anim>_f<i>.png (viewport 160x96: 1x sprite at (8, 8), 4x sprite at (40, 8), grey background) and prints
-# a JSON line with the sprite frame index seen in each capture, then a short real-time playback sample.
+# Writes DIR/<anim>_f<i>.png (a SubViewport sized to the frame w x h: (24 + 5w) x (16 + 4h), 1x sprite at (8, 8), 4x
+# sprite at (16 + w, 8), grey background) and prints a JSON line with the sprite frame index seen in each capture, then
+# a short real-time playback sample. The SubViewport takes the project's default texture filter from the root.
 extends SceneTree
 
 func _initialize() -> void:
@@ -15,19 +16,25 @@ func _initialize() -> void:
 	var anim: String = opt["anim"]
 	var out: String = opt["out"]
 	DirAccess.make_dir_recursive_absolute(out)
+	var cell: Vector2 = frames.get_frame_texture(anim, 0).get_size()
+	var vp := SubViewport.new()
+	vp.size = Vector2i(int(24 + 5 * cell.x), int(16 + 4 * cell.y))
+	vp.render_target_update_mode = SubViewport.UPDATE_ALWAYS
+	vp.canvas_item_default_texture_filter = root.canvas_item_default_texture_filter
+	root.add_child(vp)
 	var bg := ColorRect.new()
 	bg.color = Color(0.5, 0.5, 0.5)
-	bg.size = Vector2(160, 96)
-	root.add_child(bg)
+	bg.size = Vector2(vp.size)
+	vp.add_child(bg)
 	var s1 := AnimatedSprite2D.new()
 	var s4 := AnimatedSprite2D.new()
 	for s in [s1, s4]:
 		s.sprite_frames = frames
 		s.animation = anim
 		s.centered = false
-		root.add_child(s)
+		vp.add_child(s)
 	s1.position = Vector2(8, 8)
-	s4.position = Vector2(40, 8)
+	s4.position = Vector2(16 + cell.x, 8)
 	s4.scale = Vector2(4, 4)
 	var n := frames.get_frame_count(anim)
 	var count := int(opt["frames"]) if int(opt["frames"]) > 0 else n
@@ -37,7 +44,7 @@ func _initialize() -> void:
 		s4.frame = i % n
 		await process_frame
 		await process_frame
-		root.get_texture().get_image().save_png("%s/%s_f%d.png" % [out, anim, i])
+		vp.get_texture().get_image().save_png("%s/%s_f%d.png" % [out, anim, i])
 		seen.append(s4.frame)
 	s1.play(anim)
 	s4.play(anim)

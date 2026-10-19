@@ -22,6 +22,8 @@ ANCHOR_MODES = ("foot", "rig", "bbox_bottom")
 TRACKS = ("A", "B", "C", "D", "E")
 LIMIT_KEYS = ("max_foot_slide_px", "max_bbox_drift_px", "opaque_area_cv_warn", "loop_closure_ratio_warn")
 HOVER_KEYS = ("hover_x_drift_warn_px", "hover_min_bob_px")  # ADR-0008 F2: required for anchor_mode bbox_bottom
+PROCESSING_VERSIONS = ("processing-v1",)  # benchmark/characters/2026-10-18-processing-v1.yaml
+DOWNSCALERS = ("k_centroid", "contrast", "nearest")  # sonoranlab.pixelize methods
 NAME_RE = re.compile(r"^[a-z0-9_]+$")
 HEX_RE = re.compile(r"^#[0-9a-fA-F]{6}$")
 CELL_MINUS_RE = re.compile(r"^cell_minus_(\d+)$")
@@ -42,6 +44,7 @@ TOP_KEYS = (
     "references",
     "export",
     "autonomy",
+    "processing",
 )
 
 
@@ -109,6 +112,17 @@ class Alpha:
     bg_key: str
     fringe_passes: int
     fringe_tolerance: int = 0
+
+
+@dataclass(frozen=True)
+class Processing:
+    """The per-frame chain's frozen parameters (`sonoranlab process`); scale is inferred per input, not set here."""
+
+    version: str
+    downscaler: str
+    thickness: int  # PixelOE outline expansion, HD px
+    despill_px: int  # magenta despill band, HD px
+    key_tol: float  # chroma-key RGB distance for inputs without alpha
 
 
 @dataclass(frozen=True)
@@ -201,6 +215,7 @@ class Profile:
     references: References
     export: Export
     autonomy: Autonomy
+    processing: Processing | None = None  # optional for the schema; `sonoranlab process` refuses a profile without it
 
     def character(self, name: str, *, cell: int | list[int] | tuple[int, int] | None = None) -> CharacterSpec:
         """Resolve `name`. A character without a row gets the validator defaults (and says so); it needs `cell`
@@ -410,6 +425,24 @@ def _parse(path: Path, check_paths: bool) -> tuple[Profile | None, list[str]]:
             ),
         )
 
+    pr = _section(
+        raw, "processing", ("version", "downscaler", "thickness", "despill_px", "key_tol"), errs, required=False
+    )
+    processing = None
+    if pr is not None:
+        processing = Processing(
+            version=_val(pr, "processing", "version", "str", errs, choices=PROCESSING_VERSIONS),
+            downscaler=_val(pr, "processing", "downscaler", "str", errs, choices=DOWNSCALERS),
+            thickness=_val(pr, "processing", "thickness", "int", errs, lo=0, hi=6),
+            despill_px=_val(pr, "processing", "despill_px", "int", errs, lo=0),
+            key_tol=_val(pr, "processing", "key_tol", "num", errs, lo=0),
+        )
+        if processing.despill_px and alpha and alpha.bg_key and alpha.bg_key.lower() != "#ff00ff":
+            errs.append(
+                f"processing.despill_px: {processing.despill_px} needs alpha.bg_key #ff00ff "
+                f"(despill is magenta-only), got {alpha.bg_key}"
+            )
+
     if canvas and anchor and canvas.cell is not None:
         _anchor_rows(anchor, canvas.cell, canvas.padding or 0, "canvas", errs)
     if check_paths:
@@ -436,6 +469,7 @@ def _parse(path: Path, check_paths: bool) -> tuple[Profile | None, list[str]]:
         references=references,
         export=export,
         autonomy=autonomy,
+        processing=processing,
     )
     return profile, []
 

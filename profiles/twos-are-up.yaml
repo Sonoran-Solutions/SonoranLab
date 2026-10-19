@@ -30,6 +30,15 @@ anchor:
   anchor_x: cell_half     # quad is centred horizontally
   registration: per_clip  # the game pivots each clip once (contact frames on foot_y); frames keep their bob
 
+processing:               # the per-frame chain of `sonoranlab process` (DYL-86); values and their reasons are
+  version: processing-v1  # benchmark/characters/2026-10-18-processing-v1.yaml (the Phase 1 sweep's frozen config)
+  downscaler: k_centroid  # PixelOE k-centroid, pixeloe==1.0.0 torch backend on CPU
+  thickness: 0            # PixelOE outline expansion; 0 round-trips shipped pixel art exactly (DYL-77)
+  despill_px: 2           # magenta key spill removed within 2 HD px of the matte edge; interior untouched
+  key_tol: 48             # chroma-key RGB distance to bg_key for frames without alpha
+  # Not here: the colour cap is palette.max_colors_per_cell, the alpha threshold is alpha.threshold, and the pixelize
+  # scale is inferred per input as raw frame edge / cell (must be an exact integer; Phase 1 track E raw = cell x 3).
+
 alpha:
   threshold: 128
   bg_key: "#ff00ff"       # generation background; asserted absent from the palette by benchmark/tools/extract_refs.py

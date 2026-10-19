@@ -90,6 +90,21 @@ def build_parser() -> argparse.ArgumentParser:
     v.add_argument("--cell", type=int, help="cell size for a character without a profile row")
     v.add_argument("--out", type=Path, help="write the report here (never overwrites) instead of printing it")
     v.set_defaults(func=validate_frames)
+
+    pr = verbs.add_parser(
+        "process", help="raw HD frames -> validated job dir -> Godot export on PASS (exit 0 pass, 1 fail, 2 error)"
+    )
+    pr.add_argument("raw", type=Path, help="dir of <direction>_<i>.png HD frames, or with --sheet one raw sheet PNG")
+    pr.add_argument("--profile", type=Path, required=True)
+    pr.add_argument("--character", required=True)
+    pr.add_argument("--anim", required=True, help="clip name in the character's animations")
+    pr.add_argument("--out", type=Path, required=True, help="job dir: must not exist or be empty (never overwritten)")
+    pr.add_argument("--stills", type=Path, help="dir with still_<direction>.png (cell size) for sheet column 0")
+    pr.add_argument("--sheet", action="store_true", help="RAW is a sheet: rows in profile order, clip from --start-col")
+    pr.add_argument("--start-col", type=int, help="first clip column of a --sheet (default 1, the game layout)")
+    pr.add_argument("--anchors", type=Path, help="per-frame rig anchors (refused until the validator gates rig)")
+    pr.add_argument("--godot-check", action="store_true", help="import + check the export in Godot (needs godot)")
+    pr.set_defaults(func=process_cmd)
     return p
 
 
@@ -280,6 +295,46 @@ def validate_frames(args: argparse.Namespace) -> int:
     else:
         print(text, end="")
     return 0 if rep["pass"] else 1
+
+
+def process_cmd(args: argparse.Namespace) -> int:
+    from sonoranlab.pipeline import PipelineError, run
+
+    try:
+        res = run(
+            args.raw,
+            profile=args.profile,
+            character=args.character,
+            anim=args.anim,
+            out=args.out,
+            stills=args.stills,
+            sheet=args.sheet,
+            start_col=args.start_col,
+            anchors=args.anchors,
+            godot_check=args.godot_check,
+        )
+    except (PipelineError, OSError) as e:
+        print(f"process: {e}", file=sys.stderr)
+        return 2
+    tag = f"{args.character} {args.anim}"
+    if res["exit"] == 1:
+        fails = res["failures"]
+        lines = [f"FAIL {tag}: {len(fails)} validator failure(s); no export written", *(f"  - {m}" for m in fails[:8])]
+        if len(fails) > 8:
+            lines.append(f"  ... {len(fails) - 8} more")
+        lines += [f"report:  {res['report']}", f"contact: {res['contact']}"]
+        print("\n".join(lines), file=sys.stderr)
+        return 1
+    gc = res["godot_check"]
+    print(f"PASS {tag}: {len(res['warnings'])} warning(s)")
+    for w in res["warnings"]:
+        print(f"  ~ {w}")
+    print(f"job:     {res['job']}\nreport:  {res['report']}\ncontact: {res['contact']}")
+    print(f"export:  {Path(res['export']['png']).parent}")
+    if gc:
+        n = gc["result"].get("animations_checked")
+        print(f"godot:   {gc['godot']}: import + SpriteFrames check passed ({n} animations)")
+    return 0
 
 
 def main(argv: list[str] | None = None) -> int:

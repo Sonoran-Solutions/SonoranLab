@@ -7,6 +7,12 @@ checked against Godot 4.7.2 and the private game checkout (read-only) on 2026-10
 
 ## Outputs
 
+`sonoranlab process` (README "How to run") calls the exporter itself, only after a validator PASS, with the clip
+starting at column 1 and the west rows mirrored from east as real pixels; `--stills DIR` fills column 0 from
+`DIR/still_<direction>.png`. With `--godot-check` it first exports into a temp copy of `tools/godot/spriteframes_check`,
+runs the import and the checker below on it and writes `<job>/export/` only if both pass and the checked PNG/.tres hash
+the same as the final ones (result in `manifest.json` `godot_check`); without `godot` on PATH that flag is an error.
+
 Export writes only under the job dir (`<job>/export/<character>/`), never into the game; it refuses any `--out` that is
 inside the profile's `export.godot_project` (`forbid_under`), and never overwrites (the target must not hold files).
 Copying into the game is a separate, human-reviewed step.
@@ -85,8 +91,10 @@ frame's `AtlasTexture` region and the sha256 of the pixels in that region read f
 
 `render.sh <imported project copy> -- --tres res://... --anim NAME --out DIR [--frames N]` renders one animation at
 1x and 4x (nearest) into a private headless GNOME Shell compositor with llvmpipe (same approach as `bake.sh`; no window
-on the desktop) and saves a PNG per frame. On the synthetic fixture both scales were pixel-exact against the source
-cells (no blended colours at 4x).
+on the desktop) and saves a PNG per frame. It draws into a SubViewport sized from the frame (w x h cells give a
+(24 + 5w) x (16 + 4h) image, 1x at (8, 8), 4x at (16 + w, 8)); the first version used a fixed 160x96 window that only
+fit 16 px cells and cropped real ones (DYL-86). Both scales were pixel-exact against the source cells (no blended
+colours at 4x) on the synthetic fixture and on the 136 px relay_sentinel export (2026-10-19).
 
 ## Smoke render (Phase 5)
 
