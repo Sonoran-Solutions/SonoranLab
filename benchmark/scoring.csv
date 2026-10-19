@@ -1,1 +1,36 @@
 date,track,character,seed,gen_minutes,process_seconds,cleanup_minutes,usable,frames_fixed,back_row_accessories_kept,foot_slide_max_px,off_palette_before,peak_mem_gb,notes
+2026-10-18,A,2,1,2.0,,,no,,,5.5,5879,41.4,1 jobs; validator FAIL (1 issues); failed/refused attempts: A/oathguard/1; review: owner
+2026-10-18,A,2,2,2.2,,,no,,,5.0,5392,57.6,1 jobs; validator FAIL (1 issues); failed/refused attempts: A/oathguard/2; review: owner
+2026-10-18,A,3,1,2.3,,,no,,,7.5,6591,53.1,1 jobs; validator FAIL (1 issues); review: owner
+2026-10-18,A,3,2,2.0,,,no,,,6.0,6326,52.5,1 jobs; validator FAIL (2 issues); review: owner
+2026-10-18,A,1,1,2.2,,,no,,,6.5,5565,36.2,1 jobs; validator FAIL (1 issues); review: owner
+2026-10-18,A,1,2,2.5,,,no,,,7.0,5113,41.1,1 jobs; validator FAIL (1 issues); review: owner
+2026-10-18,B,2,1,1.3,,,no,,,4.0,2382,21.8,ck2750; 1 jobs; validator FAIL (1 issues); review: owner
+2026-10-18,B,2,1,1.3,,,no,,,4.0,2444,22.6,ck3000; 1 jobs; validator FAIL (1 issues); review: owner
+2026-10-18,B,2,2,1.4,,,no,,,4.0,2446,24.7,ck2750; 1 jobs; validator FAIL (1 issues); review: owner
+2026-10-18,B,2,2,1.3,,,no,,,4.0,2482,21.9,ck3000; 1 jobs; validator FAIL (1 issues); review: owner
+2026-10-18,B,3,1,1.4,,,no,,,4.0,2384,22.6,ck2750; 1 jobs; validator FAIL (1 issues); review: owner
+2026-10-18,B,3,1,1.2,,,no,,,4.0,2412,21.2,ck3000; 1 jobs; validator FAIL (1 issues); review: owner
+2026-10-18,B,3,2,1.3,,,no,,,4.0,2389,22.5,ck2750; 1 jobs; validator FAIL (1 issues); review: owner
+2026-10-18,B,3,2,1.3,,,no,,,3.0,2605,22.4,ck3000; 1 jobs; validator FAIL (3 issues); review: owner
+2026-10-18,B,1,1,1.4,,,no,,,3.0,2343,29.3,ck2750; 1 jobs; validator FAIL (1 issues); review: owner
+2026-10-18,B,1,1,1.3,,,no,,,4.0,2390,21.7,ck3000; 1 jobs; validator FAIL (1 issues); review: owner
+2026-10-18,B,1,2,1.4,,,no,,,3.0,2375,22.0,ck2750; 1 jobs; validator FAIL (1 issues); review: owner
+2026-10-18,B,1,2,1.3,,,no,,,4.0,2451,21.8,ck3000; 1 jobs; validator FAIL (1 issues); review: owner
+2026-10-18,C,2,1,39.4,,,no,,,35.5,111691,58.7,5 jobs; validator FAIL (24 issues); review: owner
+2026-10-18,C,2,2,39.3,,,no,,,38.5,116048,58.9,5 jobs; validator FAIL (27 issues); review: owner
+2026-10-18,C,1,1,49.1,,,yes,,,28.0,115872,60.8,5 jobs; validator FAIL (10 issues); review: owner
+2026-10-18,C,1,2,47.0,,,yes,,,30.0,109384,59.6,5 jobs; validator FAIL (17 issues); review: owner
+2026-10-18,C,1,3,9.5,,,,,,,,58.8,"1 jobs; missing directions: ['east', 'north-east', 'south', 'south-east']; not processed"
+2026-10-18,E,2,1,13.6,,,yes,,,23.0,106292,18.8,5 jobs; validator FAIL (7 issues); review: owner
+2026-10-18,E,2,2,13.6,,,yes,,,35.0,111176,18.8,5 jobs; validator FAIL (10 issues); review: owner
+2026-10-18,E,2,3,14.4,,,yes,,,24.0,97932,24.4,5 jobs; validator FAIL (9 issues); review: owner
+2026-10-18,E,2,4,14.1,,,yes,,,25.5,109869,22.3,5 jobs; validator FAIL (6 issues); review: owner
+2026-10-18,E,3,1,8.9,,,yes,,,21.5,60920,16.3,5 jobs; validator FAIL (2 issues); review: owner
+2026-10-18,E,3,2,9.0,,,yes,,,6.5,63648,16.4,5 jobs; validator pass (0 issues); review: owner
+2026-10-18,E,3,3,9.7,,,yes,,,25.5,60369,18.7,5 jobs; validator FAIL (2 issues); review: owner
+2026-10-18,E,3,4,9.6,,,yes,,,21.5,61102,17.8,5 jobs; validator FAIL (2 issues); review: owner
+2026-10-18,E,1,1,15.6,,,yes,,,38.0,98056,19.5,5 jobs; validator FAIL (3 issues); review: owner
+2026-10-18,E,1,2,15.7,,,yes,,,32.0,97113,19.6,5 jobs; validator FAIL (6 issues); review: owner
+2026-10-18,E,1,3,16.1,,,yes,,,34.5,98210,26.5,5 jobs; validator FAIL (7 issues); review: owner
+2026-10-18,E,1,4,16.1,,,yes,,,32.0,94942,22.0,5 jobs; validator FAIL (6 issues); review: owner
