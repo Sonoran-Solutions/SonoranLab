@@ -1,4 +1,4 @@
-# Phase 1 benchmark report — 2026-10-18 (owner-reviewed 2026-10-19: GO)
+# Phase 1 benchmark report — 2026-10-18 (owner-reviewed 2026-10-19; lead E owner-approved; 60-minute criterion not yet demonstrated)
 
 Scope: DYL-70 … DYL-78 and DYL-97 (Linear project "Sonoran Lab", milestone "Phase 1 — Five-track benchmark").
 Decision record: [ADR-0004](../../../docs/decisions/ADR-0004-lead-track.md). Scoring sheet: [`benchmark/scoring.csv`](../../scoring.csv).
@@ -102,11 +102,11 @@ the direction; it isn't a sweep. Recommendation: Phase 3 generates Track E on ne
 
 ## Owner review (2026-10-19, 1× on the local review page)
 
-| track | usable (owner) |
-|---|---|
-| E | **12/12**: samurai 4/4, oathguard 4/4, relay_sentinel 4/4 |
-| C | samurai 2/2, oathguard 0/2 |
-| A / B | 0/6, 0/12 |
+| track | human usable (owner) | validator pass | combined usable (frozen rubric) |
+|---|---|---|---|
+| E | **12/12**: samurai 4/4, oathguard 4/4, relay_sentinel 4/4 | 1/12 (relay_sentinel seed 2) | 1/12 |
+| C | samurai 2/2, oathguard 0/2 | 0/4 | 0/4 |
+| A / B | 0/6, 0/12 | fail by format | 0 |
 
 - **Owner:** C and E look mostly similar except oathguard, which wasn't good in C. The owner prefers E, mainly for speed,
   and is close to approving the sets for use in the game. The main gap they named is the missing white papercraft
@@ -114,20 +114,29 @@ the direction; it isn't a sweep. Recommendation: Phase 3 generates Track E on ne
 - **That outline is drawn by the game's `PixelStandee.gdshader` at runtime** (1 px dark keyline + 1 px white border
   from the alpha mask), not baked into sheets. Generated frames rendered through that shader logic get the same border
   as shipped frames. The local preview is `~/sonoranlab-work/benchmark/review-2026-10-18/standee_preview.png`.
-- **Cleanup minutes were not timed**, so the E headline is generation + processing: samurai ≈17 min, oathguard ≈15,
-  relay_sentinel ≈10.
-- **Decision:** ADR-0004 accepted; **GO for Phase 2**.
+- **Cleanup minutes were not timed**, so the end-to-end headline (generation + processing + cleanup ≤ 60 min) is not
+  demonstrated. E's measured part is generation (samurai 15.9 min median) plus processing; that is headroom, not
+  compliance.
+- **Decision (ADR-0004):** owner-approved lead selection E. The recommendation is to proceed to Phase 2 with the
+  validation limitations carried forward. Open: a timed cleanup on one representative E samurai set, unless the owner
+  records an explicit exception.
 
 ## Safety and operations (DYL-97 + follow-ups, PRs #6 and #12)
 
 - Queue lifecycle and fail-closed inspection, as specified. Verified live: an interrupted job's window held the lock
   while its orphaned prompt drained, and `comfy.sh up --replace` refused the busy container.
 - Found and fixed during the run:
-  1. **GTT credit.** A paused unit's GTT goes to the amdgpu pool, which MemAvailable doesn't count.
+  1. **GTT accounting.** A paused unit's GTT drop did not show up in MemAvailable within the settle window. The first
+     fix (an additive credit) was withdrawn as the default after review; see below.
   2. **Qwen budget with a resident GPU tenant.** Qwen drew 57.5 GiB with llama-gemory running.
   3. **Restart race.** The preflight ran during a just-restored unit's reload. MemAvailable fell to **2.9 GiB**, and the kernel OOM killer chose ComfyUI via `oom-score-adj 1000`; the desktop was untouched.
   4. **Correction:** the container cgroup cap does not bound GTT.
-- **Open item:** batched Track C drew up to 60.8 GiB against a 52 GiB budget. It stayed safe only because about 80 GiB was free. Batched Qwen jobs should request 64 GiB.
+- **Batched Track C** drew up to 60.8 GiB against the 52 GiB it requested (safe only because about 80 GiB was free).
+  The supported recipe is now `--need-gib 64` for batched Qwen (documented in `env/runwindow.py` and
+  `workflows/README.md`).
+- **GTT credit (revised after senior review):** an additive credit for GTT a paused unit released can double-count
+  pages TTM already returned to MemAvailable. It is now **off by default** (`--gtt-credit` opt-in). When enabled it
+  subtracts any MemAvailable rise since the pause. The container cgroup cap is not a backstop for GTT.
 - **Owner actions:** closed the host ComfyUI (175-prompt queue saved first); llama-gemory stopped and disabled at boot.
 - **Operating rules learned:**
   - no heavy CPU work during Qwen windows; processing runs in a 6 GiB-capped unit;

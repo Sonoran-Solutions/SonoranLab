@@ -1,8 +1,14 @@
 # ADR-0004 — Lead generation track
 
-**Status:** accepted (2026-10-19, owner 1× review). Owner, on the review: Tracks C and E look mostly similar except
-oathguard, which wasn't good in C; they prefer E, mainly for its faster speed, and are close to approving the sets for
-use in the game.
+**Status:** owner-approved lead selection: **E** (2026-10-19). Recommended to proceed to Phase 2 with the validation
+limitations below carried forward. **Compliance with the original end-to-end 60-minute criterion has not yet been
+demonstrated**: cleanup was not timed and no Track E set passes both the validator and the human review.
+
+Owner, on the 1× review: Tracks C and E look mostly similar except oathguard, which wasn't good in C; they prefer E,
+mainly for its faster speed, and are close to approving the sets for use in the game.
+
+Revised 2026-10-19 after a senior review. The earlier text called the lead "accepted" and E "well inside" the 60-minute
+rule on generation time plus untimed cleanup. That overstated what the gate measured.
 
 ## Context
 
@@ -24,22 +30,39 @@ and [`benchmark/scoring.csv`](../../benchmark/scoring.csv). The raw data, manife
 | non-humanoid | **E** (hover idle) | none tested | E's relay_sentinel hover passed the validator (seed 2). C has no skeleton for it. |
 | templates | **D**: Godot rig bake (CC0 rig) | none | Exact, reproducible poses and anchors; it feeds C. |
 
-Headline, in minutes from "go" to a usable run cycle (generation + processing + human cleanup). Characters #1 and
-#2 decide; #3 is recorded.
+### What the gate did and did not establish
 
-Owner usable rate (sets rated usable / sets reviewed): **E 12/12** (samurai 4/4, oathguard 4/4, relay_sentinel
-4/4); **C samurai 2/2, C oathguard 0/2**; A 0/6; B 0/12. The owner did not time cleanup: the cleanup column is empty
-and the E headline below is generation plus processing.
+The frozen rubric (`benchmark/characters/2026-10-18.yaml`) defines a usable run cycle as validator pass **and**
+human pass, and the headline as generation + processing + **stopwatch** cleanup minutes, with a 60-minute cut-off
+for character #1. ADR-0007 kept both. These three acceptances are recorded separately:
+
+| acceptance | E (lead) | C (fallback) | A / B |
+|---|---|---|---|
+| **Visual** (owner 1× review, human columns of scoring.csv) | 12/12 rated usable (samurai 4/4, oathguard 4/4, relay_sentinel 4/4) | samurai 2/2, oathguard 0/2 | 0/6, 0/12 |
+| **Technical** (validator, calibrated on shipped clips) | 1/12 pass (relay_sentinel seed 2). Humanoids fail on bbox drift / foot offset from the weapon and shield swing | 0/4 pass | fail by format |
+| **Total effort** (gen + processing + timed cleanup ≤ 60 min, char #1) | **not demonstrated**: cleanup untimed. Generation alone is 15.9 min (median, range 15.6–16.1), leaving ~43 min of headroom | out: 48.0 min of generation before cleanup | out |
+
+Under the frozen definition, combined usable (validator and human) is E 1/12, C 0/4, A/B 0. The scorecard carries the
+human verdict, the validator result and the combined value in separate columns.
+
+Generation minutes per full set (median of the sets run; the time of selected successful attempts; failed and retried
+attempts are listed separately in scoring.csv):
 
 | track | samurai (#1) | oathguard (#2) | relay_sentinel (#3) |
 |---|---|---|---|
-| A | out: format can't ship (4-dir 32×48 grid), no-ship license; 0/2 usable | out, 0/2 | out, 0/2 |
-| B | out: format can't ship (4-dir 32×32 grid), no-ship license; 0/4 usable | out, 0/4 | out, 0/4 |
-| C | owner rated 2/2 usable, but **48.0 min (median) of generation** for locomotion, 3× E | **out**: 0/2, identity drift (a new face per frame) | n/a |
-| E | **≈17 min** (15.9 gen, median of 4 seeds, range 15.6–16.1, + ~1 processing; owner: usable, cleanup not timed) | **≈15 min** (13.8 + ~1), 4/4 usable | **≈10 min** (9.3 + ~1), 4/4 usable |
+| A | 2.4: out, format can't ship (4-dir 32×48 grid), no-ship license | 2.1: out | 2.1: out |
+| B | 1.4: out, format can't ship (4-dir 32×32 grid), no-ship license | 1.3: out | 1.3: out |
+| C | 48.0: out for locomotion (no front/back run) | 39.3: out (identity drift, a new face per frame) | n/a |
+| E | 15.9 | 13.8 | 9.3 |
 
-**GO for Phase 2.** E is well inside the 60-minute rule for character #1 (≈17 min plus untimed cleanup), with a 100%
-owner-usable rate across 3 characters × 4 seeds.
+### Limitations carried into Phase 2 (open items)
+
+1. **Timed cleanup on one representative E samurai set**, to close the 60-minute criterion, unless the owner records an
+   explicit exception to it.
+2. **E validator failures:** weapon/shield-driven bbox drift and foot offsets. Phase 2's validator and Phase 3's
+   weapon-retention work must bring a humanoid E set to a validator pass.
+3. **E failure modes seen in review:** weapon flicker/loss, NE facing drift, the magenta-induced green cast (fixed on
+   a grey background in a 2-clip test).
 
 The white "papercraft" sticker border the owner noted as missing is **drawn at runtime by the game's
 `PixelStandee.gdshader`**: a 1 px dark keyline plus a 1 px white border around the alpha mask. It is not baked into
@@ -51,7 +74,8 @@ reviews look like the game.
 What was cut, and why:
 - **A/B:** the format can't ship into this game; svntax licensing is experimental/no-ship. Kept as the speed floor.
 - **ControlNet-Union for pose:** no effect on Qwen Edit 2511. Native keypoint input replaces it.
-- **Track C seeds 3–4:** C can't meet the 60-minute rule for character 1 at any seed.
+- **Track C seeds 3–4:** C's generation time alone (48 min for samurai) plus front/back redraws can't meet the
+  60-minute rule for character 1, whatever the seed.
 - **736² Wan:** 2.8× slower, with no gain at 1×.
 
 ## Consequences
@@ -70,9 +94,11 @@ What was cut, and why:
     (2 clips, same seed) removed the cast on grey, so grey is the Phase 3 default;
   - weapon-retention mitigations: seed selection by accessory-presence scoring, or a C-posed first frame;
   - facing lock for NE.
-- **Memory budgets on Strix Halo** (no other GPU tenant):
-  - E draws about 20 GiB; a 40 GiB window is ample.
-  - Batched Qwen draws up to about 61 GiB; budget 64.
-  - Single Qwen draws about 50 GiB; budget 52, or 60 if a GPU tenant may be resident.
+- **Supported memory budgets** (`--need-gib`, host MemAvailable drawn; the guard adds an 8 GiB margin; see
+  `env/runwindow.py`):
+  - Wan 2.2, 33 frames: 40 (measured ≤ 27).
+  - Batched Qwen Edit (`batch_frames.py`, 7 frames per prompt): **64** (measured 60.8).
+  - Single Qwen Edit: 60 (default; covers a resident GPU tenant).
+  - klein: 30.
 - **Licensing:** the lead and fallback are Apache-2.0/MIT end to end (docs/04). The svntax LoRAs stay out of the
   default stack.
