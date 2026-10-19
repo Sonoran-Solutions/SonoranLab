@@ -3,7 +3,6 @@
 **Status:** accepted (owner, 2026-10-19): **H0 + H4 + the per-failure diagnostics, and F2**, as recommended below. The
 owner chose "Approve as recommended" in the Phase 2 orchestrator session. It takes effect from the Phase 2 profile and
 validator (DYL-83); the frozen Phase 1 files and scoring are not changed retroactively.
-semantics and the limits in `benchmark/characters/2026-10-18.yaml` stay frozen until the owner picks an option.
 
 ## Context
 
