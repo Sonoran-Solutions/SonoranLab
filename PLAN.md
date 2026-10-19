@@ -40,6 +40,11 @@ produces a decision, not code.
 
 Full protocol: `docs/05-pipeline-tracks.md` and `benchmark/README.md`.
 
+> **ADR-0007 (2026-10-18):** the game has no walk clip and no 4-direction or 32×48 sprites. Phase 1 measures a
+> **run cycle in the game's format**: 5 generated directions with the west side mirrored, per-character cells at
+> 62 px/m, and the shipped palette. Read "4-dir walk" below as that run cycle. References:
+> `benchmark/characters/2026-10-18.yaml`.
+
 Inputs: three approved reference characters from Twos Are Up:
 1. a humanoid with a one-handed weapon (asymmetric),
 2. a humanoid with a large silhouette-changing accessory (cloak / big hat / shield),

@@ -1,58 +1,72 @@
 # Twos Are Up — SonoranLab project profile
-# Spec: docs/07-project-profile.md
-# STATUS: placeholder values. Fill from the real project in Phase 2 and run
-#   sonoranlab profile check profiles/twos-are-up.yaml
+# Spec: docs/07-project-profile.md. Values measured from the game, not assumed (DYL-70, ADR-0007):
+#   ~/Projects/TwosAreUp main @ ebf3272, assets/pixel/v0/characters/{characters.json,palette.png,SOURCE.md},
+#   src/Game/PixelStandee.cs, scenes/PixelStandee.gdshader.
+# This repo is public and the game is private: the palette is referenced by path + sha256, never pasted here.
+# Phase 2 (DYL-79) turns this into a schema-checked profile; `sonoranlab profile check` does not exist yet.
 
 id: twos-are-up
 name: Twos Are Up
 style: pixel
 
 canvas:
-  cell: [32, 48]          # TODO confirm against existing class sheets
-  gen_scale: 16
-  padding: 2
-  sheet_layout: rows_by_direction
+  density_px_per_m: 62    # one pixel density for every character; a 1.8 m human stands 112-113 px
+  cell: per_character     # square cells, multiple of 8, sized to the widest pose (game range 120-288)
+  gen_scale: 4            # model canvas per frame = cell * 4 (184 -> 736); PixelOE downscale factor
+  padding: 2              # >= 2 transparent px around the art in every cell
+  sheet_layout: rows_by_direction   # 8 rows; column 0 = still, then clips in order (characters.json `start`)
 
 palette:
-  hex: []                 # TODO paste the shipped palette, one hex per line
-  max_colors_per_sprite: 16
+  source: /home/dq/Projects/TwosAreUp/assets/pixel/v0/characters/palette.png   # 255x1 RGB, one shared palette
+  sha256: bf66d0a9818689706fe4d1c1dff7680b6908d598c6a7921b1727f0c19bea8457
+  colours: 255
+  max_colors_per_cell: 64 # measured 30-56 per cell across 21 shipped sheets
   dither: none
 
 anchor:
   mode: foot              # foot | rig | bbox_bottom
-  foot_y: 46              # TODO
-  anchor_x: 16
-  foot_zone: [38, 47]
-  max_foot_slide_px: 1
-  max_bbox_drift_px: 2
+  foot_y: cell_minus_4    # lowest opaque row of the clip = cell - 4 (3 empty rows below; engine pivot 3 px up)
+  anchor_x: cell_half     # quad is centred horizontally
+  registration: per_clip  # the game pivots each clip once (contact frames on foot_y); frames keep their bob
+  max_foot_slide_px: calibrate   # set by DYL-71 from the shipped ground-truth clips before any track is scored
+  max_bbox_drift_px: calibrate
 
 alpha:
   threshold: 128
-  bg_key: "#00ff00"
+  bg_key: "#ff00ff"       # generation background; asserted absent from the palette by benchmark/tools/extract_refs.py
   fringe_passes: 1
-  fringe_tolerance: 0
+  fringe_tolerance: 0     # shipped sheets have 0 semi-transparent pixels
+
+outline:
+  colour: "#110d0c"       # 1 px near-black selective outline (some dark hue-shifted variants), no anti-aliasing
+  baked_border: forbidden # the white sticker border and #0e0b0a keyline are drawn by PixelStandee.gdshader
 
 directions:
-  order: [down, left, right, up]
-  mirror_right_from_left: false
+  order: [north, north-west, west, south-west, south, south-east, east, north-east]   # sheet row order
+  generate: [north, north-east, east, south-east, south]
+  mirror_animations: {north-west: north-east, west: east, south-west: south-east}     # stills stay true 8-dir
+  mirror_right_from_left: false   # superseded by mirror_animations (the game mirrors west from east)
 
-animations:
-  walk_4dir:   {frames: 8, fps: 10, loop: true,  track_default: E, template: templates/poses/walk}
-  idle_4dir:   {frames: 4, fps: 6,  loop: true,  track_default: E, template: templates/poses/idle}
-  attack_4dir: {frames: 4, fps: 12, loop: false, track_default: C, template: templates/poses/attack_1h}
-  hurt_4dir:   {frames: 2, fps: 8,  loop: false, track_default: C, template: templates/poses/hurt}
+animations:               # names, frame counts and fps as the game's characters.json uses them
+  idle:    {frames: 4, fps: 5,  loop: true}
+  run:     {frames: 6, fps: 10, loop: true,  track_default: pending ADR-0004}
+  attack:  {frames: 8, fps: 12, loop: false}
+  cast:    {frames: 8, fps: 10, loop: false}
+  death:   {frames: 6, fps: 8,  loop: false, hold_last: true}
+  channel: {frames: 8, fps: 8,  loop: false, loop_from: 4}
+  # per-character overrides live in characters.json (e.g. samurai run 7, cleric death 8); no walk or hurt clip exists
 
 references:
-  style_refs: []          # TODO paths to 2–3 approved existing class sheets
-  proportions: ""         # TODO e.g. "chibi, ~2.5 heads tall"
-  outline: ""             # TODO e.g. "1px dark outline, no AA"
-  camera: ""              # TODO e.g. "3/4 top-down"
+  style_refs: [samurai, oathguard, relay_sentinel]   # benchmark refs, see benchmark/characters/2026-10-18.yaml
+  proportions: "realistic, ~7-7.5 heads, 62 px/m"
+  outline: "1px near-black selective outline, no AA, no baked sticker border"
+  camera: "side-view (eye level) 8-direction standees on leaning billboards under a 3D orbit camera"
+  vfx: forbidden          # spell washes / specks were re-rolled out of shipped sheets; effects are shaders
 
 export:
-  godot_project: ""       # TODO absolute path
-  sprites_dir: "res://assets/sprites/classes"
-  spriteframes_name: "{character}_frames"
-  anim_name: "{animation}_{direction}"
+  godot_project: /home/dq/Projects/TwosAreUp
+  sprites_dir: "res://assets/pixel/v0/characters"
+  manifest: characters.json   # one PNG sheet + one manifest entry per character; no SpriteFrames .tres
 
 autonomy:
   allow_auto_approve: false

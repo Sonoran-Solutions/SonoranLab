@@ -3,6 +3,13 @@
 Protocol: `docs/05-pipeline-tracks.md`. Decision goes in
 `docs/decisions/ADR-0004-lead-track.md`.
 
+## Storage (ADR-0007)
+
+This repo is public and the Twos Are Up art is private. Raw/processed frames, contact sheets and reference images
+go under `~/sonoranlab-work/benchmark/results/<date>/<track>/<char>/<seed>/`. Only `manifest.json`, `report.json`,
+`notes.md`, `scoring.csv` and output hashes are committed. The frozen inputs are in
+`benchmark/characters/2026-10-18.yaml`.
+
 ## Layout
 
 ```
@@ -22,7 +29,7 @@ benchmark/
 |---|---|
 | date | |
 | track | A, B, C, D, E |
-| character | 1 (humanoid+weapon), 2 (humanoid+big accessory), 3 (non-humanoid) |
+| character | 1 samurai (humanoid+weapon), 2 oathguard (humanoid+shield), 3 relay_sentinel (non-humanoid) |
 | seed | |
 | gen_minutes | wall time from submit to raw frames |
 | process_seconds | deterministic chain |
