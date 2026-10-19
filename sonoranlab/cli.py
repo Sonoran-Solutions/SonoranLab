@@ -39,6 +39,15 @@ def build_parser() -> argparse.ArgumentParser:
     px.add_argument("--thickness", type=int, default=0)
     px.add_argument("--bg", default="#ff00ff", help="#rrggbb background for alpha compositing")
     px.set_defaults(func=pixelize_frame)
+
+    sl = verbs.add_parser("slice", help="cut a fixed-grid sheet into <direction>_<i>.png frames (never overwrites)")
+    sl.add_argument("sheet", type=Path)
+    sl.add_argument("out_dir", type=Path, help="must not exist")
+    sl.add_argument("--cell", type=int, required=True, help="square cell edge in px")
+    sl.add_argument("--rows", required=True, help="comma-separated direction names, top row first")
+    sl.add_argument("--frames", type=int, required=True)
+    sl.add_argument("--start-col", type=int, default=0, help="first clip column (1 for the game layout)")
+    sl.set_defaults(func=slice_cmd)
     return p
 
 
@@ -84,6 +93,30 @@ def pixelize_frame(args: argparse.Namespace) -> int:
     except (OSError, ValueError) as e:
         print(f"pixelize: {e}", file=sys.stderr)
         return 2
+    return 0
+
+
+def slice_cmd(args: argparse.Namespace) -> int:
+    import numpy as np
+    from PIL import Image
+
+    from sonoranlab.slice import slice_sheet
+
+    try:
+        if args.out_dir.exists():
+            raise ValueError(f"{args.out_dir}: already exists; slice never overwrites, pick a new directory")
+        rows = [r for r in args.rows.split(",") if r]
+        with Image.open(args.sheet) as im:
+            sheet = np.asarray(im.convert("RGBA"))
+        clips = slice_sheet(sheet, (args.cell, args.cell), rows, args.frames, start_col=args.start_col)
+        args.out_dir.mkdir(parents=True)
+        for d, fs in clips.items():
+            for i, f in enumerate(fs):
+                Image.fromarray(f).save(args.out_dir / f"{d}_{i}.png")
+    except (ValueError, OSError) as e:
+        print(f"slice: {e}", file=sys.stderr)
+        return 2
+    print(f"{args.out_dir}: {sum(map(len, clips.values()))} frames in {len(clips)} directions")
     return 0
 
 
