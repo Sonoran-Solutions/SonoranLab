@@ -23,7 +23,7 @@ step "restore units left paused by an interrupted run" python3 env/runwindow.py 
 step "image present (else rebuild from env/Containerfile)" bash -c 'podman image exists localhost/sonoranlab-comfy:p0 && echo present || podman build -t localhost/sonoranlab-comfy:p0 -f env/Containerfile env/'
 step "weights verify (sha256, no network)" quiet bash env/fetch_models.sh --verify
 step "ComfyUI up (refuses to replace a busy container)" quiet bash env/comfy.sh up --replace
-step "Qwen Edit smoke in a guarded run window" quiet python3 env/runwindow.py --need-gib 52 "${allow[@]}" -- \
+step "Qwen Edit smoke in a guarded run window" quiet python3 env/runwindow.py --need-gib 60 "${allow[@]}" -- \
   bash env/smoke.sh workflows/static/qwen_edit_2511_fp8_lightning_4step.json recovery_qwen_edit
 got=$(python3 -c "import json;print(*json.load(open('$WORK/runs/recovery_qwen_edit.json'))['output_sha256'].values())")
 [[ "$got" == "$REF" ]] && verdict=PASS || verdict="FAIL (output $got != $REF)"

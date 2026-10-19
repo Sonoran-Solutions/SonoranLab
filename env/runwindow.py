@@ -16,8 +16,8 @@ systemd-oomd from killing *other* scopes when the host runs out. This wrapper:
    process is SIGKILLed, the paused units are listed in a state file and `--restore` (run by recover.sh) brings
    them back.
 
-    python3 env/runwindow.py --need-gib 52 [--allow-pause llama-gemory] -- bash env/smoke.sh WF TAG
-    python3 env/runwindow.py --need-gib 52 --dry-run          # report only
+    python3 env/runwindow.py --need-gib 60 [--allow-pause llama-gemory] -- bash env/smoke.sh WF TAG
+    python3 env/runwindow.py --need-gib 60 --dry-run          # report only
     python3 env/runwindow.py --restore                        # restore units left paused by a killed run
                                                               # (refuses with exit 4 while any window is live; waits
                                                               #  --drain-s for the container job to finish first)
@@ -311,7 +311,8 @@ def plan(need: int, margin: int, max_psi: float, allowed: set[str], own: str | N
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    ap.add_argument("--need-gib", type=float, default=52.0, help="host memory the workload needs (Qwen Edit FP8 ≈ 52)")
+    ap.add_argument("--need-gib", type=float, default=60.0,
+                    help="host MemAvailable the workload draws (Qwen Edit FP8: up to 57.5 GiB measured with llama-gemory up)")
     ap.add_argument("--margin-gib", type=float, default=8.0, help="headroom kept free for the desktop / oomd")
     ap.add_argument("--max-psi", type=float, default=10.0, help="refuse if memory PSI some avg10 is above this")
     ap.add_argument("--allow-pause", action="append", default=[], metavar="UNIT", help="user unit you approve pausing")
