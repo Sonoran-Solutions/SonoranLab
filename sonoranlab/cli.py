@@ -287,8 +287,9 @@ def main(argv: list[str] | None = None) -> int:
     try:
         return args.func(args)
     except ProfileError as e:
+        src = getattr(args, "file", None) or getattr(args, "profile", "profile")
         for msg in e.problems:
-            print(f"{args.file}: {msg}", file=sys.stderr)
+            print(f"{src}: {msg}", file=sys.stderr)
         return 2
 
 
