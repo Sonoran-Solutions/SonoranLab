@@ -66,6 +66,8 @@ BASE = {
             "max_bbox_drift_px": 4,
             "opaque_area_cv_warn": 0.1,
             "loop_closure_ratio_warn": 1.29,
+            "hover_x_drift_warn_px": 3,
+            "hover_min_bob_px": 1.5,
         },
     },
     "export": {"godot_project": "game", "sprites_dir": "res://sprites", "manifest": "characters.json"},
@@ -164,6 +166,11 @@ def test_unknown_character_uses_labelled_defaults(make):
         (lambda d: d["validator"].pop("max_bbox_drift_px"), "validator.max_bbox_drift_px: missing"),
         (lambda d: d["characters"]["hero"].pop("opaque_area_cv_warn"), "characters.hero.opaque_area_cv_warn: missing"),
         (lambda d: d["characters"]["hero"].pop("cell"), "characters.hero.cell: missing (canvas.cell is per_character)"),
+        (
+            lambda d: d["characters"]["floater"].pop("hover_min_bob_px"),
+            "characters.floater.hover_min_bob_px: missing (anchor_mode bbox_bottom needs the hover warnings",
+        ),
+        (lambda d: d["anchor"].update(mode="bbox_bottom"), "validator.hover_x_drift_warn_px: missing (anchor_mode"),
         (lambda d: d["characters"]["hero"].update(locomotion="walk"), "characters.hero.locomotion: 'walk' is not"),
         (lambda d: d["characters"]["hero"]["animations"].update(cut={"frames": 2}), "animations.cut: not a clip"),
         (
@@ -240,6 +247,8 @@ def test_real_profile_schema():
     assert p.animations["run"].track_default == "E"
     unknown = p.character("squire", cell=120)
     assert unknown.uses_defaults and unknown.limits.max_foot_slide_px == 30 and "all" in unknown.limits_source
+    assert unknown.limits.max_bbox_drift_px == 25 and "ADR-0008 H4" in unknown.limits_source  # H4: pooled shipped runs
+    assert (sentinel.limits.hover_x_drift_warn_px, sentinel.limits.hover_min_bob_px) == (3, 1.5)  # ADR-0008 F2
 
 
 @pytest.mark.skipif(not GAME.is_dir(), reason=f"private game checkout {GAME} absent: palette/export paths unchecked")
