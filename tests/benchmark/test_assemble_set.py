@@ -190,3 +190,16 @@ def test_a_samurai_seed_one_uses_only_smoke_try2(tmp_path):
     assert selection["assembly"]["params"]["slice"]["cols"] == 6
     with Image.open(out / "raw" / "north_0.png") as image:
         assert image.size == (4, 4)
+
+
+def test_failed_attempt_without_timing_is_recorded(tmp_path):
+    """A refused or OOM-killed attempt's manifest can lack run.wall_s; it is kept with wall_s None."""
+    results = tmp_path / "2026-10-18"
+    bad = results / "A" / "oathguard" / "1"
+    bad.mkdir(parents=True)
+    (bad / "manifest.json").write_text(json.dumps({"job": "2026-10-18/A/oathguard/1", "exit_code": 6,
+                                                   "run": {"status": "no-response"}, "raw": {}}))
+    out = tmp_path / "set"
+    assert assemble_set.main([str(results), "A", "oathguard", "1", "--out", str(out)]) == 3
+    sel = json.loads((out / "selection.json").read_text())
+    assert sel["attempts"][0]["wall_s"] is None and sel["selected"] == {}
