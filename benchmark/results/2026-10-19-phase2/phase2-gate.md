@@ -105,3 +105,13 @@ frame index matches the capture index, and live playback advances at 5 fps and l
 eye: crisp 1x and 4x standee, the west row is the east row mirrored, the hover pose reads, nothing cropped.
 The first attempt showed the DYL-85 render script drew into a fixed 160x96 window (fine for its 16 px fixture, cropped
 and overlapped for a 136 px cell); it now renders into a SubViewport sized from the frame (docs/09).
+
+## 7. Re-run on the committed tree (orchestrator, after the review fixes)
+
+After the independent review fixes (commit `cca758c`), the orchestrator re-ran §1's command and samurai/1 on the
+committed tree (manifests record `git: cca758cd…`):
+- relay_sentinel/2 `--godot-check`: exit 0, Godot check pass; `report.json` `125fac26…`, sheet `05678453…`,
+  `.tres` `613de77e…`, identical to §1.
+- samurai/1 run: exit 1, no `export/` dir; report, contact sheet and manifest written.
+An earlier orchestrator re-run of §1 on the uncommitted tree (job `orch-verify-…`) also matched, and oathguard/2
+exited 1 with no export and stderr naming each failing frame with its moved edge and core delta.
