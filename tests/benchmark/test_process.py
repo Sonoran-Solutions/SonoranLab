@@ -3,6 +3,7 @@
 3 frames, 16 px cell, scale 4 -> 64 px raw frames on the #ff00ff key, a 4-colour palette made here.
 """
 
+import hashlib
 import json
 import sys
 from pathlib import Path
@@ -189,3 +190,41 @@ def test_despill_only_touches_the_edge_band():
     assert n == int(((out != rgb).any(-1)).sum())
     red = rgb.copy(); red[...] = (200, 40, 30)             # a red sash on the edge: min(R,B) < G -> no change
     assert (P.despill(red, alpha, 2)[0] == red).all()
+
+
+def sha(p: Path) -> str:
+    return hashlib.sha256(p.read_bytes()).hexdigest()
+
+
+def test_report_provenance(tmp_path: Path, palette: Path) -> None:
+    pytest.importorskip("yaml")
+    cfg = tmp_path / "cfg.yaml"
+    cfg.write_text("version: processing-v1\ndownscaler: test_nearest\ndespill_px: 3\nmax_colours: 7\nkey_tol: 40\n"
+                   "characters:\n  synthetic: {anchor_mode: bbox_bottom, max_foot_slide_px: 9, max_bbox_drift_px: 5}\n")
+    sel = tmp_path / "set" / "selection.json"
+    sel.parent.mkdir()
+    sel.write_text(json.dumps({"set": "E/synthetic/1", "attempts": []}))
+    raw = sel.parent / "raw"
+    write_raw(raw, [sprite(), sprite()])
+    out = sel.parent / "processed"
+    argv = ["process.py", "run", str(raw), str(out), "--character", "synthetic", "--clip", "run", "--cell", str(CELL),
+            "--frames", "2", "--palette", str(palette), "--directions", "east", "--config", str(cfg), "--key-tol", "41"]  # explicit flag beats the config's 40
+    sys.argv = argv
+    P.main()
+    rep = json.loads((out / "report.json").read_text())
+    pr, prm = rep["provenance"], rep["params"]
+    assert pr["config"]["sha256"] == sha(cfg) and pr["config"]["version"] == "processing-v1"
+    assert (prm["despill_px"], prm["max_colours"], prm["key_tol"], prm["downscaler"]) == (3, 7, 41, "test_nearest")
+    assert (prm["max_foot_slide"], prm["max_bbox_drift"], rep["anchor_mode"]) == (9, 5, "bbox_bottom")
+    assert pr["inputs"] == {f"east_{i}.png": sha(raw / f"east_{i}.png") for i in range(2)}
+    assert set(pr["outputs"]) == {"east_0.png", "east_1.png", "sheet.png"}
+    assert all(h == sha(out / "processed" / n) for n, h in pr["outputs"].items() if n != "sheet.png")
+    assert pr["outputs"]["sheet.png"] == sha(out / "sheet.png")
+    assert pr["process_seconds"] >= 0 and pr["tool_sha256"] == sha(Path(P.__file__))
+    assert pr["selection_sha256"] == sha(sel) and pr["selection_set"] == "E/synthetic/1"
+
+
+def test_no_config_means_null_config_and_legacy_defaults(tmp_path: Path, palette: Path) -> None:
+    rep = go(tmp_path, palette, [sprite(), sprite(), sprite()])
+    assert rep["provenance"]["config"] is None and "selection_sha256" not in rep["provenance"]
+    assert rep["params"]["despill_px"] == 0 and rep["params"]["max_colours"] == P.MAX_COLOURS

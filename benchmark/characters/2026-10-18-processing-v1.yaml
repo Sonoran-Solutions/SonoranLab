@@ -1,0 +1,34 @@
+# Final Phase 1 processing configuration, version processing-v1 (2026-10-18). Read by
+# `benchmark/tools/process.py run ... --config` (explicit CLI flags still override these defaults).
+#
+# SUPERSEDES the processing block of benchmark/characters/2026-10-18.yaml: that file's `pixeloe: {scale: 4}` is wrong
+# for tracks C/E (scale 3, below) and its "pixeloe_outline_thickness: OPEN" is closed by the DYL-77 decision:
+# PixelOE k-centroid, outline thickness 0. This is what the sweep actually used; reports written with --config carry
+# this file's sha256 in provenance.config.
+#
+# No game art, palette values or images in this file (public repo).
+version: processing-v1
+date: 2026-10-18
+
+downscaler: k_centroid          # PixelOE k-centroid (pixeloe==1.0.0, torch backend)
+thickness: 0                    # PixelOE outline expansion; 0 round-trips shipped pixel art exactly (DYL-77)
+despill_px: 2                   # magenta key spill removed within 2 HD px of the matte edge; interior untouched
+key_tol: 48                     # chroma-key distance to #ff00ff for RGB frames without alpha
+max_colours: 64                 # per cell, least-used merged into nearest palette colour
+alpha_threshold: 128            # HD alpha mean over the scale x scale block >= 128 -> opaque (informational; process.py constant)
+registration: per_clip          # one (dx, dy) per direction: lowest row -> cell - 4, median bbox centre -> cell / 2
+opaque_area_cv_warn: 0.10       # validator warning floor (docs/08); humanoid calibrated values stay in the freeze addendum
+loop_ratio_warn: 1.29           # loop_closure_ratio warning, the "all" value of the freeze file's thresholds_addendum
+
+# Scale and canvas are per track and are passed as --scale (process.py has no track argument).
+scale_rules:
+  C: {scale: 3, canvas: "round16(cell * 3)"}   # HD raw frame edge = round16(cell * 3)
+  E: {scale: 3, canvas: "round16(cell * 3)"}
+  A: {scale: 4, grid_cell: 48}                 # svntax grid cells (A: 48, after /4)
+  B: {scale: 4, grid_cell: 32}                 # svntax grid cells (B: 32, after /4)
+
+# Calibrated validator limits (gates) and foot anchor per character; calibration method in the freeze addendum.
+characters:
+  samurai:        {anchor_mode: foot,        max_foot_slide_px: 30, max_bbox_drift_px: 16}
+  oathguard:      {anchor_mode: foot,        max_foot_slide_px: 20, max_bbox_drift_px: 8}
+  relay_sentinel: {anchor_mode: bbox_bottom, max_foot_slide_px: 15, max_bbox_drift_px: 10}

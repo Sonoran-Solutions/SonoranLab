@@ -11,6 +11,11 @@ Chain per frame (docs/05, frozen in benchmark/characters/2026-10-18.yaml):
     uv run --no-project --with pillow --with numpy python -I benchmark/tools/process.py \
       calibrate ~/sonoranlab-work/benchmark/characters/2026-10-18 ~/sonoranlab-work/benchmark/calibration-2026-10-18.json
 
+--config PATH (benchmark/characters/2026-10-18-processing-v1.yaml) supplies the frozen downscaler, thickness, despill,
+key_tol, colour cap, validator warn limits and the per-character anchor mode / thresholds; explicit flags override it.
+report.json "provenance" records the config sha256, every effective parameter (in "params"), input and output file
+hashes, wall time, this tool's sha256 and, when RAW's parent holds a selection.json, that file's sha256 and "set".
+
 Definitions (frame coordinates after registration, bbox inclusive):
   foot_y        lowest opaque row of a frame.
   contact frame foot_y within 1 px of the clip's lowest row (per direction).
@@ -29,9 +34,11 @@ the profile, the bbox bottom IS the lowest opaque row.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import math
 import re
+import time
 from pathlib import Path
 
 import numpy as np
@@ -52,6 +59,22 @@ CV_WARN = 0.10  # docs/08 default, until the calibrated addendum replaces it
 # docs/08's loop_closure warn (> 0.15 of pixels) does not survive calibration: the shipped loops differ in 71-90% of
 # their opaque pixels last->first, about as much as any adjacent pair. So the warning gates loop_closure_ratio instead.
 FRAME_RE = re.compile(r"^([a-z-]+)_(\d+)\.png$")
+CONFIG_VERSIONS = ("processing-v1",)  # --config files this tool understands (benchmark/characters/2026-10-18-processing-v1.yaml)
+
+
+def sha256(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def load_config(path: Path) -> dict:
+    """The frozen processing configuration (yaml). Refuses a missing or unknown `version`."""
+    import yaml  # only --config needs it
+
+    cfg = yaml.safe_load(path.read_text())
+    if not isinstance(cfg, dict) or cfg.get("version") not in CONFIG_VERSIONS:
+        got = cfg.get("version") if isinstance(cfg, dict) else None
+        raise SystemExit(f"{path}: config version {got!r} is not one of {CONFIG_VERSIONS}")
+    return cfg
 
 
 # ---------------------------------------------------------------- per-frame chain
@@ -150,7 +173,7 @@ def border(mask: np.ndarray) -> np.ndarray:
 
 def process_frame(
     im: Image.Image, scale: int, pal: np.ndarray, method: str = "k_centroid", thickness: int = 2, key_tol: float = 48,
-    despill_px: int = 0,
+    despill_px: int = 0, max_colours: int = MAX_COLOURS,
 ) -> tuple[np.ndarray, dict]:
     """One raw HD frame -> RGBA uint8 at (H/scale, W/scale), binary alpha, palette-locked. Not yet registered."""
     rgb, alpha = extract_alpha(im, key_tol)
@@ -168,7 +191,7 @@ def process_frame(
     to_pal = np.linalg.norm(pre - snapped, axis=-1)
     fringe = border(opaque) & (to_key < to_pal)  # fringe_passes: 1
     opaque &= ~fringe
-    snapped, merged = limit_colours(snapped, opaque, MAX_COLOURS)
+    snapped, merged = limit_colours(snapped, opaque, max_colours)
     out = np.zeros((h // scale, w // scale, 4), np.uint8)
     out[opaque, :3] = snapped[opaque]
     out[opaque, 3] = 255
@@ -243,6 +266,7 @@ def validate(
     cv_warn: float = CV_WARN,
     loop_ratio_warn: float | None = None,
     pre: dict[str, list[dict]] | None = None,
+    max_colours: int = MAX_COLOURS,
 ) -> dict:
     """docs/08 report for registered clips {direction: [RGBA cell frames]}."""
     palset = {tuple(c) for c in pal.tolist()}
@@ -298,8 +322,8 @@ def validate(
                 r["issues"].append(f"palette: {tag} has {r['off_palette_after']} off-palette pixels")
             if r["semi_alpha_pixels"]:
                 r["issues"].append(f"semi_alpha: {tag} has {r['semi_alpha_pixels']} semi-transparent pixels")
-            if r["colours"] > MAX_COLOURS:
-                r["issues"].append(f"colours: {tag} uses {r['colours']} colours, limit {MAX_COLOURS}")
+            if r["colours"] > max_colours:
+                r["issues"].append(f"colours: {tag} uses {r['colours']} colours, limit {max_colours}")
             if edges:
                 r["issues"].append(f"touches_edge: {tag} {'/'.join(edges)} edge inside padding {PADDING}, clipping")
             if max_foot_slide is not None and r["foot_slide"] is not None and r["foot_slide"] > max_foot_slide:
@@ -392,13 +416,17 @@ def contact(clips: dict[str, list[np.ndarray]], cell: int, report: dict, scale: 
     return out
 
 
-def load_clips(raw: Path) -> dict[str, list[Image.Image]]:
+def frame_files(raw: Path) -> dict[str, dict[int, Path]]:
     found: dict[str, dict[int, Path]] = {}
     for p in sorted(raw.glob("*.png")):
         m = FRAME_RE.match(p.name)
         if m and m[1] in ROWS:
             found.setdefault(m[1], {})[int(m[2])] = p
-    return {d: [Image.open(fs[i]) for i in sorted(fs)] for d, fs in found.items()}
+    return found
+
+
+def load_clips(raw: Path) -> dict[str, list[Image.Image]]:
+    return {d: [Image.open(fs[i]) for i in sorted(fs)] for d, fs in frame_files(raw).items()}
 
 
 def run(
@@ -423,14 +451,18 @@ def run(
     max_bbox_drift: int | None = None,
     loop_ratio_warn: float | None = None,
     contact_scale: int = 8,
+    max_colours: int = MAX_COLOURS,
+    cv_warn: float = CV_WARN,
+    config: Path | None = None,
 ) -> dict:
+    t0 = time.perf_counter()
     raw, out = raw.resolve(), out.resolve()
     assert raw not in (out, out / "processed"), "raw inputs are never overwritten: pick another out dir"
     assert downscaler in DOWNSCALERS, downscaler
     pal = load_palette(palette)
     clips, pre, reg = {}, {}, {}
     for d, ims in load_clips(raw).items():
-        res = [process_frame(im, scale, pal, downscaler, thickness, key_tol, despill_px) for im in ims]
+        res = [process_frame(im, scale, pal, downscaler, thickness, key_tol, despill_px, max_colours) for im in ims]
         clips[d], reg[d] = register_clip([f for f, _ in res], cell)
         pre[d] = [s for _, s in res]
     rep = validate(
@@ -444,6 +476,8 @@ def run(
         max_bbox_drift=max_bbox_drift,
         loop_ratio_warn=loop_ratio_warn,
         pre=pre,
+        max_colours=max_colours,
+        cv_warn=cv_warn,
     )
     for d, info in reg.items():
         if info.get("clipped_px") and any(info["clipped_px"]):
@@ -464,6 +498,10 @@ def run(
             "downscaler": downscaler,
             "thickness": thickness,
             "key_tol": key_tol,
+            "despill_px": despill_px,
+            "max_colours": max_colours,
+            "alpha_threshold": ALPHA_THRESHOLD,
+            "cv_warn": cv_warn,
             "palette": str(palette),
             "loop": loop,
             "max_foot_slide": max_foot_slide,
@@ -478,6 +516,21 @@ def run(
     sheet(clips, cell, frames, stills).save(out / "sheet.png")
     if clips:
         contact(clips, cell, rep, contact_scale).save(out / "contact.png")
+    prov = {
+        "config": {"path": str(config.resolve()), "sha256": sha256(config), "version": load_config(config)["version"]}
+        if config
+        else None,
+        "inputs": {p.name: sha256(p) for fs in frame_files(raw).values() for p in fs.values()},
+        "outputs": {f"{d}_{i}.png": sha256(out / "processed" / f"{d}_{i}.png") for d, fs in clips.items() for i in range(len(fs))}
+        | {"sheet.png": sha256(out / "sheet.png")},
+        "process_seconds": round(time.perf_counter() - t0, 3),
+        "tool_sha256": sha256(Path(__file__)),
+    }
+    if (raw.parent / "selection.json").exists():
+        sel = raw.parent / "selection.json"
+        prov["selection_sha256"] = sha256(sel)
+        prov["selection_set"] = json.loads(sel.read_text()).get("set")
+    rep["provenance"] = prov
     (out / "report.json").write_text(json.dumps(rep, indent=1) + "\n")
     return rep
 
@@ -556,12 +609,14 @@ def main() -> None:
     r.add_argument("--frames", type=int, required=True)
     r.add_argument("--scale", type=int, default=4)
     r.add_argument("--palette", type=Path, default=PALETTE)
-    r.add_argument("--anchor-mode", choices=["foot", "bbox_bottom"], default="foot")
+    r.add_argument("--config", type=Path, help="frozen processing yaml (version: processing-v1); flags below override it")
+    r.add_argument("--anchor-mode", choices=["foot", "bbox_bottom"])
     r.add_argument("--directions", default=",".join(GEN_DIRS))
-    r.add_argument("--downscaler", default="k_centroid", help="comma list compares downscalers into out/<name>/")
-    r.add_argument("--thickness", type=int, default=2, help="PixelOE outline expansion (Phase 0 node used 2)")
-    r.add_argument("--key-tol", type=float, default=48)
-    r.add_argument("--despill", type=int, default=0, help="magenta despill band in HD px around the matte edge (C/E)")
+    r.add_argument("--downscaler", help="comma list compares downscalers into out/<name>/ (default k_centroid)")
+    r.add_argument("--thickness", type=int, help="PixelOE outline expansion (default 2, as the Phase 0 node)")
+    r.add_argument("--key-tol", type=float, help="default 48")
+    r.add_argument("--despill", type=int, help="magenta despill band in HD px around the matte edge (default 0)")
+    r.add_argument("--max-colours", type=int, help=f"colour cap per cell (default {MAX_COLOURS})")
     r.add_argument("--no-loop", action="store_true")
     r.add_argument("--stills", type=Path, help="dir with still_<dir>.png for sheet column 0")
     r.add_argument("--max-foot-slide", type=float)
@@ -576,7 +631,13 @@ def main() -> None:
     if a.cmd == "calibrate":
         print(json.dumps(calibrate(a.inputs, a.out_json, a.palette)["proposed_thresholds"], indent=1))
         return
-    methods = a.downscaler.split(",")
+    cfg = load_config(a.config) if a.config else {}
+    ch = cfg.get("characters", {}).get(a.character, {})
+
+    def pick(flag, *cfg_vals, default=None):  # explicit flag > config (character, then global) > legacy default
+        return next((v for v in (flag, *cfg_vals) if v is not None), default)
+
+    methods = pick(a.downscaler, cfg.get("downscaler"), default="k_centroid").split(",")
     summary = {}
     for m in methods:
         out = a.out if len(methods) == 1 else a.out / m
@@ -589,18 +650,21 @@ def main() -> None:
             frames=a.frames,
             scale=a.scale,
             palette=a.palette,
-            anchor_mode=a.anchor_mode,
+            anchor_mode=pick(a.anchor_mode, ch.get("anchor_mode"), default="foot"),
             directions=a.directions.split(","),
             downscaler=m,
-            thickness=a.thickness,
-            key_tol=a.key_tol,
-            despill_px=a.despill,
+            thickness=pick(a.thickness, cfg.get("thickness"), default=2),
+            key_tol=pick(a.key_tol, cfg.get("key_tol"), default=48),
+            despill_px=pick(a.despill, cfg.get("despill_px"), default=0),
             loop=not a.no_loop,
             stills=a.stills,
-            max_foot_slide=a.max_foot_slide,
-            max_bbox_drift=a.max_bbox_drift,
-            loop_ratio_warn=a.loop_ratio_warn,
+            max_foot_slide=pick(a.max_foot_slide, ch.get("max_foot_slide_px")),
+            max_bbox_drift=pick(a.max_bbox_drift, ch.get("max_bbox_drift_px")),
+            loop_ratio_warn=pick(a.loop_ratio_warn, ch.get("loop_ratio_warn"), cfg.get("loop_ratio_warn")),
             contact_scale=a.contact_scale,
+            max_colours=pick(a.max_colours, cfg.get("max_colours"), default=MAX_COLOURS),
+            cv_warn=pick(None, cfg.get("opaque_area_cv_warn"), default=CV_WARN),
+            config=a.config,
         )
         summary[m] = {
             "pass": rep["pass"],

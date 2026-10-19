@@ -112,3 +112,9 @@ thresholds_addendum:            # DYL-71, 2026-10-18. CONFIRMED by the orchestra
     OPEN until the first real raw frames exist: thickness 0 round-trips shipped pixel art exactly, thickness 2 (Phase 0
     node default) does not (67.9-87.0% of opaque pixels; 70-91 colours). DYL-77 compares 0/1/2 on the first Track A and
     Track C smoke frames; the winner is frozen here before any scoring.csv row. Raw outputs are kept, so re-processing is free.
+
+processing_final:               # 2026-10-18 (DYL-77 decision, k-centroid thickness 0); supersedes `processing` and
+                                # `pixeloe_outline_thickness` above (scale 4 -> per-track scale 3 for C/E, 4 for A/B)
+  config: benchmark/characters/2026-10-18-processing-v1.yaml
+  version: processing-v1
+  sha256: aa9c2dfaa4ba7416eb939d40223d85f77f3db08e90f46ff6eb278c9267782586
