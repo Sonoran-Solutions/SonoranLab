@@ -1,6 +1,8 @@
 # ADR-0008 — Validator semantics for weapon-bearing runs and floating subjects
 
-**Status:** proposed — awaiting owner approval (2026-10-19, DYL-83). Nothing here is in effect: the processing-v1
+**Status:** accepted (owner, 2026-10-19): **H0 + H4 + the per-failure diagnostics, and F2**, as recommended below. The
+owner chose "Approve as recommended" in the Phase 2 orchestrator session. It takes effect from the Phase 2 profile and
+validator (DYL-83); the frozen Phase 1 files and scoring are not changed retroactively.
 semantics and the limits in `benchmark/characters/2026-10-18.yaml` stay frozen until the owner picks an option.
 
 ## Context
@@ -64,7 +66,7 @@ These are diagnostics, not gates. They let an agent tell a weapon tip from body 
 
 ## Decision
 
-None yet; the recommendation is **H0 + H4 + the diagnostics, and F2**. Each part has its own justification:
+Accepted by the owner on 2026-10-19: **H0 + H4 + the diagnostics, and F2**. Each part has its own justification:
 - **H0.** Against their own shipped clips, the Phase 1 humanoid sets are out of spec for content reasons: NE facing
   drift, the oathguard east swing, and the katana tip popping in and out. That isn't a metric artefact, and no robust
   alternative metric changes it.
