@@ -18,7 +18,7 @@ jobs:
         with:
           python-version: "3.12"
       - run: python -m pip install pytest==9.1.1 pyyaml==6.0.2 pillow==13.0.0 numpy==2.5.4
-      - run: python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+      - run: python -m pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
       - run: python -m pip install pixeloe==1.0.0
       - run: for f in env/*.sh; do bash -n "$f"; done
       - run: python -m pytest -q -rs tests
