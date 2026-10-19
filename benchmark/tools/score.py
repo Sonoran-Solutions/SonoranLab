@@ -47,11 +47,13 @@ def set_key(job: str) -> tuple | None:
 
 
 def report_for(date_dir: Path, track: str, char: str, seed: str, variant: str) -> Path | None:
-    base = date_dir / track / char / seed
-    for c in [base / "clip" / "proc-t0", base / "clip-r1024" / "proc-t0", base / variant / "processed-t0",
-              base / "processed-t0", base / "smoke-try2" / "processed-t0"]:
-        if (c / "report.json").exists():
-            return c / "report.json"
+    for base in sorted((date_dir / track / char).glob(f"{seed}*")):   # the seed dir and its -rN retries
+        if not re.fullmatch(rf"{seed}(-r[1-6])?", base.name):
+            continue
+        for c in [base / "clip" / "proc-t0", base / "clip-r1024" / "proc-t0", base / variant / "processed-t0",
+                  base / "processed-t0", base / "smoke-try2" / "processed-t0"]:
+            if (c / "report.json").exists():
+                return c / "report.json"
     return None
 
 
