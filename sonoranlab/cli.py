@@ -48,6 +48,15 @@ def build_parser() -> argparse.ArgumentParser:
     sl.add_argument("--frames", type=int, required=True)
     sl.add_argument("--start-col", type=int, default=0, help="first clip column (1 for the game layout)")
     sl.set_defaults(func=slice_cmd)
+
+    ct = verbs.add_parser("contact", help="render a review contact sheet PNG from registered frames + a report")
+    ct.add_argument("frames_dir", type=Path, help="directory of <direction>_<i>.png registered frames")
+    ct.add_argument("report", type=Path, help="validator report.json")
+    ct.add_argument("out", type=Path, help="contact sheet PNG to write (never overwritten)")
+    ct.add_argument("--cell", type=int, required=True, help="cell edge in px (square)")
+    ct.add_argument("--foot-y", type=int, required=True, help="foot line row (cell - 4)")
+    ct.add_argument("--scale", type=int, default=8)
+    ct.set_defaults(func=contact)
     return p
 
 
@@ -117,6 +126,25 @@ def slice_cmd(args: argparse.Namespace) -> int:
         print(f"slice: {e}", file=sys.stderr)
         return 2
     print(f"{args.out_dir}: {sum(map(len, clips.values()))} frames in {len(clips)} directions")
+    return 0
+
+
+def contact(args: argparse.Namespace) -> int:
+    from sonoranlab.contact import contact_sheet, load_clips
+
+    try:
+        if args.out.exists():
+            raise FileExistsError(f"{args.out} exists: contact sheets are never overwritten")
+        report = json.loads(args.report.read_text())
+        img = contact_sheet(
+            load_clips(args.frames_dir), report, cell=(args.cell, args.cell), foot_y=args.foot_y, scale=args.scale
+        )
+        with open(args.out, "xb") as f:
+            img.save(f, "PNG")
+    except (OSError, ValueError, KeyError) as e:  # ValueError covers bad JSON; KeyError a report without "pass"
+        print(f"contact: {e!r}" if isinstance(e, KeyError) else f"contact: {e}", file=sys.stderr)
+        return 2
+    print(args.out)
     return 0
 
 
