@@ -110,7 +110,7 @@ def main(argv: list[str] | None = None) -> int:
             shutil.copyfile(src, dst)
             raw[dst.name] = sha(dst)
     rev = subprocess.run(["git", "-C", str(REPO), "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
-    manifest = {"job": a.job, "workflow_source": str(wf_path.relative_to(REPO)), "workflow_source_sha256": sha(wf_path),
+    manifest = {"job": a.job, "workflow_source": str(wf_path.relative_to(REPO)) if wf_path.is_relative_to(REPO) else str(wf_path), "workflow_source_sha256": sha(wf_path),
                 "workflow_patched_sha256": sha(patched), "repo_rev": rev, "inputs": inputs, "set": sets,
                 "need_gib": a.need_gib, "allow_pause": a.allow_pause, "exit_code": rc, "run": run, "raw": raw}
     (out / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
