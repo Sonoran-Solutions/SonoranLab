@@ -1,0 +1,29 @@
+# Track A: Qwen Image Edit 2511 FP8 + Lightning 4-step + svntax combat LoRA, 768x768, one sheet per run.
+# Graph = workflows/static/qwen_edit_2511_fp8_lightning_4step.json with the svntax LoRA chained after Lightning
+# (LoRA patches are additive on the base weights, so the order of the two LoRA nodes does not change the result),
+# an empty 768x768 latent instead of the VAE-encoded input, and no ImageScaleToTotalPixels (the edit encoder resizes
+# the reference itself: 384^2 for the VL tokens, ~1 MP for the reference latent).
+#
+# Card-verified (https://huggingface.co/svntax-dev/pixel_spritesheet_4walk_combat_32x48_v1 README.md, read 2026-10-18):
+#   - prompt: the card's widget prompt verbatim (no trigger words; instance_prompt null).
+#   - 768x768; downscale x4 with k-centroid -> 192x192 = 6x4 cells of 32x48.
+#   - default lora_name = checkpoint 2500 (S4): the card's showcase images are labelled "2500".
+# Not on the card: steps, cfg, sampler, LoRA strength, Lightning. The card says "default Qwen Image Edit 2511 workflow";
+#   we keep Lightning 4-step (cfg 1) like our static workflow and record it in every manifest. A no-Lightning arm
+#   (lightning_strength 0, steps 20, cfg 4) is a documented variant, not part of the reduced floor sweep.
+# Verified locally: the LoRA's safetensors metadata says ai-toolkit 0.7.24, step 3000 (the un-suffixed S1 file).
+# Checkpoints 1750/2000/2500 (S2-S4) are valid lora_name values; docs/04 says the card showcase looks like 2500.
+#
+# reference_image: a filename relative to ComfyUI's input dir. See workflows/README.md "Input images".
+reference_image:    {node: "41", input: "image"}
+prompt:             {node: "68", input: "prompt"}
+negative_prompt:    {node: "69", input: "prompt"}      # inert at cfg 1
+seed:               {node: "65", input: "seed"}
+steps:              {node: "65", input: "steps"}
+cfg:                {node: "65", input: "cfg"}
+width:              {node: "75", input: "width"}       # 768 per the card; multiple of 16
+height:             {node: "75", input: "height"}
+lora_name:          {node: "76", input: "lora_name"}
+lora_strength:      {node: "76", input: "strength_model"}
+lightning_strength: {node: "74", input: "strength_model"}   # 0 = no Lightning (then raise steps/cfg)
+output_prefix:      {node: "9",  input: "filename_prefix"}

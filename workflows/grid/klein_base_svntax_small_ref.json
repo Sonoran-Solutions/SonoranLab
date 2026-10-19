@@ -1,0 +1,211 @@
+{
+  "70": {
+    "class_type": "UNETLoader",
+    "inputs": {
+      "unet_name": "flux-2-klein-base-4b.safetensors",
+      "weight_dtype": "default"
+    }
+  },
+  "71": {
+    "class_type": "CLIPLoader",
+    "inputs": {
+      "clip_name": "qwen_3_4b.safetensors",
+      "type": "flux2",
+      "device": "default"
+    }
+  },
+  "72": {
+    "class_type": "VAELoader",
+    "inputs": {
+      "vae_name": "flux2-vae.safetensors"
+    }
+  },
+  "75": {
+    "class_type": "LoraLoaderModelOnly",
+    "_meta": {
+      "title": "svntax small LoRA (S5 3000 / S6 2750, experimental-no-ship)"
+    },
+    "inputs": {
+      "lora_name": "pixel_4walk_small_flux2_klein_base_4b_v1.safetensors",
+      "strength_model": 1,
+      "model": [
+        "70",
+        0
+      ]
+    }
+  },
+  "41": {
+    "class_type": "LoadImage",
+    "_meta": {
+      "title": "Reference still (runner-provided)"
+    },
+    "inputs": {
+      "image": "sonoranlab/reference.png"
+    }
+  },
+  "80": {
+    "class_type": "ImageScaleToTotalPixels",
+    "inputs": {
+      "upscale_method": "nearest-exact",
+      "megapixels": 0.25,
+      "resolution_steps": 1,
+      "image": [
+        "41",
+        0
+      ]
+    }
+  },
+  "123": {
+    "class_type": "VAEEncode",
+    "inputs": {
+      "pixels": [
+        "80",
+        0
+      ],
+      "vae": [
+        "72",
+        0
+      ]
+    }
+  },
+  "74": {
+    "class_type": "CLIPTextEncode",
+    "inputs": {
+      "clip": [
+        "71",
+        0
+      ],
+      "text": "Create a pixel art spritesheet of the character in the image. The spritesheet is a 4 by 4 grid of four rows of frames - first row is 3 walking frames facing down and 1 frame both arms raised, second row is 3 walking frames facing left and 1 frame jumping left, third row is 3 walking frames facing right and 1 frame jumping right, fourth row is 3 walking frames back view facing up and 1 frame lying on floor."
+    }
+  },
+  "67": {
+    "class_type": "CLIPTextEncode",
+    "inputs": {
+      "clip": [
+        "71",
+        0
+      ],
+      "text": ""
+    }
+  },
+  "124": {
+    "class_type": "ReferenceLatent",
+    "inputs": {
+      "conditioning": [
+        "74",
+        0
+      ],
+      "latent": [
+        "123",
+        0
+      ]
+    }
+  },
+  "122": {
+    "class_type": "ReferenceLatent",
+    "inputs": {
+      "conditioning": [
+        "67",
+        0
+      ],
+      "latent": [
+        "123",
+        0
+      ]
+    }
+  },
+  "63": {
+    "class_type": "CFGGuider",
+    "inputs": {
+      "model": [
+        "75",
+        0
+      ],
+      "positive": [
+        "124",
+        0
+      ],
+      "negative": [
+        "122",
+        0
+      ],
+      "cfg": 5
+    }
+  },
+  "73": {
+    "class_type": "RandomNoise",
+    "inputs": {
+      "noise_seed": 1
+    }
+  },
+  "61": {
+    "class_type": "KSamplerSelect",
+    "inputs": {
+      "sampler_name": "euler"
+    }
+  },
+  "62": {
+    "class_type": "Flux2Scheduler",
+    "inputs": {
+      "steps": 20,
+      "width": 512,
+      "height": 512
+    }
+  },
+  "66": {
+    "class_type": "EmptyFlux2LatentImage",
+    "inputs": {
+      "width": 512,
+      "height": 512,
+      "batch_size": 1
+    }
+  },
+  "64": {
+    "class_type": "SamplerCustomAdvanced",
+    "inputs": {
+      "noise": [
+        "73",
+        0
+      ],
+      "guider": [
+        "63",
+        0
+      ],
+      "sampler": [
+        "61",
+        0
+      ],
+      "sigmas": [
+        "62",
+        0
+      ],
+      "latent_image": [
+        "66",
+        0
+      ]
+    }
+  },
+  "65": {
+    "class_type": "VAEDecode",
+    "inputs": {
+      "samples": [
+        "64",
+        0
+      ],
+      "vae": [
+        "72",
+        0
+      ]
+    }
+  },
+  "9": {
+    "class_type": "SaveImage",
+    "inputs": {
+      "filename_prefix": "p1/B/klein_base_svntax_small_ref/raw",
+      "images": [
+        "65",
+        0
+      ]
+    }
+  }
+}
