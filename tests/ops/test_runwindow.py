@@ -5,6 +5,7 @@ import os
 import signal
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -19,9 +20,11 @@ FAKE_SYSTEMCTL = r"""#!/usr/bin/env bash
 echo "$*" >> "$FAKE/calls"
 f="$FAKE/units/$2"
 case "$1" in
+  show) cat "$FAKE/started_${@: -1}" 2>/dev/null || echo 0 ;;   # ActiveEnterTimestampMonotonic (usec) of the last arg
   is-active) s=$(cat "$f" 2>/dev/null || echo inactive); echo "$s"; [ "$s" = active ] ;;
   stop) [ -f "$FAKE/slow_stop" ] && { touch "$FAKE/stopping"; sleep 2; }
-        echo inactive > "$f"; [ -f "$FAKE/free_on_stop" ] && cp "$FAKE/free_on_stop" "$FAKE/proc/meminfo"; exit 0 ;;
+        echo inactive > "$f"; [ -f "$FAKE/free_on_stop" ] && cp "$FAKE/free_on_stop" "$FAKE/proc/meminfo"
+        [ -f "$FAKE/gtt_on_stop" ] && cp "$FAKE/gtt_on_stop" "$FAKE/gtt"; exit 0 ;;
   start) [ -f "$FAKE/start_fails" ] && exit 1; echo active > "$f" ;;
 esac
 """
@@ -58,7 +61,8 @@ def fake(tmp_path):
     pm.write_text(FAKE_PODMAN)
     work = tmp_path / "work"
     env = {**os.environ, "FAKE": str(tmp_path), "SONORANLAB_PROC": str(proc), "SONORANLAB_PODMAN": f"bash {pm}",
-           "SONORANLAB_SYSTEMCTL": f"bash {sc}", "SONORANLAB_WORK": str(work)}
+           "SONORANLAB_SYSTEMCTL": f"bash {sc}", "SONORANLAB_WORK": str(work),
+           "SONORANLAB_GTT": str(tmp_path / "gtt")}   # absent unless a test writes it: no GTT credit
 
     class F:
         root, environ = tmp_path, env
@@ -157,6 +161,7 @@ def test_approved_pause_runs_and_restores(fake):
     r = fake.run("--need-gib", "52", "--allow-pause", "llama-gemory", *marker_cmd(fake.root / "ran"))
     assert r.returncode == 0, r.stderr
     assert (fake.root / "ran").exists()
+    assert "settled: 70.0 GiB available" in r.stderr and "credit" not in r.stderr
     calls = fake.calls()
     assert calls.index("stop llama-gemory.service") < calls.index("start llama-gemory.service")
     assert (fake.root / "units" / "llama-gemory.service").read_text().strip() == "active"
@@ -478,3 +483,109 @@ def test_restore_keeps_units_stopped_when_podman_errors(fake):
     assert fake.state() == "inactive"
     (fake.root / "exists_rc").unlink()                           # confirmed absent: safe
     assert fake.run("--restore").returncode == 0 and fake.state() == "active"
+
+
+# --- opt-in, non-overlapping freed-GTT credit in the settle check --------------------------------------------
+
+
+def gib(x):
+    return str(int(x * (1 << 30)))
+
+
+def test_gtt_credit_is_off_by_default(fake):
+    fake.holder(100, "llama-gemory.service", 20)
+    fake.unit("llama-gemory.service", "active")
+    (fake.root / "gtt").write_text(gib(21))
+    (fake.root / "gtt_on_stop").write_text(gib(1.3))
+    (fake.root / "free_on_stop").write_text(meminfo(42))
+    r = fake.run("--need-gib", "52", "--allow-pause", "llama-gemory", *marker_cmd(fake.root / "ran"))
+    assert r.returncode == 3 and not (fake.root / "ran").exists(), r.stderr
+    assert "42.0 GiB available" in r.stderr and "credit" not in r.stderr and "freed GTT" not in r.stderr
+    assert "stop llama-gemory.service" in fake.calls() and fake.state() == "active"
+
+
+def test_gtt_credit_excludes_pages_already_returned_to_host(fake):
+    fake.holder(100, "llama-gemory.service", 25)
+    fake.unit("llama-gemory.service", "active")
+    (fake.root / "gtt").write_text(gib(21))
+    (fake.root / "gtt_on_stop").write_text(gib(1.3))
+    (fake.root / "free_on_stop").write_text(meminfo(60))        # rise 20 >= drop 19.7; still below target 64
+    r = fake.run("--gtt-credit", "--need-gib", "56", "--allow-pause", "llama-gemory",
+                 *marker_cmd(fake.root / "ran"))
+    assert r.returncode == 3 and not (fake.root / "ran").exists(), r.stderr
+    assert "60.0 available + 0.0 freed GTT" in r.stderr and fake.state() == "active"
+
+
+def test_gtt_released_by_paused_unit_counts_toward_settle(fake):
+    fake.holder(100, "llama-gemory.service", 20)
+    fake.unit("llama-gemory.service", "active")
+    (fake.root / "gtt").write_text(gib(21))
+    (fake.root / "gtt_on_stop").write_text(gib(1.3))
+    (fake.root / "free_on_stop").write_text(meminfo(42))
+    r = fake.run("--gtt-credit", "--need-gib", "51", "--allow-pause", "llama-gemory",
+                 *marker_cmd(fake.root / "ran"))
+    assert r.returncode == 0, r.stderr                           # 42 + (19.7 - 2) credit >= 51 + 8
+    assert (fake.root / "ran").exists()
+    assert "59.7 GiB effective (42.0 available + 17.7 freed GTT credit)" in r.stderr
+    assert fake.state() == "active"
+
+
+def test_settle_refuses_when_credit_cap_is_not_enough(fake):
+    fake.holder(100, "llama-gemory.service", 5)
+    fake.unit("llama-gemory.service", "active")
+    (fake.root / "proc" / "meminfo").write_text(meminfo(30))
+    (fake.root / "gtt").write_text(gib(40))
+    (fake.root / "gtt_on_stop").write_text(gib(1))              # 39 GiB "freed", but only 5 was the paused unit's
+    (fake.root / "free_on_stop").write_text(meminfo(30))
+    # target 35.05: preflight 30 + 5.1 (gpu + rss estimate) passes and pauses; settle 30 + min(39, 5) = 35 < 35.05.
+    # Without the cap the 39 GiB drop (mostly not ours) would wrongly let it run.
+    r = fake.run("--gtt-credit", "--need-gib", "27.05", "--margin-gib", "8", "--allow-pause", "llama-gemory",
+                 *marker_cmd(fake.root / "ran"))
+    assert r.returncode == 3 and not (fake.root / "ran").exists(), r.stderr
+    assert "5.0 freed GTT" in r.stderr and fake.state() == "active"  # restored after the refusal
+
+
+@pytest.mark.parametrize("before,after", [("garbage", gib(1.3)), (gib(21), "garbage"), ("garbage", "garbage")])
+def test_unreadable_gtt_gives_no_credit(fake, before, after):
+    fake.holder(100, "llama-gemory.service", 20)
+    fake.unit("llama-gemory.service", "active")
+    (fake.root / "gtt").write_text(before)
+    (fake.root / "gtt_on_stop").write_text(after)
+    (fake.root / "free_on_stop").write_text(meminfo(42))
+    r = fake.run("--gtt-credit", "--need-gib", "52", "--allow-pause", "llama-gemory",
+                 *marker_cmd(fake.root / "ran"))
+    assert r.returncode == 3 and not (fake.root / "ran").exists()
+    assert "0.0 freed GTT" in r.stderr and fake.state() == "active"
+
+
+# --- preflight waits for recently (re)started approved units (2026-10-18 race) --------------------------------
+
+
+def test_preflight_waits_for_a_just_restarted_unit_to_reload(fake):
+    fake.unit("llama-gemory.service", "active")
+    (fake.root / "started_llama-gemory.service").write_text(str(int(time.monotonic() * 1e6)))   # restarted just now
+    (fake.root / "proc" / "meminfo").write_text(meminfo(80))      # model not loaded yet: memory looks free
+    (fake.root / "free_on_stop").write_text(meminfo(70))
+
+    def reload():                                                   # 1 s later the model is back in GTT
+        time.sleep(1)
+        fake.holder(100, "llama-gemory.service", 20)
+        (fake.root / "proc" / "meminfo").write_text(meminfo(50))
+
+    t = threading.Thread(target=reload)
+    t.start()
+    r = fake.run("--need-gib", "52", "--allow-pause", "llama-gemory", "--started-settle-s", "2.5",
+                 *marker_cmd(fake.root / "ran"))
+    t.join()
+    assert r.returncode == 0, r.stderr
+    assert "waiting" in r.stderr and "recently started" in r.stderr
+    assert "stop llama-gemory.service" in fake.calls()               # old code ran at 80 GiB without pausing
+
+
+def test_long_running_unit_does_not_delay_the_preflight(fake):
+    fake.holder(100, "llama-gemory.service", 19)
+    fake.unit("llama-gemory.service", "active")
+    (fake.root / "started_llama-gemory.service").write_text(str(int((time.monotonic() - 3600) * 1e6)))
+    t0 = time.monotonic()
+    r = fake.run("--need-gib", "20", "--margin-gib", "4", "--allow-pause", "llama-gemory", *marker_cmd(fake.root / "ran"))
+    assert r.returncode == 0 and time.monotonic() - t0 < 10 and "recently started" not in r.stderr

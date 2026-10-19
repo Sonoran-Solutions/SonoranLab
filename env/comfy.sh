@@ -18,8 +18,8 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 MODELS="${SONORANLAB_MODELS:-$HOME/comfy-models}"   # local NVMe only; never the CIFS share
 WORK="${SONORANLAB_WORK:-$HOME/sonoranlab-work}"    # outputs + generated config
 PORT="${SONORANLAB_PORT:-8189}"
-# Unified memory is shared with the desktop and other AI services. Cap the container (no swap) and make it the
-# preferred OOM victim, so an overshooting load kills ComfyUI instead of systemd-oomd killing a desktop app scope.
+# The container cap (no swap) bounds CPU RAM only; memory.current excludes amdgpu GTT.
+# The GTT backstop is the guard's preflight margin plus --oom-score-adj 1000 making ComfyUI the kernel OOM victim.
 MEM="${SONORANLAB_MEM:-64g}"
 # Toolbox-documented flags (start_comfy_ui alias / benchmark_workflows.py). Change one at a time and record it.
 FLAGS="${SONORANLAB_COMFY_FLAGS:---disable-mmap --gpu-only --disable-smart-memory --cache-none --bf16-vae}"
