@@ -1,36 +1,36 @@
-date,track,character,seed,gen_minutes,process_seconds,cleanup_minutes,usable,frames_fixed,back_row_accessories_kept,foot_slide_max_px,off_palette_before,peak_mem_gb,notes
-2026-10-18,A,2,1,2.0,,,no,,,5.5,5879,41.4,1 jobs; validator FAIL (1 issues); failed/refused attempts: A/oathguard/1; review: owner
-2026-10-18,A,2,2,2.2,,,no,,,5.0,5392,57.6,1 jobs; validator FAIL (1 issues); failed/refused attempts: A/oathguard/2; review: owner
-2026-10-18,A,3,1,2.3,,,no,,,7.5,6591,53.1,1 jobs; validator FAIL (1 issues); review: owner
-2026-10-18,A,3,2,2.0,,,no,,,6.0,6326,52.5,1 jobs; validator FAIL (2 issues); review: owner
-2026-10-18,A,1,1,2.2,,,no,,,6.5,5565,36.2,1 jobs; validator FAIL (1 issues); review: owner
-2026-10-18,A,1,2,2.5,,,no,,,7.0,5113,41.1,1 jobs; validator FAIL (1 issues); review: owner
-2026-10-18,B,2,1,1.3,,,no,,,4.0,2382,21.8,ck2750; 1 jobs; validator FAIL (1 issues); review: owner
-2026-10-18,B,2,1,1.3,,,no,,,4.0,2444,22.6,ck3000; 1 jobs; validator FAIL (1 issues); review: owner
-2026-10-18,B,2,2,1.4,,,no,,,4.0,2446,24.7,ck2750; 1 jobs; validator FAIL (1 issues); review: owner
-2026-10-18,B,2,2,1.3,,,no,,,4.0,2482,21.9,ck3000; 1 jobs; validator FAIL (1 issues); review: owner
-2026-10-18,B,3,1,1.4,,,no,,,4.0,2384,22.6,ck2750; 1 jobs; validator FAIL (1 issues); review: owner
-2026-10-18,B,3,1,1.2,,,no,,,4.0,2412,21.2,ck3000; 1 jobs; validator FAIL (1 issues); review: owner
-2026-10-18,B,3,2,1.3,,,no,,,4.0,2389,22.5,ck2750; 1 jobs; validator FAIL (1 issues); review: owner
-2026-10-18,B,3,2,1.3,,,no,,,3.0,2605,22.4,ck3000; 1 jobs; validator FAIL (3 issues); review: owner
-2026-10-18,B,1,1,1.4,,,no,,,3.0,2343,29.3,ck2750; 1 jobs; validator FAIL (1 issues); review: owner
-2026-10-18,B,1,1,1.3,,,no,,,4.0,2390,21.7,ck3000; 1 jobs; validator FAIL (1 issues); review: owner
-2026-10-18,B,1,2,1.4,,,no,,,3.0,2375,22.0,ck2750; 1 jobs; validator FAIL (1 issues); review: owner
-2026-10-18,B,1,2,1.3,,,no,,,4.0,2451,21.8,ck3000; 1 jobs; validator FAIL (1 issues); review: owner
-2026-10-18,C,2,1,39.4,,,no,,,35.5,111691,58.7,5 jobs; validator FAIL (24 issues); review: owner
-2026-10-18,C,2,2,39.3,,,no,,,38.5,116048,58.9,5 jobs; validator FAIL (27 issues); review: owner
-2026-10-18,C,1,1,49.1,,,yes,,,28.0,115872,60.8,5 jobs; validator FAIL (10 issues); review: owner
-2026-10-18,C,1,2,47.0,,,yes,,,30.0,109384,59.6,5 jobs; validator FAIL (17 issues); review: owner
-2026-10-18,C,1,3,9.5,,,,,,,,58.8,"1 jobs; missing directions: ['east', 'north-east', 'south', 'south-east']; not processed"
-2026-10-18,E,2,1,13.6,,,yes,,,23.0,106292,18.8,5 jobs; validator FAIL (7 issues); review: owner
-2026-10-18,E,2,2,13.6,,,yes,,,35.0,111176,18.8,5 jobs; validator FAIL (10 issues); review: owner
-2026-10-18,E,2,3,14.4,,,yes,,,24.0,97932,24.4,5 jobs; validator FAIL (9 issues); review: owner
-2026-10-18,E,2,4,14.1,,,yes,,,25.5,109869,22.3,5 jobs; validator FAIL (6 issues); review: owner
-2026-10-18,E,3,1,8.9,,,yes,,,21.5,60920,16.3,5 jobs; validator FAIL (2 issues); review: owner
-2026-10-18,E,3,2,9.0,,,yes,,,6.5,63648,16.4,5 jobs; validator pass (0 issues); review: owner
-2026-10-18,E,3,3,9.7,,,yes,,,25.5,60369,18.7,5 jobs; validator FAIL (2 issues); review: owner
-2026-10-18,E,3,4,9.6,,,yes,,,21.5,61102,17.8,5 jobs; validator FAIL (2 issues); review: owner
-2026-10-18,E,1,1,15.6,,,yes,,,38.0,98056,19.5,5 jobs; validator FAIL (3 issues); review: owner
-2026-10-18,E,1,2,15.7,,,yes,,,32.0,97113,19.6,5 jobs; validator FAIL (6 issues); review: owner
-2026-10-18,E,1,3,16.1,,,yes,,,34.5,98210,26.5,5 jobs; validator FAIL (7 issues); review: owner
-2026-10-18,E,1,4,16.1,,,yes,,,32.0,94942,22.0,5 jobs; validator FAIL (6 issues); review: owner
+date,track,character,seed,variant,attempts,failed_attempts,gen_minutes,attempt_minutes_total,process_seconds,cleanup_minutes,human_usable,validator_pass,usable,frames_fixed,back_row_accessories_kept,foot_slide_max_px,off_palette_before,peak_mem_gb,processed_sha256,review_binding,notes
+2026-10-18,A,2,1,,2,1,2.0,2.0,4.5,,no,no,no,,,5.5,5879,41.4,3e8863d098810e0b4419549226fd0bb16198143b81b7fe95d9b9da035b66998e,bound,wall_s missing on some attempts: times are partial; validator FAIL (1 issues); failed/refused attempts: A/oathguard/1; review: owner
+2026-10-18,A,2,2,,2,1,2.2,2.2,4.1,,no,no,no,,,5.0,5392,57.6,b19e81a762352014a3693bde72da4e7f6daecc30105152c766675cbe9ca8dea9,bound,wall_s missing on some attempts: times are partial; validator FAIL (1 issues); failed/refused attempts: A/oathguard/2; review: owner
+2026-10-18,A,3,1,,1,0,2.3,2.3,3.1,,no,no,no,,,7.5,6591,53.1,9633826cd32e6ac5b13a53da2814729c3a4f9f85585994e449d588881933dd7a,bound,validator FAIL (1 issues); review: owner
+2026-10-18,A,3,2,,1,0,2.0,2.0,3.7,,no,no,no,,,6.0,6326,52.5,e8eb0370b82a1811838cd33566a4f814e7bd0683209bff0c3d66b965241dc45d,bound,validator FAIL (2 issues); review: owner
+2026-10-18,A,1,1,,1,0,2.2,2.2,3.1,,no,no,no,,,6.5,5565,36.2,ee39be4443e36ed1207e7505bab6e0c657cf69d0f2dbedcfee6e8c2210e5386c,bound,validator FAIL (1 issues); review: owner
+2026-10-18,A,1,2,,1,0,2.5,2.5,3.1,,no,no,no,,,7.0,5113,41.1,6d64200247b2c88a33164c6c15027900d0dd009402e7d2cd6c2248ae8285fe75,bound,validator FAIL (1 issues); review: owner
+2026-10-18,B,2,1,ck2750,1,0,1.3,1.3,2.7,,no,no,no,,,4.0,2382,21.8,0d6444e6783a60924367df447352d9dfe606727a5c49c5278518e971b2a84d55,bound,ck2750; validator FAIL (1 issues); review: owner
+2026-10-18,B,2,1,ck3000,1,0,1.3,1.3,3.0,,no,no,no,,,4.0,2444,22.6,20c875d3ae2eee50bada0924f1f50b3b81d1610e0b1117c7aeb0e9e863973d9b,bound,ck3000; validator FAIL (1 issues); review: owner
+2026-10-18,B,2,2,ck2750,1,0,1.4,1.4,3.1,,no,no,no,,,4.0,2446,24.7,6148d0cfc80602ab79f7127f60c6f01962ccbf38217ad9d093c60fbdf03093e8,bound,ck2750; validator FAIL (1 issues); review: owner
+2026-10-18,B,2,2,ck3000,1,0,1.3,1.3,3.1,,no,no,no,,,4.0,2482,21.9,ab66f0be16514224d138b9c6a47eeccb06b152bdfb60d64f8f50f39e87527cb3,bound,ck3000; validator FAIL (1 issues); review: owner
+2026-10-18,B,3,1,ck2750,1,0,1.4,1.4,3.4,,no,no,no,,,4.0,2384,22.6,8b8a02df7fdad75530df969b9feb46347545acbfc4981ec675b54eb955123092,bound,ck2750; validator FAIL (1 issues); review: owner
+2026-10-18,B,3,1,ck3000,1,0,1.2,1.2,2.8,,no,no,no,,,4.0,2412,21.2,37f3509fbc81972dfd99c730ffd2b284311fd2a985e5477657c09fbd08a78bc1,bound,ck3000; validator FAIL (1 issues); review: owner
+2026-10-18,B,3,2,ck2750,1,0,1.3,1.3,3.5,,no,no,no,,,4.0,2389,22.5,8e52518e8331321c3803d8e3a96c3e3cb5840ee49323ab9531ca8590a95dcf50,bound,ck2750; validator FAIL (1 issues); review: owner
+2026-10-18,B,3,2,ck3000,1,0,1.3,1.3,3.5,,no,no,no,,,3.0,2605,22.4,434fe6a08345f58bfadf5c756964df134aba3c28f2f740ee2fb32f074154ae2e,bound,ck3000; validator FAIL (3 issues); review: owner
+2026-10-18,B,1,1,ck2750,1,0,1.4,1.4,2.8,,no,no,no,,,3.0,2343,29.3,f56bcbc27ff4d765d736a8c18c70831a42e2bb5d5468a2e4c929d119d02ce039,bound,ck2750; validator FAIL (1 issues); review: owner
+2026-10-18,B,1,1,ck3000,1,0,1.3,1.3,3.3,,no,no,no,,,4.0,2390,21.7,2e575a015a1e691163a4169c5b7bb50dccd865c847a9a37ad32ffc8e4201b7fa,bound,ck3000; validator FAIL (1 issues); review: owner
+2026-10-18,B,1,2,ck2750,1,0,1.4,1.4,2.8,,no,no,no,,,3.0,2375,22.0,ecb0ca7f314b86aeeb973ba7195ecc4ae8d866a88c704e991cfc8623c3fa35ba,bound,ck2750; validator FAIL (1 issues); review: owner
+2026-10-18,B,1,2,ck3000,1,0,1.3,1.3,3.1,,no,no,no,,,4.0,2451,21.8,5cc0ff03f15732ec2caee1f16d727abfa7fb76f70622d11293656819938b7823,bound,ck3000; validator FAIL (1 issues); review: owner
+2026-10-18,C,2,1,,5,0,39.4,39.4,19.9,,no,no,no,,,35.5,111691,58.7,d8e723301f8cbf2e7f286f2cbd186065dc0e78e25ed7c591bd543a563dc67afc,bound,validator FAIL (24 issues); review: owner
+2026-10-18,C,2,2,,5,0,39.3,39.3,18.7,,no,no,no,,,38.5,116048,58.9,70e25966f7d91afcd1fcb8e312daff5e05926fd96d290fbb0e60b272d86b2fb4,bound,validator FAIL (27 issues); review: owner
+2026-10-18,C,1,1,,5,0,49.1,49.1,19.2,,yes,no,no,,,28.0,115872,60.8,d5be419c8dfe98f83e669b569ee2e3897b71b70c94a320de09bfac190839cfc1,bound,validator FAIL (10 issues); review: owner
+2026-10-18,C,1,2,,5,0,47.0,47.0,20.7,,yes,no,no,,,30.0,109384,59.6,74ac2fd5aef30a0ff6657f0f5a2ea14051633aad1a5d014ebca9146dc2d10e21,bound,validator FAIL (17 issues); review: owner
+2026-10-18,C,1,3,,1,0,9.5,9.5,6.8,,,no,no,,,4.0,23616,58.8,4b3840f0c390b8362376dcb05fe766e5ac81ec5ddcefb07cedc04716097ecfcd,,"missing parts: ['east', 'north-east', 'south', 'south-east']; validator FAIL (1 issues)"
+2026-10-18,E,2,1,,5,0,13.6,13.6,21.2,,yes,no,no,,,23.0,106292,18.8,0c067541096f13772a083af55b24d0592e1c2b54f7ed7a6be2b34f5d3cfe3918,bound,validator FAIL (7 issues); review: owner
+2026-10-18,E,2,2,,5,0,13.6,13.6,22.1,,yes,no,no,,,35.0,111176,18.8,92dd494b8d2bc86172b33f976b34cb2ed3a42d54d01501498a40349d0d5ebed0,bound,validator FAIL (10 issues); review: owner
+2026-10-18,E,2,3,,5,0,14.4,14.4,16.9,,yes,no,no,,,24.0,97932,24.4,87fba64ae2c6705126b582868498ef9fb6055b04f06f79d867c757f0d5c3319b,bound,validator FAIL (9 issues); review: owner
+2026-10-18,E,2,4,,5,0,14.1,14.1,17.5,,yes,no,no,,,25.5,109869,22.3,e74d35667eb3ddfa16855c77740b0410d93bc6356cf16277c5bc07fc28b114bf,bound,validator FAIL (6 issues); review: owner
+2026-10-18,E,3,1,,5,0,8.9,8.9,9.7,,yes,no,no,,,21.5,60920,16.3,a68473c92f2e2bc5c797c1b13f56ca4720b1808fa519b77fb01284d7d7bb007d,bound,validator FAIL (2 issues); review: owner
+2026-10-18,E,3,2,,5,0,9.0,9.0,10.1,,yes,yes,yes,,,6.5,63648,16.4,a83afe048e293d1251d41ce507660af12d08f428c0c1c073a57fe5a1d196a872,bound,validator pass (0 issues); review: owner
+2026-10-18,E,3,3,,5,0,9.7,9.7,11.1,,yes,no,no,,,25.5,60369,18.7,665d0555d4279edc727a4bdbcffc5a8f18a3daf682ea2ec7cf2c498c25a1adf8,bound,validator FAIL (2 issues); review: owner
+2026-10-18,E,3,4,,5,0,9.6,9.6,11.3,,yes,no,no,,,21.5,61102,17.8,7bc894b1a8573a6f872ff8e9f35b50a9736eaf03117266f981b00340657bd991,bound,validator FAIL (2 issues); review: owner
+2026-10-18,E,1,1,,5,0,15.6,15.6,25.2,,yes,no,no,,,38.0,98056,19.5,e0ba56bd2e9bbad7bf6981887449e18cb43ec271249c5f8d8a6eef499bf8469e,bound,validator FAIL (3 issues); review: owner
+2026-10-18,E,1,2,,5,0,15.7,15.7,25.8,,yes,no,no,,,32.0,97113,19.6,ee89b86fb1745c01196c94dc755fc30f1f5b8688fda58ec04b5ccd0d2a4dccd4,bound,validator FAIL (6 issues); review: owner
+2026-10-18,E,1,3,,5,0,16.1,16.1,20.7,,yes,no,no,,,34.5,98210,26.5,63ef141b6342a73c9109ace1c75634f01ba58e0e26c737c9f5804565dabdd4c3,bound,validator FAIL (7 issues); review: owner
+2026-10-18,E,1,4,,5,0,16.1,16.1,21.0,,yes,no,no,,,32.0,94942,22.0,7d65f5624feb39c94810c44c2405ef615705706393bbb4efa815d7ba16eb64cb,bound,validator FAIL (6 issues); review: owner
