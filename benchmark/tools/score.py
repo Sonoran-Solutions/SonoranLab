@@ -9,8 +9,9 @@ no validator verdict, no processed hash.
 gen_minutes           sum of wall_s of the SELECTED attempts ("" if none is selected/successful)
 attempt_minutes_total sum over ALL attempts, failed ones included
 usable                frozen rubric: "yes" only if human_usable == yes AND validator_pass == yes; "no" if either is
-                      no; "" if unknown. A review of a different artifact (review_binding "stale") does not count as
-                      a human verdict here (human_usable still shows what it said).
+                      no; "" if unknown. Only a BOUND review counts as the human verdict: a stale review (of a different
+                      artifact) or an unbound one (no artifact hash) is ignored here, so it can never make usable "yes"
+                      (human_usable still shows what it said).
 review_binding        bound (entry's artifact_sha256 == processed_sha256), stale (differs), unbound (entry has no
                       hash), "" (no review entry)
 Empty fields mean "not measured"; 0 is only written for a measured zero. peak_mem_gb = largest host MemAvailable
@@ -145,7 +146,7 @@ def row_for(date_dir: Path, key: tuple, mans: list[dict], review: dict) -> dict:
         "attempts": len(att), "failed_attempts": len(failed), "gen_minutes": gen, "attempt_minutes_total": total,
         "process_seconds": "" if ps is None else round(ps, 1), "cleanup_minutes": rv.get("cleanup_minutes", ""),
         "human_usable": human, "validator_pass": validator,
-        "usable": combine("" if binding == "stale" else human, validator),
+        "usable": combine(human if binding == "bound" else "", validator),
         "frames_fixed": rv.get("frames_fixed", ""), "back_row_accessories_kept": rv.get("back_row_accessories_kept", ""),
         "foot_slide_max_px": "" if fs is None else fs,
         "off_palette_before": sum(f.get("off_palette_before", 0) for f in rep["frames"]) if rep else "",

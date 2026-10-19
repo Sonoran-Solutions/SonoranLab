@@ -6,10 +6,11 @@ next to a manifest. Every attempt keeps its manifest, failures included. Nothing
 
     uv run --no-project --with pyyaml python -I benchmark/tools/run_track.py \
       --workflow workflows/pose/qwen_edit_controlnet_union_pose.json --job 2026-10-18/C/samurai/1/east_0 \
-      --need-gib 56 --input reference_image=~/sonoranlab-work/benchmark/characters/2026-10-18/samurai/still_south_x4.png \
+      --need-gib 60 --input reference_image=~/sonoranlab-work/benchmark/characters/2026-10-18/samurai/still_south_x4.png \
       --input control_image=.../openpose_east_0.png --set seed=1 --set width=736 --set height=736
 
-Inputs go to $WORK/input/<job>/ (mounted read-only at /opt/ComfyUI/input/sonoranlab by env/comfy.sh); outputs land
+--need-gib: 60 for one Qwen prompt, 64 for batched Qwen (batch_frames.py), 40 for Wan, 30 for klein (ADR-0004); the
+run-window guard keeps 8 GiB more free on top. Inputs go to $WORK/input/<job>/ (mounted read-only at /opt/ComfyUI/input/sonoranlab by env/comfy.sh); outputs land
 in $WORK/output/bench/<job>/ and are copied to $WORK/benchmark/results/<job>/raw/. Exit code = smoke.sh's.
 
 A job id is used exactly once. Before staging anything the runner atomically reserves $WORK/benchmark/results/<job>/

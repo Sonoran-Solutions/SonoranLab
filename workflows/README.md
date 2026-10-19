@@ -65,8 +65,11 @@ already do `<id>-r1`, `-r2`, ...). A second launch exits 2 with
 
 ## Estimated memory (from file sizes; measure before trusting)
 
-Observed `--need-gib` values: batched Qwen jobs (`batch_frames.py`, 7 frames per prompt) request `--need-gib 64`
-(measured 60.8 GiB draw); single Qwen 60, Wan 33 frames 40, klein 30.
+Supported `--need-gib` budgets (ADR-0004; host MemAvailable drawn): batched Qwen jobs (`batch_frames.py`, 7 frames
+per prompt) `--need-gib 64` (measured 60.8 GiB draw); single Qwen 60; Wan 33 frames 40; klein 30. `env/runwindow.py`
+admits a job only if need + its 8 GiB margin (`--margin-gib`) is available, so batched Qwen needs 72 GiB free. The
+freed-GTT credit is opt-in (`--gtt-credit`) and stays off by default. Earlier drafts suggested 52–56 for Qwen jobs;
+that is too low (batched Track C drew 60.8 GiB against a 52 GiB request).
 
 Phase 0 measured, at 1720×968: Qwen Edit FP8 + Lightning, 31.0 GB of weights, peaked at 39.8 GiB GTT and 51.2 GiB
 container cgroup. klein base, 16.1 GB of weights, peaked at 23.7 GiB GTT at 1024² (`benchmark/results/phase0-env.md`).
@@ -74,10 +77,10 @@ The rows below scale from those runs. Record real peaks in `benchmark/results/`.
 
 | workflow | weights loaded | estimate | suggested `--need-gib` |
 |---|---|---|---|
-| A svntax combat | 31.6 GB (+S1 0.59) | ≈ 40 GiB GTT, ≈ 52 GiB cgroup (768² is smaller than the Phase 0 1.66 MP run) | 52 |
+| A svntax combat | 31.6 GB (+S1 0.59) | ≈ 40 GiB GTT, ≈ 52 GiB cgroup (768² is smaller than the Phase 0 1.66 MP run) | 60 (single Qwen prompt) |
 | B klein + small LoRA | 16.2 GB (+S5 0.09) | ≤ 24 GiB GTT at 512² | 30 |
-| C ControlNet pose/depth | 34.6 GB (+Q5 3.54, +P3 0.1) | ≈ 43 GiB GTT, ≈ 55 GiB cgroup, close to the 64 GiB container cap | 56 |
-| E Wan 2.2 + BiRefNet | 31.5 GB (W1+W2 21.6, W3 6.7, W5+W6 2.5, W4 0.25, B1 0.44) | unmeasured. Expect ≈ 35–45 GiB GTT if both experts stay resident; 17 × 544² latents are small | 52 |
+| C ControlNet pose/depth | 34.6 GB (+Q5 3.54, +P3 0.1) | ≈ 43 GiB GTT, ≈ 55 GiB cgroup, close to the 64 GiB container cap | 60 single; 64 batched (measured 60.8) |
+| E Wan 2.2 + BiRefNet | 31.5 GB (W1+W2 21.6, W3 6.7, W5+W6 2.5, W4 0.25, B1 0.44) | measured ≤ 27 GiB at 33 frames | 40 |
 
 ## Input images
 
