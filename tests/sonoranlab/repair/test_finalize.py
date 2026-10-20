@@ -76,6 +76,10 @@ def saved(fixture, monkeypatch):  # noqa: F811
     (parent / "report.json").write_text(json.dumps(report))
     manifest = read_json(parent / "manifest.json")
     manifest["inputs"] = {p.name: sha256_file(p) for p in (parent / "raw").iterdir()}
+    manifest["profile"] = {
+        "path": str(profile.path),
+        "sha256": sha256_file(profile.path),
+    }  # as build_manifest writes it
     manifest["outputs"] = {
         k: v for k, v in hashes(parent).items() if k.startswith(("processed/", "export/")) or k == "report.json"
     }
