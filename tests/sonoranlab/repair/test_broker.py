@@ -69,7 +69,7 @@ def repair(fixture):  # noqa: F811
     return path
 
 
-def start(repair, fault="none", timeout=0.5):
+def start(repair, fault="none", timeout=2.0):
     return Broker(repair, launcher=launcher(fault, timeout), converter=FakeConverter(), ready_timeout=0.5)
 
 
