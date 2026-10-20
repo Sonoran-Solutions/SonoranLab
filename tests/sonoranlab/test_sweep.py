@@ -310,7 +310,7 @@ def test_generation_serial_guard_per_request_continues_and_stops(tmp_path, monke
 
     paths = [tmp_path / f"{i}.json" for i in range(4)]
     for p in paths:
-        p.write_text("{}")
+        p.write_text('{"track": "E"}')
     calls, guarded = [], []
     actual_guard = track_e.guarded_argv
 
@@ -325,7 +325,7 @@ def test_generation_serial_guard_per_request_continues_and_stops(tmp_path, monke
         return subprocess.CompletedProcess(argv, exits[len(calls) - 1])
 
     monkeypatch.setattr(track_e, "guarded_argv", guard)
-    result = sweep.run_generation(paths, need_gib=40, repo=tmp_path, exec_container="offline", runner=runner)
+    result = sweep.run_generation(paths, repo=tmp_path, exec_container="offline", runner=runner)
     n = 2 if exits[1] in (3, 4) else 4
     assert len(calls) == len(guarded) == n
     assert [r["exit"] for r in result["requests"]] == exits[:n]
@@ -365,14 +365,14 @@ def test_generation_cli_reports_helper_exit(tmp_path, monkeypatch, capsys, exit_
     monkeypatch.setattr(sweep, "run_generation", run)
     path = tmp_path / "request.json"
     assert main(["sweep", "run", "--requests", str(path), "--repo", str(tmp_path), "--exec", "offline"]) == exit_code
-    assert calls == [([path], {"need_gib": 40, "repo": tmp_path, "exec_container": "offline"})]
+    assert calls == [([path], {"need_gib": None, "repo": tmp_path, "exec_container": "offline"})]
     assert json.loads(capsys.readouterr().out)["requests"][0]["exit"] == exit_code
 
 
 def test_generation_spawn_error_is_recorded_and_next_request_runs(tmp_path):
     paths = [tmp_path / "a.json", tmp_path / "b.json"]
     for p in paths:
-        p.write_text("{}")
+        p.write_text('{"track": "E"}')
     calls = []
 
     def runner(argv, **kwargs):
@@ -385,3 +385,55 @@ def test_generation_spawn_error_is_recorded_and_next_request_runs(tmp_path):
     result = sweep.run_generation(paths, repo=tmp_path, runner=runner)
     assert [r["exit"] for r in result["requests"]] == [2, 0]
     assert result["requests"][0]["error"] == "cannot spawn guard" and result["stop_exit"] is None
+
+
+def _requests(tmp_path, *tracks):
+    paths = []
+    for i, track in enumerate(tracks):
+        paths.append(tmp_path / f"{i}.json")
+        paths[-1].write_text(json.dumps({"track": track}))
+    return paths
+
+
+def _recording_runner(calls):
+    def runner(argv, **kwargs):
+        calls.append(argv)
+        return subprocess.CompletedProcess(argv, 0)
+
+    return runner
+
+
+def test_generation_budget_defaults_to_each_requests_track_minimum(tmp_path):
+    calls = []
+    paths = _requests(tmp_path, "E", "C", "C")
+    result = sweep.run_generation(paths, repo=tmp_path, runner=_recording_runner(calls))
+    assert [a[a.index("--need-gib") + 1] for a in calls] == ["40", "60", "60"]
+    assert [r["need_gib"] for r in result["requests"]] == [40, 60, 60]
+    assert all("--gtt-credit" not in a for a in calls)
+
+
+def test_generation_explicit_budget_below_track_minimum_is_refused_before_any_run(tmp_path):
+    calls = []
+    paths = _requests(tmp_path, "E", "C")  # the E request alone would be fine at 40; the C one is not
+    with pytest.raises(ValueError, match="under-budget run window: Track C needs 60 GiB"):
+        sweep.run_generation(paths, need_gib=40, repo=tmp_path, runner=_recording_runner(calls))
+    assert calls == []
+    result = sweep.run_generation(paths, need_gib=70, repo=tmp_path, runner=_recording_runner(calls))
+    assert [r["need_gib"] for r in result["requests"]] == [70, 70]
+
+
+@pytest.mark.parametrize("body", ['{"track": "X"}', "{}", "[]", '{"track": "e"}'])
+def test_generation_unknown_track_is_refused_before_any_run(tmp_path, body):
+    calls = []
+    paths = _requests(tmp_path, "E")
+    paths.append(tmp_path / "bad.json")
+    paths[-1].write_text(body)
+    with pytest.raises(ValueError, match="track"):
+        sweep.run_generation(paths, repo=tmp_path, runner=_recording_runner(calls))
+    assert calls == []
+
+
+def test_generation_cli_refuses_track_c_at_40_gib(tmp_path, capsys):
+    (path,) = _requests(tmp_path, "C")
+    assert main(["sweep", "run", "--requests", str(path), "--repo", str(tmp_path), "--need-gib", "40"]) == 2
+    assert "Track C needs 60 GiB" in capsys.readouterr().err

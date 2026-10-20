@@ -154,7 +154,9 @@ def build_parser() -> argparse.ArgumentParser:
     sp.set_defaults(func=sweep_plan_cmd)
     sg = sw.add_parser("run", help="run requests serially through the run-window guard")
     sg.add_argument("--requests", nargs="+", type=Path, required=True)
-    sg.add_argument("--need-gib", type=float, default=40)
+    sg.add_argument(
+        "--need-gib", type=float, default=None, help="run-window GiB; default is the per-track minimum (E 40 / C 60)"
+    )
     sg.add_argument("--repo", type=Path, default=Path(__file__).resolve().parent.parent)
     sg.add_argument("--exec", dest="exec_container", metavar="CONTAINER")
     sg.set_defaults(func=sweep_run_cmd)
@@ -168,7 +170,12 @@ def build_parser() -> argparse.ArgumentParser:
     rr.add_argument("--started", required=True)
     rr.add_argument("--ended", required=True)
     rr.add_argument("--notes", default="")
+    rr.add_argument("--supersedes", type=Path, help="earlier review file this replaces (move it aside first)")
+    rr.add_argument("--carried-from", help="free-text provenance of an approval given before binding existed")
     rr.set_defaults(func=review_record_cmd)
+    rc = rv.add_parser("check", help="exit 0 only if the job is production usable (bound review still matches)")
+    rc.add_argument("job", type=Path)
+    rc.set_defaults(func=review_check_cmd)
     return p
 
 
@@ -651,12 +658,23 @@ def review_record_cmd(args: argparse.Namespace) -> int:
             started_at=args.started,
             ended_at=args.ended,
             notes=args.notes,
+            supersedes=args.supersedes,
+            carried_from=args.carried_from,
         )
     except (OSError, ValueError) as e:
         print(f"review record: {e}", file=sys.stderr)
         return 2
     print(path)
     return 0
+
+
+def review_check_cmd(args: argparse.Namespace) -> int:
+    from sonoranlab.review import review_problems
+
+    problems = review_problems(args.job)
+    for msg in problems:
+        print(msg)
+    return int(bool(problems))
 
 
 def main(argv: list[str] | None = None) -> int:

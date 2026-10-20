@@ -385,27 +385,45 @@ def plan_generation(
 def run_generation(
     request_paths: Sequence[Path],
     *,
-    need_gib: float = 40,
+    need_gib: float | None = None,
     repo: Path,
     exec_container: str | None = None,
     runner: Callable[..., subprocess.CompletedProcess] = subprocess.run,
 ) -> dict:
-    """Run guarded requests serially, record every exit, continue failures; guard refusal (3/4) stops the sweep."""
-    guarded_argv = import_module("sonoranlab.comfy.adapters.track_e").guarded_argv
+    """Run guarded requests serially, record every exit, continue failures; guard refusal (3/4) stops the sweep.
 
-    if not math.isfinite(need_gib) or need_gib <= 0 or not Path(repo).is_dir():
+    Each request's run-window budget is at least its track's (E Wan 40 GiB, C Qwen 60 GiB); `need_gib=None` uses that
+    minimum, a lower explicit value is refused before anything runs. The budget used is recorded per request.
+    """
+    # The core AST gate permits no adapter import statements outside cli.py, even inside helpers.
+    track_e = import_module("sonoranlab.comfy.adapters.track_e")
+    track_c = import_module("sonoranlab.comfy.adapters.track_c")
+    minimum = {"E": track_e.WAN_NEED_GIB, "C": track_c.QWEN_NEED_GIB}
+
+    if not Path(repo).is_dir() or (
+        need_gib is not None and (isinstance(need_gib, bool) or not math.isfinite(need_gib) or need_gib <= 0)
+    ):
         raise ValueError("need_gib must be positive and repo must be a directory")
     paths = [Path(p).resolve() for p in request_paths]
     if not paths or any(not p.is_file() for p in paths):
         raise ValueError("requests must be existing JSON paths")
+    budgets = []
+    for path in paths:  # read every request first: no run starts if any is unknown or under-budgeted
+        request = json.loads(path.read_text())
+        track = request.get("track") if isinstance(request, dict) else None
+        if track not in minimum:
+            raise ValueError(f"{path}: request track must be one of {sorted(minimum)}, got {track!r}")
+        if need_gib is not None and need_gib < minimum[track]:
+            raise ValueError(f"refusing an under-budget run window: Track {track} needs {minimum[track]} GiB")
+        budgets.append(minimum[track] if need_gib is None else need_gib)
     records = []
     stopped = None
-    for path in paths:
+    for path, budget in zip(paths, budgets, strict=True):
         argv = [sys.executable, "-m", "sonoranlab.cli", "generate", "--request", str(path)]
         if exec_container:
             argv += ["--exec", exec_container]
-        guarded = guarded_argv(argv, need_gib)
-        record = {"request": str(path), "argv": guarded}
+        guarded = track_e.guarded_argv(argv, budget)
+        record = {"request": str(path), "need_gib": budget, "argv": guarded}
         try:
             record["exit"] = runner(guarded, cwd=repo, check=False).returncode
         except OSError as e:
