@@ -92,6 +92,13 @@ characters:
     max_bbox_drift_px: 8
     opaque_area_cv_warn: 0.13
     loop_closure_ratio_warn: 1.17
+  pyromancer:             # DYL-105 Phase 3 gate reference (owner-approved 2026-10-20); uncalibrated: default limits
+    cell: 144               #   (validator: 30 / 25, ADR-0008 H4); its shipped run measured 23 / 17 (validator study)
+    anchor_mode: foot
+    max_foot_slide_px: 30   # = the `validator:` default row (owner: "default validator limits (30/25)"); no own-clip
+    max_bbox_drift_px: 25   #   calibration, which would be a separate owner decision
+    opaque_area_cv_warn: 0.13
+    loop_closure_ratio_warn: 1.29
   relay_sentinel:         # floats: no run clip, its hover idle stands in for locomotion (ADR-0007)
     cell: 136
     anchor_mode: bbox_bottom
