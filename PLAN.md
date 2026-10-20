@@ -133,8 +133,11 @@ the result back through the existing validator, exporter and human review. Pilot
 
 Tasks (Linear)
 - [ ] DYL-106: ADR-0009, pinned environment and containment smoke (`benchmark/results/2026-10-20-phase3.5/`).
-- [ ] DYL-107 to DYL-110: `sonoranlab repair` CLI: prepare/interchange, authorization and broker, sandboxed session, finalize into a child job.
-- [ ] DYL-111: trials (3 cases x at most 2 repair iterations), evidence write-up, owner disposition.
+- [ ] DYL-107: immutable repair workspaces and a lossless Aseprite round trip (`sonoranlab repair prepare|export|diff`).
+- [ ] DYL-108: single-writer editor sessions and bounded, verified pixel-edit transactions (authorization, broker).
+- [ ] DYL-109: finalize repaired frames into a new validated child job with a fresh bound review; review-metadata hardening (core, kept whatever the disposition).
+- [ ] DYL-110: three measured trials (round trip, targeted repair, small animation repair), at most 2 repair iterations each.
+- [ ] DYL-111: gate: evidence package and owner disposition.
 
 Exit criterion
 - An owner disposition (ADOPT, DEFER, REJECT or HOLD) recorded at DYL-111. Phase 4 waits for that disposition, not for

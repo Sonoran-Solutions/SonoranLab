@@ -153,8 +153,8 @@ status proposed). SonoranLab stays the authority; Aseprite is reachable only thr
  +-----------^------------+             | Aseprite + extension --- Xephyr display     |
              |                          |                                              |
   editor worker / critic                |  writable: workspace/ (+ private HOME, tmp)  |
-  (broker tools only, no                +---------------------------------------------+
-  upstream MCP, no shell)                 read-only: /usr, /etc, Aseprite, node, build
+  (broker CLI only, no                  +---------------------------------------------+
+  upstream MCP)                           read-only: /usr, /etc, Aseprite, node, build
 ```
 
 Repair job layout (`<repair>/`, reserved atomically by `repair prepare`):

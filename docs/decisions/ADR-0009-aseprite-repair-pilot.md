@@ -133,8 +133,9 @@ This is a disclosure to that provider and nothing else; no other party receives 
 
 The owner's user scope already registers a different server (diivi/aseprite-mcp @ `90d1696`, in `~/.claude.json` and
 `~/.codex/config.toml`) that exposes `run_lua_script`, i.e. arbitrary Lua. It is left untouched. It is excluded from the
-editor worker's tool set (as are the upstream MCP, PixelLab and any general shell), and the worker's only path to an
-editor is the broker.
+editor worker's tool set (as are the upstream MCP and PixelLab). The worker's shell runs inside its agent's own OS
+sandbox (writes confined to a scratch directory, no network; verified at DYL-110 before the first trial), and its only
+path to an editor is the broker CLI.
 
 ## Adoption criteria (the owner decides; this ADR only states them)
 
