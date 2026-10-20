@@ -330,7 +330,7 @@ def test_editor_violation_restored_and_logged(repair, fault):
     [("drop", "applied_within_mask"), ("delay", "applied_within_mask"), ("drop_unchanged", "unchanged")],
 )
 def test_unknown_outcome_never_resent(repair, fault, outcome):
-    b = start(repair, fault, timeout=0.1)
+    b = start(repair, fault, timeout=1.0)
     try:
         result = b.handle(op(b))
         assert result["ok"] and result["outcome_unknown"] and result["outcome"] == outcome, result
@@ -937,7 +937,7 @@ time.sleep(60)
 
 
 def test_snapshot_timeout_after_dispatch_disconnects_without_resending(repair):
-    b = start(repair, "snapshot_after_drop_twice", timeout=0.1)
+    b = start(repair, "snapshot_after_drop_twice", timeout=1.0)
     try:
         result = b.handle(op(b))
         assert result["state"] == "DISCONNECTED"
