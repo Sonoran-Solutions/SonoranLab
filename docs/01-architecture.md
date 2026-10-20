@@ -107,3 +107,29 @@ The deterministic core could be a custom node pack. It isn't, because:
 ComfyUI custom nodes (PixelOE, PixelGridHelpers) are still installed for
 interactive experimentation in Phase 1; the production chain calls the
 libraries directly.
+
+## ComfyUI client contract
+
+`sonoranlab.comfy` is an isolated generation boundary: `Workflow.load` reads API
+JSON plus its `.params.yaml` sidecar; `patch` copies named inputs. `ComfyClient`
+submits, waits, cancels, collects local output files, or reattaches to a persisted
+prompt UUID without resubmitting. It defaults to loopback only; remote hosts
+require `allow_remote=True`. It never starts ComfyUI or replaces `env/runwindow.py`.
+
+Persist a canonical UUID before submitting when crash recovery matters. Lost
+submission responses trigger an ID lookup before any retry, using the same ID
+(up to three POST attempts). `submit_unknown` means reattach that ID after
+restoring connectivity; never retry under a fresh ID. Reusing an attempted or
+existing ID is rejected. Cancellation uses `/api/jobs/{id}/cancel`, falling back
+only on 404/405 to a scoped queue delete and `interrupt` with `prompt_id`.
+Failures after submission cancel and confirm queue removal; `cancel_unconfirmed`
+means GPU work may still be live and the run window must remain guarded.
+
+`run` and `reattach` return JSON-serializable `RunRecord`s with structured errors,
+verbatim history messages, parameters, source/patched graph hashes, model hashes
+from `env/models.tsv` (unknown names marked `unknown`), and validated output
+paths, sizes and hashes. Output paths must remain inside `output_root` and files
+must be nonempty; expected counts can be total or per node. Timings use monotonic
+seconds for submission, observed queue wait, execution and wall time;
+`timing.poll_errors` counts transient polling failures. Reattachment timings
+cover the current attachment, not the earlier process lifetime.
