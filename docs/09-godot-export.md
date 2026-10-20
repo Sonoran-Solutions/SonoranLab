@@ -14,7 +14,9 @@ and validated when scale is 1. HD sheets (scale > 1) must have transparent colum
 `--stills` is also an input error. Both errors occur before the job dir is created. With `--godot-check` it first
 exports into a temp copy of `tools/godot/spriteframes_check`,
 runs the import and the checker below on it and writes `<job>/export/` only if both pass and the checked PNG/.tres hash
-the same as the final ones (result in `manifest.json` `godot_check`); without `godot` on PATH that flag is an error.
+the same as the final ones (result in `manifest.json` `godot_check`); without `godot` on PATH that flag is an error. Godot 4.7.2 intermittently
+aborts `--import` with `Parameter "singleton" is null ... is_cmdline_mode` (DYL-101); `pipeline.run_godot` re-runs only that exact
+signature, at most twice, and lists every attempt in `godot_check.godot_attempts`.
 
 Export writes only under the job dir (`<job>/export/<character>/`), never into the game; it refuses any `--out` that is
 inside the profile's `export.godot_project` (`forbid_under`), and never overwrites (the target must not hold files).
