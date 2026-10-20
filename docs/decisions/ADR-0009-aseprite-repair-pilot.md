@@ -169,3 +169,23 @@ iterations.
 - bwrap needs unprivileged user namespaces (Ubuntu's AppArmor policy currently permits them).
 - Upstream accepts `preflight mode=headless`; safety depends on the broker refusing `mode` and on no binary being
   reachable in the sandbox.
+- The sandbox's private HOME (`<repair>/session/home`) persists across sessions of one repair; code running inside the
+  sandbox could plant an extension there. The worker has no code-execution path into the sandbox (no Lua, no upstream MCP).
+- Codex's `collaboration.*` sub-agent tools remain in the contained editor worker (same OS sandbox, same overrides).
+
+## Consequences after the trials (2026-10-20; still proposed)
+
+Evidence: [`dyl110-trials.md`](../../benchmark/results/2026-10-20-phase3.5/dyl110-trials.md),
+[`phase35-gate.md`](../../benchmark/results/2026-10-20-phase3.5/phase35-gate.md).
+
+- The round trip is lossless on the approved pyromancer run. All 4 edited cases stayed inside their frozen masks with zero
+  unintended pixels; an independent checker confirmed it.
+- **Editor-worker containment requires explicit overrides.** `codex exec -c mcp_servers={}` does not remove MCP servers, and
+  MCP servers run outside Codex's OS sandbox. The contained worker uses per-server/plugin/feature `enabled=false` /
+  `--disable` overrides (MCP=NONE). Codex's sandbox blocks AF_UNIX, so the worker reaches the broker through
+  `sonoranlab repair relay` (mailboxes in its own directory; the relay holds the token).
+- **Additive repairs are colour-limited.** The pipeline saturates the per-cell 64-colour cap, so a repair may only reuse
+  colours already in the frame. The validator correctly refused an otherwise better-looking edit that added 3 colours.
+  Lifting this is an owner decision about the threshold or about authorizing out-of-mask colour merges; it is not part of
+  this ADR.
+- Disposition: pending the owner's 1× reviews (see the gate document).
