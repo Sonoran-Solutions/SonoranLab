@@ -529,13 +529,17 @@ def generate_cmd(args: argparse.Namespace) -> int:
             print(f"generate: entering env/runwindow.py --need-gib {need:g}", file=sys.stderr, flush=True)
             _exec(argv[0], argv)
             return 0  # exec only returns in tests
-        if req.track != "E":
-            raise ValueError(f"track {req.track!r} has no adapter yet")
-        from sonoranlab.comfy.adapters import track_e
+        from sonoranlab.comfy.adapters import track_c, track_e  # lazy: only inside the guard
 
         work = track_e.default_work()
-        client = track_e.make_client(args.base_url, work / "output", exec_container=args.exec_container)
-        adapter = track_e.TrackE(client, work_root=work, timeout_s=args.timeout)
+        if req.track == "E":
+            client = track_e.make_client(args.base_url, work / "output", exec_container=args.exec_container)
+            adapter = track_e.TrackE(client, work_root=work, timeout_s=args.timeout)
+        elif req.track == "C":
+            client = track_c.make_client(args.base_url, work / "output", exec_container=args.exec_container)
+            adapter = track_c.TrackC(client, work_root=work, timeout_s=args.timeout)
+        else:
+            raise ValueError(f"track {req.track!r} has no adapter yet")
         res = _cancel_on_term(lambda: adapter.generate(req))
     except (OSError, ValueError, TypeError, KeyError) as e:  # ValueError covers bad JSON; TypeError/KeyError bad fields
         print(f"generate: {e!r}" if isinstance(e, (KeyError, TypeError)) else f"generate: {e}", file=sys.stderr)
