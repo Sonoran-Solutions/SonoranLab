@@ -713,7 +713,8 @@ class ComfyClient:
                 exc = ComfyError(
                     "interrupted",
                     "wait",
-                    "Client interrupted; cancel this prompt before retrying",
+                    "Client interrupted (signal); prompt-scoped cancel sent and confirmed "
+                    "(else the code is cancel_unconfirmed)",
                     retryable=True,
                     prompt_id=prompt_id,
                 )
