@@ -13,3 +13,4 @@ with a new one). Format: Context → Decision → Consequences → Status.
 | 0006 | Apache-2.0-only default model stack | accepted |
 | 0007 | Phase 1 benchmarks the game's real sprite format | accepted |
 | 0008 | Validator semantics for weapon-bearing runs and floating subjects | accepted 2026-10-19: H0 + H4 + diagnostics, F2 (DYL-83) |
+| 0009 | Aseprite targeted-repair pilot (optional editor companion) | accepted 2026-10-20: ADOPT, narrow and optional (DYL-111) |

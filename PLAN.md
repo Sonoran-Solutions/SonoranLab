@@ -125,6 +125,26 @@ Exit criterion
 
 ---
 
+## Phase 3.5 — Aseprite targeted-repair pilot (optional)
+
+Goal: find out whether a contained Aseprite editor can make small, verified pixel repairs to an approved job and hand
+the result back through the existing validator, exporter and human review. Pilot only; design in
+[`docs/decisions/ADR-0009-aseprite-repair-pilot.md`](docs/decisions/ADR-0009-aseprite-repair-pilot.md).
+
+Tasks (Linear)
+- [x] DYL-106: ADR-0009, pinned environment and containment smoke (`benchmark/results/2026-10-20-phase3.5/`).
+- [x] DYL-107: immutable repair workspaces and a lossless Aseprite round trip (`sonoranlab repair prepare|export|diff`).
+- [x] DYL-108: single-writer editor sessions and bounded, verified pixel-edit transactions (authorization, broker).
+- [x] DYL-109: finalize repaired frames into a new validated child job with a fresh bound review; review-metadata hardening (core, kept whatever the disposition).
+- [x] DYL-110: three measured trials (round trip, targeted repair, small animation repair), at most 2 repair iterations each.
+- [x] DYL-111: gate: evidence package and owner disposition.
+
+Exit criterion (met 2026-10-20: owner disposition **ADOPT, narrow and optional**; Phase 4 GO)
+- An owner disposition (ADOPT, DEFER, REJECT or HOLD) recorded at DYL-111. Phase 4 waits for that disposition, not for
+  an Aseprite success. The deterministic pipeline must work without Aseprite.
+
+---
+
 ## Phase 4 — MCP server (1 weekend)
 
 Goal: the tool surface in `docs/06-tool-surface.md`, so an agent can drive the
@@ -136,6 +156,7 @@ Tasks
 - [ ] Artifact store: `artifacts/<project>/<character>/<anim>/<job_id>/{raw,processed,report.json,contact.png}`.
 - [ ] Project state: `list_characters`, `get_character` (approved refs, existing sheets, validator history).
 - [ ] Register the server in Claude Code's MCP config; smoke test from a Claude Code session.
+- [ ] Only if Phase 3.5 is adopted: wrap the scoped repair handoff (DYL-118). Otherwise skip.
 
 Exit criterion
 - From a fresh Claude Code session, the agent calls `generate_character` → `animate` → `validate` → `export_godot` and a walk cycle lands in a Godot project, with the agent only ever seeing tool results and contact sheets.
