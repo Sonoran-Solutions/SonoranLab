@@ -26,6 +26,15 @@ def client_values(value: object) -> None:
         require("../" not in value and "..\\" not in value, "forbidden_argument")
 
 
+def request_depth(value: object) -> None:
+    pending = [(value, 0)]
+    while pending:
+        item, depth = pending.pop()
+        require(depth <= 32, "invalid_request")
+        if isinstance(item, (dict, list)):
+            pending.extend((v, depth + 1) for v in (item.values() if isinstance(item, dict) else item))
+
+
 def integer(value: object) -> int:
     require(type(value) is int)
     return value
@@ -69,7 +78,8 @@ def prepare_op(
     frames: dict[str, np.ndarray],
     masks: dict[str, np.ndarray],
     palette: list[str],
-    origin: tuple[int, int] = (0, 0),
+    origin: tuple[int, int],
+    cels: dict[str, dict],
 ) -> tuple[dict, np.ndarray, tuple[int, int] | None]:
     """Return sanitized upstream args, predicted canvas and a move's inverse delta."""
     client_values(args)
@@ -126,21 +136,34 @@ def prepare_op(
         for key in ("flipHorizontal", "flipVertical", "skipTransparent"):
             require(type(args.get(key, False)) is bool)
         patch = frames[source][y : y + h, x : x + w].copy()
+        b = cels[source]
+        x0, y0, x1, y1 = b["x"], b["y"], b["x"] + b["width"], b["y"] + b["height"]
+        if source == n:
+            # Upstream grows the target cel before fetching the source, even for a self-blit.
+            x0, y0, x1, y1 = min(x0, dx), min(y0, dy), max(x1, dx + w), max(y1, dy + h)
+        yy, xx = np.mgrid[y : y + h, x : x + w]
+        valid = (xx >= x0) & (xx < x1) & (yy >= y0) & (yy < y1)
         if args.get("flipHorizontal", False):
+            valid = valid[:, ::-1]
             patch = patch[:, ::-1]
         if args.get("flipVertical", False):
+            valid = valid[::-1]
             patch = patch[::-1]
         dest = expected[dy : dy + h, dx : dx + w]
         if args.get("skipTransparent", False):
-            dest[patch[..., 3] != 0] = patch[patch[..., 3] != 0]
-        else:
-            dest[:] = patch
+            valid &= patch[..., 3] != 0
+        dest[valid] = patch[valid]
         args["fromFrame"], args["fromLayer"] = int(source), "art"
         args["skipTransparent"] = args.get("skipTransparent", False)
     elif op == "cel.move":
         require(set(args) in ({"dx", "dy"}, {"x", "y"}))
         dx = integer(args["dx"]) if "dx" in args else integer(args["x"]) - origin[0]
         dy = integer(args["dy"]) if "dy" in args else integer(args["y"]) - origin[1]
+        h, w = expected.shape[:2]
+        require(abs(dx) <= w and abs(dy) <= h, "mask_violation")
+        if "x" in args:
+            require(abs(args["x"]) <= w and abs(args["y"]) <= h, "mask_violation")
+        require(bool((frames[n][..., 3] != 0).any()), "empty_cel")
         expected[:] = 0
         for y, x in np.argwhere(frames[n][..., 3] != 0):
             # Both ends must stay inside the authorization, including pixels moved off canvas.

@@ -303,7 +303,7 @@ def test_prevalidation_never_mutates(repair, kind):
         b.close()
 
 
-@pytest.mark.parametrize("fault", ["outside", "frame", "duration", "snap", "drop_violation"])
+@pytest.mark.parametrize("fault", ["outside", "frame", "duration", "snap", "drop_violation", "origin"])
 def test_editor_violation_restored_and_logged(repair, fault):
     b = start(repair, fault, timeout=0.2)
     try:
@@ -660,3 +660,311 @@ def test_mcp_write_timeout_is_bounded_and_stream_not_reused():
             client.call("sprite_info", {})
     finally:
         client.close()
+
+
+@pytest.mark.parametrize("checkpoint", [False, True])
+def test_disconnected_restart_discards_only_unsaved_edits(repair, checkpoint):
+    b = start(repair)
+    original = b.accepted.hashes()
+    if checkpoint:
+        assert b.handle(op(b, "saved"))["ok"]
+        assert b.handle({"action": "checkpoint", "token": b.token})["ok"]
+        original = b.accepted.hashes()
+    assert b.handle(op(b, "unsaved", args={"color": b.doc["palette"][1], "points": [{"x": 1, "y": 0}]}))["ok"]
+    assert original != b.accepted.hashes()
+    b.client.process.kill()
+    b.client.process.wait()
+    assert b.handle(op(b, "disconnect"))["state"] == "DISCONNECTED"
+    b.close()
+    b = start(repair)
+    try:
+        assert b.accepted.hashes() == original
+        assert b.handle(op(b, "fresh"))["ok"]
+        rows = [json.loads(line) for line in (repair / "session/ops.jsonl").read_text().splitlines()]
+        assert [r for r in rows if r.get("event") == "session_start"][-1]["unsaved_edits_lost"]
+    finally:
+        b.close()
+
+
+def test_tainted_restart_still_refused(repair):
+    b = start(repair, "restore_failure")
+    assert not b.handle(op(b))["ok"]
+    b.close()
+    with pytest.raises(Denied, match="invalid_state"):
+        start(repair)
+
+
+@pytest.mark.parametrize("fault,ok", [("snapshot_drop", True), ("snapshot_drop_twice", False)])
+def test_unknown_snapshot_retried_as_read(repair, fault, ok):
+    b = start(repair, fault, timeout=0.1)
+    try:
+        result = b.handle(op(b))
+        assert result["ok"] == ok, result
+        if not ok:
+            assert result["state"] == "DISCONNECTED"
+            assert not calls(repair, "draw")
+        # Admission + the failed snapshot + one retry (and verification on success).
+        assert len(calls(repair, "sprite_info")) == (4 if ok else 3)
+    finally:
+        b.close()
+
+
+def test_nested_request_refused_without_journal_or_server_recursion(repair):
+    b = start(repair)
+    try:
+        nested = None
+        for _ in range(1500):
+            nested = [nested]
+        assert b.handle(op(b, args={"nested": nested}))["error"] == "invalid_request"
+        assert b.handle({"action": "status", "token": b.token})["ok"]
+        assert b.handle(op(b))["ok"]
+    finally:
+        b.close()
+
+
+@pytest.mark.parametrize("args", [{"dx": 17, "dy": 0}, {"dx": 0, "dy": -17}, {"x": 100, "y": 0}])
+def test_empty_cel_move_and_excessive_offsets_refused(repair, args):
+    b = start(repair)
+    try:
+        assert b.handle(op(b, "clear", op="draw.clear", args={"region": {"x": 0, "y": 0, "width": 8, "height": 8}}))[
+            "ok"
+        ]
+        assert b.handle(op(b, "huge", op="cel.move", args=args))["error"] == "mask_violation"
+        assert b.handle(op(b, "empty", op="cel.move", args={"dx": 1, "dy": 0}))["error"] == "empty_cel"
+        assert not [c for c in calls(repair, "cel") if c["arguments"]["op"] == "move"]
+        rows = [json.loads(line) for line in (repair / "session/ops.jsonl").read_text().splitlines()]
+        verified = next(r for r in rows if r.get("event") == "verification")
+        assert {"x", "y"} <= verified["metadata_after"]["cels"]["1"].keys()
+    finally:
+        b.close()
+
+
+@pytest.mark.parametrize("flip", [False, True])
+def test_blit_outside_source_cel_preserves_destination(repair, flip):
+    b = start(repair)
+    try:
+        assert b.handle(op(b, "seed", args={"color": b.doc["palette"][1], "points": [{"x": 4, "y": 4}]}))["ok"]
+        # Source x=0,1 lie outside the cel, including after growing for this destination.
+        result = b.handle(
+            op(
+                b,
+                op="draw.blit",
+                args={
+                    "from": {"x": 0, "y": 3, "width": 3, "height": 1},
+                    "to": {"x": 2, "y": 4},
+                    "flipHorizontal": flip,
+                    "skipTransparent": False,
+                },
+            )
+        )
+        assert result["ok"], result
+        assert b.accepted.frames["1"][4, 2, 3] == 255
+        if flip:
+            assert bytes(b.accepted.frames["1"][4, 4, :3]).hex() == b.doc["palette"][1][1:].lower()
+    finally:
+        b.close()
+
+
+def test_long_socket_path_refused_before_editor(repair):
+    with pytest.raises(Denied, match="socket_path_too_long"):
+        serve(repair / ("x" * 108), launcher=lambda p: pytest.fail("editor must not launch"))
+    assert not (repair / "session/fake-calls.jsonl").exists()
+
+
+def test_journal_auth_privacy_and_read_payload_summaries(repair):
+    import base64
+    import hashlib
+
+    from sonoranlab.repair.authorization import canonical
+
+    b = start(repair)
+    try:
+        secret = "untrusted-secret-should-not-be-logged"
+        assert not b.handle(op(b, token="wrong", args={"secret": secret}))["ok"]
+        rows = [json.loads(line) for line in (repair / "session/ops.jsonl").read_text().splitlines()]
+        assert set(rows[-1]) == {"action", "error", "time_ns", "previous", "sha256"}
+        assert secret not in (repair / "session/ops.jsonl").read_text()
+        for tool, args in [("read_pixels", {}), ("look", {"op": "ascii"}), ("look", {"op": "preview"})]:
+            result = b.handle(
+                {
+                    "action": "read",
+                    "token": b.token,
+                    "tool": tool,
+                    "target": {"kind": "still", "direction": "north"},
+                    "args": args,
+                }
+            )
+            logged = json.loads((repair / "session/ops.jsonl").read_text().splitlines()[-1])["response"]["result"]
+            if tool == "read_pixels":
+                raw = canonical(result["result"]["grid"])
+                assert logged["grid"] == {"sha256": hashlib.sha256(raw).hexdigest(), "size": len(raw)}
+                assert isinstance(logged["colors"], dict)
+            elif args.get("op") == "ascii":
+                assert isinstance(logged["gridRows"], dict) and isinstance(logged["text"], dict)
+            else:
+                raw = base64.b64decode(result["result"]["content"][0]["data"])
+                assert logged["content"][0]["data"] == {"sha256": hashlib.sha256(raw).hexdigest(), "size": len(raw)}
+        assert b.token not in (repair / "session/ops.jsonl").read_text()
+    finally:
+        b.close()
+
+
+def test_server_survives_deep_json_and_keeps_serving_fake_editor(repair, monkeypatch):
+    import io
+
+    from sonoranlab.repair import session
+
+    responses = []
+    nested = [b"[" * 40 + b"0" + b"]" * 40 + b"\n", b"[" * 1500 + b"0" + b"]" * 1500 + b"\n"]
+
+    class Connection:
+        def __init__(self, payload):
+            self.payload = payload
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+        def settimeout(self, timeout):
+            pass
+
+        def makefile(self, mode):
+            return io.BytesIO(self.payload)
+
+        def sendall(self, data):
+            responses.append(json.loads(data))
+
+    class Listener:
+        def bind(self, path):
+            Path(path).touch()
+
+        def listen(self, backlog):
+            pass
+
+        def settimeout(self, timeout):
+            pass
+
+        def accept(self):
+            index = len(responses)
+            if index < 2:
+                return Connection(nested[index]), None
+            token = (repair / "session/token").read_text()
+            action = "status" if index == 2 else "stop"
+            return Connection(json.dumps({"action": action, "token": token}).encode() + b"\n"), None
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(session.socket, "socket", lambda *args: Listener())
+    assert serve(repair, launcher=launcher(), converter=FakeConverter())["stopped"]
+    assert [r.get("error") for r in responses[:2]] == ["invalid_request", "invalid_request"]
+    assert responses[2]["ok"] and responses[3]["stopped"]
+    assert calls(repair, "sprite_info")
+
+
+def test_xephyr_launch_sets_parent_death_signal(repair, monkeypatch):
+    from sonoranlab.repair import session
+
+    launched = []
+    signalled = []
+    monkeypatch.setenv("DISPLAY", ":0")
+    monkeypatch.setattr(session, "locate", lambda: None)
+    monkeypatch.setattr(session.shutil, "which", lambda tool: tool)
+    monkeypatch.setattr(session.subprocess, "check_output", lambda *a, **k: "cookie")
+    monkeypatch.setattr(session.subprocess, "run", lambda *a, **k: None)
+    monkeypatch.setattr(session, "bwrap_argv", lambda *a, **k: ["fake-editor"])
+    monkeypatch.setattr(session, "kill_with_parent", signalled.append)
+    real_socket, real_read = Path.is_socket, Path.read_text
+    monkeypatch.setattr(Path, "is_socket", lambda path: str(path).startswith("/tmp/.X11-unix/") or real_socket(path))
+    monkeypatch.setattr(
+        Path, "read_text", lambda path, *a, **k: "123" if str(path).startswith("/tmp/.X") else real_read(path, *a, **k)
+    )
+
+    def popen(argv, **kwargs):
+        launched.append((argv, kwargs))
+        return SimpleNamespace(pid=123, poll=lambda: None)
+
+    monkeypatch.setattr(session.subprocess, "Popen", popen)
+    monkeypatch.setattr(session, "Editor", lambda p, x, log: SimpleNamespace(close=log.close))
+    editor = session.launch_editor(repair)
+    editor.close()
+    assert launched[0][0][0] == "Xephyr"
+    launched[0][1]["preexec_fn"]()
+    assert signalled == [os.getpid()]
+
+
+def _proc_state(path):
+    try:
+        return path.read_text().split()[2]
+    except (FileNotFoundError, ProcessLookupError):
+        return "Z"  # the process vanished between exists() and read: it is dead
+
+
+def test_parent_death_signal_kills_child():
+    import signal
+
+    script = """
+import os, subprocess, sys, time
+from sonoranlab.repair.session import kill_with_parent
+parent = os.getpid()
+p = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'],
+                     preexec_fn=lambda: kill_with_parent(parent))
+print(p.pid, flush=True)
+time.sleep(60)
+"""
+    parent = subprocess.Popen([sys.executable, "-c", script], stdout=subprocess.PIPE, text=True)
+    child = None
+    try:
+        child = int(parent.stdout.readline())
+        parent.kill()
+        parent.wait(timeout=5)
+        for _ in range(100):
+            path = Path(f"/proc/{child}/stat")
+            if not path.exists() or _proc_state(path) == "Z":
+                break
+            time.sleep(0.01)
+        else:
+            pytest.fail("child survived its SIGKILLed parent")
+    finally:
+        if parent.poll() is None:
+            parent.kill()
+        parent.wait(timeout=5)
+        parent.stdout.close()
+        if child and Path(f"/proc/{child}").exists():
+            os.kill(child, signal.SIGKILL)
+
+
+def test_snapshot_timeout_after_dispatch_disconnects_without_resending(repair):
+    b = start(repair, "snapshot_after_drop_twice", timeout=0.1)
+    try:
+        result = b.handle(op(b))
+        assert result["state"] == "DISCONNECTED"
+        assert len(calls(repair, "draw")) == 1
+        assert len(calls(repair, "sprite_info")) == 4
+    finally:
+        b.close()
+
+
+def test_self_blit_uses_source_bounds_after_target_growth(repair):
+    b = start(repair)
+    try:
+        # Growing to x=1 brings a transparent source pixel into the source image bounds.
+        result = b.handle(
+            op(
+                b,
+                op="draw.blit",
+                args={
+                    "from": {"x": 1, "y": 3, "width": 2, "height": 1},
+                    "to": {"x": 1, "y": 4},
+                    "flipHorizontal": True,
+                    "skipTransparent": False,
+                },
+            )
+        )
+        assert result["ok"], result
+        assert b.accepted.frames["1"][4, 1, 3] == 255
+        assert b.accepted.frames["1"][4, 2, 3] == 0
+    finally:
+        b.close()

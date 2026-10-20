@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import hmac
 import json
@@ -38,7 +39,7 @@ from sonoranlab.repair.compare import (
     source_name,
 )
 from sonoranlab.repair.mcp_client import Disconnected, OutcomeUnknown, ToolError
-from sonoranlab.repair.operations import client_values, fields, prepare_op, rectangle
+from sonoranlab.repair.operations import client_values, fields, prepare_op, rectangle, request_depth
 from sonoranlab.repair.runtime import AsepriteConverter, no_symlinks
 
 
@@ -171,7 +172,13 @@ class Broker:
             require((self.repair / "authorization.json").is_file(), "authorization_missing")
             require((self.repair / "state.json").is_file(), "authorization_hash_mismatch")
             self.state = read_json(self.repair / "state.json")
-            require(self.state["state"] in ("prepared", "checkpointed"), "invalid_state")
+            restarting = self.state["state"] == "DISCONNECTED"
+            require(self.state["state"] in ("prepared", "checkpointed", "DISCONNECTED"), "invalid_state")
+            admission = (
+                ("checkpointed" if self.state.get("accepted_sha256") else "prepared")
+                if restarting
+                else self.state["state"]
+            )
             self.auth = read_json(self.repair / "authorization.json")
             require(
                 sha256_file(self.repair / "authorization.json") == self.state.get("authorization_sha256"),
@@ -184,7 +191,7 @@ class Broker:
             self.verify_files()
             self.journal = Journal(self.session / "ops.jsonl", self.state, self.repair / "state.json")
             expected = self.export_document()
-            if self.state["state"] == "checkpointed":
+            if admission == "checkpointed":
                 path = self.session / "accepted.json"
                 require(sha256_file(path) == self.state.get("accepted_sha256"), "accepted_hash_mismatch")
                 accepted = Snapshot.unpack(read_json(path))
@@ -243,7 +250,7 @@ class Broker:
                 "live_document_mismatch",
             )
             self.check_initial_layers(self.accepted.info)
-            if self.state["state"] == "checkpointed":
+            if admission == "checkpointed":
                 # IDs are process-local; other stable properties survive save/reopen.
                 old = stable_info(accepted.info)
                 new = stable_info(self.accepted.info)
@@ -257,10 +264,12 @@ class Broker:
                 f.write(self.token)
                 f.flush()
                 os.fsync(f.fileno())
+            self.state["state"] = admission
             self.state["session_state"] = "ACTIVE"
             persist(self.repair / "state.json", self.state)
             self.journal.append(
                 event="session_start",
+                unsaved_edits_lost=restarting,
                 authorization_sha256=self.state["authorization_sha256"],
                 authorization=self.auth,
                 metadata=self.accepted.info,
@@ -314,6 +323,15 @@ class Broker:
         return {"sprite": self.sprite, "layer": "art", "frame": int(n)}
 
     def snapshot(self) -> Snapshot:
+        for attempt in range(2):
+            try:
+                return self._snapshot()
+            except OutcomeUnknown as e:
+                if attempt:
+                    raise Disconnected("snapshot read failed twice") from e
+        raise AssertionError("unreachable")
+
+    def _snapshot(self) -> Snapshot:
         info = self.client.call("sprite_info", {**self.target(), "includePalette": True, "includeSlices": True})
         require(
             info.get("id") == int(self.sprite[1:]) and info.get("filename") == "/work/doc.aseprite", "wrong_document"
@@ -339,7 +357,15 @@ class Broker:
             a = colours[indices].reshape(info["height"], info["width"], 4)
             a[a[..., 3] == 0] = 0
             frames[n] = a
-        return Snapshot(info, frames)
+        cels = self.client.call("cel", {**self.target(), "op": "list"})["cels"]
+        selected = {}
+        for n in self.mapping:
+            matches = [c for c in cels if c["frame"] == int(n) and c["layer"] == "art"]
+            require(len(matches) == 1, "invalid_editor_state")
+            cel = matches[0]
+            require(all(type(cel[k]) is int for k in ("x", "y", "width", "height")), "invalid_editor_state")
+            selected[n] = cel
+        return Snapshot({**info, "cels": selected}, frames)
 
     def export_document(self) -> Snapshot:
         """Explicit batch interchange, only at admission/checkpoint, never disconnect recovery."""
@@ -381,13 +407,6 @@ class Broker:
     def terminal(self, state: str) -> None:
         self.state["state"] = self.state["session_state"] = state
         persist(self.repair / "state.json", self.state)
-
-    def cel_origin(self, n: str) -> tuple[int, int]:
-        cels = self.client.call("cel", {**self.target(n), "op": "list"})["cels"]
-        selected = [c for c in cels if c["frame"] == int(n) and c["layer"] == "art"]
-        require(len(selected) == 1, "invalid_editor_state")
-        require(type(selected[0]["x"]) is int and type(selected[0]["y"]) is int, "invalid_editor_state")
-        return selected[0]["x"], selected[0]["y"]
 
     def restore(
         self, before: Snapshot, after: Snapshot | None, n: str, inverse: tuple | None, origin: tuple | None = None
@@ -439,7 +458,9 @@ class Broker:
                                 },
                             )
             restored = self.snapshot()
-            ok = restored.equals(before) and (origin is None or self.cel_origin(n) == origin)
+            ok = restored.equals(before) and (
+                origin is None or (restored.info["cels"][n]["x"], restored.info["cels"][n]["y"]) == origin
+            )
             self.journal.append(
                 event="restore",
                 before=before.hashes(),
@@ -451,6 +472,8 @@ class Broker:
             )
             if ok:
                 return True
+        except Disconnected:
+            raise
         except Exception as e:
             self.journal.append(event="restore_failed", error=str(e))
         self.terminal("TAINTED")
@@ -472,9 +495,7 @@ class Broker:
         if not before.equals(self.accepted):
             self.terminal("TAINTED")
             raise Denied("live_state_drift")
-        origin = (0, 0)
-        if request["op"] == "cel.move":
-            origin = self.cel_origin(n)
+        origin = (before.info["cels"][n]["x"], before.info["cels"][n]["y"])
         args, expected, inverse = prepare_op(
             request["op"],
             request["args"],
@@ -483,6 +504,7 @@ class Broker:
             self.masks,
             [c.lower() for c in self.doc["palette"]],
             origin,
+            before.info["cels"],
         )
         self.journal.append(
             event="dispatch",
@@ -514,11 +536,41 @@ class Broker:
         geometry_ok = True
         restore_inverse = inverse
         if inverse is not None:
-            actual_origin = self.cel_origin(n)
-            geometry_ok = actual_origin == (origin[0] - inverse[0], origin[1] - inverse[1])
+            actual_origin = (after.info["cels"][n]["x"], after.info["cels"][n]["y"])
+            geometry_ok = actual_origin == (origin[0] - inverse[0], origin[1] - inverse[1]) and all(
+                before.info["cels"][n][k] == after.info["cels"][n][k] for k in ("width", "height")
+            )
             restore_inverse = (origin[0] - actual_origin[0], origin[1] - actual_origin[1])
+        else:
+            # Aseprite grows (and does not always trim) a cel when drawing. Every pixel is verified separately; the cel
+            # rect may only stay inside bbox(old rect U changed pixels) and the canvas, so it cannot drift on its own.
+            cel, old = after.info["cels"][n], before.info["cels"][n]
+            h, w = expected.shape[:2]
+            diff = np.argwhere((before.frames[n] != after.frames[n]).any(axis=-1))
+            lo_x, lo_y, hi_x, hi_y = old["x"], old["y"], old["x"] + old["width"], old["y"] + old["height"]
+            if len(diff):
+                lo_y, lo_x = min(lo_y, int(diff[:, 0].min())), min(lo_x, int(diff[:, 1].min()))
+                hi_y, hi_x = max(hi_y, int(diff[:, 0].max()) + 1), max(hi_x, int(diff[:, 1].max()) + 1)
+            lo_x, lo_y, hi_x, hi_y = max(lo_x, 0), max(lo_y, 0), min(hi_x, w), min(hi_y, h)
+            geometry_ok = (
+                cel["x"] >= lo_x
+                and cel["y"] >= lo_y
+                and cel["x"] + cel["width"] <= hi_x
+                and cel["y"] + cel["height"] <= hi_y
+                and (cel == old or len(diff) > 0)
+            )
         changed = before.changes(after)
-        same_meta = stable_info(before.info) == stable_info(after.info)
+        before_meta, after_meta = stable_info(before.info), stable_info(after.info)
+        before_cels, after_cels = before_meta.pop("cels"), after_meta.pop("cels")
+
+        # Drawing can resize/trim the target cel; other cel properties must survive.
+        def fixed_cels(cels):
+            return {
+                f: {k: v for k, v in c.items() if f != n or k not in {"x", "y", "width", "height"}}
+                for f, c in cels.items()
+            }
+
+        same_meta = before_meta == after_meta and fixed_cels(before_cels) == fixed_cels(after_cels)
         inside = same_meta and all(
             not points or (frame == n and points != "canvas_changed" and all(self.masks[n][y, x] for x, y in points))
             for frame, points in changed.items()
@@ -597,6 +649,8 @@ class Broker:
             exported = self.export_document()
             require(exported.hashes() == self.accepted.hashes(), "checkpoint_mismatch")
             require(self.snapshot().equals(self.accepted), "checkpoint_mismatch")
+        except Disconnected:
+            raise
         except Exception:
             self.terminal("TAINTED")
             raise
@@ -616,14 +670,18 @@ class Broker:
 
     def handle(self, request: dict) -> dict:
         ident = None
-        safe_request = {k: v for k, v in request.items() if k != "token"} if isinstance(request, dict) else request
         try:
-            self.journal.append(event="request", request=safe_request, before=self.accepted.hashes())
             require(
                 isinstance(request, dict)
                 and isinstance(request.get("token"), str)
                 and hmac.compare_digest(request["token"].encode("utf-8", "surrogatepass"), self.token.encode()),
                 "lease_token_invalid",
+            )
+            request_depth(request)
+            self.journal.append(
+                event="request",
+                request={k: v for k, v in request.items() if k != "token"},
+                before=self.accepted.hashes(),
             )
             action = request.get("action")
             if action == "status":
@@ -670,17 +728,52 @@ class Broker:
             self.terminal("TAINTED")
             response = {"ok": False, "error": "outcome_unknown", "state": "TAINTED"}
         except Denied as e:
+            if e.code == "lease_token_invalid":
+                action = request.get("action") if isinstance(request, dict) else None
+                self.journal.append(
+                    action=action if action in ("op", "read", "status", "checkpoint", "stop") else None, error=e.code
+                )
+                return {"ok": False, "error": e.code, "message": str(e)}
             response = {"ok": False, "error": e.code, "message": str(e)}
-        except (ValueError, KeyError, TypeError, IndexError, ToolError) as e:
+        except (ValueError, KeyError, TypeError, IndexError, RecursionError, ToolError) as e:
             response = {"ok": False, "error": "invalid_request", "message": str(e)}
         if self.inflight:
             if self.state["state"] != "DISCONNECTED":
                 self.terminal("TAINTED")
             self.inflight = False
-        return self.decision(response, ident if isinstance(ident, str) else None)
+        return self.decision(
+            response,
+            ident if isinstance(ident, str) else None,
+            read=isinstance(request, dict) and request.get("action") == "read",
+        )
 
-    def decision(self, response: dict, ident: str | None = None) -> dict:
-        self.journal.append(event="decision", op_id=ident, response=response, after=self.accepted.hashes())
+    def decision(self, response: dict, ident: str | None = None, *, read: bool = False) -> dict:
+        def summarized(value):
+            if isinstance(value, dict):
+                result = {}
+                for k, v in value.items():
+                    if (
+                        k in {"grid", "colors", "gridRows"}
+                        or (k == "text" and value.get("op") in ("ascii", "diff"))
+                        or (k == "data" and value.get("type") == "image")
+                    ):
+                        data = (
+                            base64.b64decode(v) if k == "data" else (v.encode() if isinstance(v, str) else canonical(v))
+                        )
+                        result[k] = {"sha256": hashlib.sha256(data).hexdigest(), "size": len(data)}
+                    else:
+                        result[k] = summarized(v)
+                return result
+            if isinstance(value, list):
+                return [summarized(v) for v in value]
+            return value
+
+        self.journal.append(
+            event="decision",
+            op_id=ident,
+            response=summarized(response) if read else response,
+            after=self.accepted.hashes(),
+        )
         return response
 
     def close(self) -> None:

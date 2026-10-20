@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ctypes
 import hashlib
 import json
 import os
@@ -21,6 +22,7 @@ from sonoranlab.repair.authorization import Denied, canonical, lease, open_priva
 from sonoranlab.repair.broker import Broker
 from sonoranlab.repair.compare import read_json
 from sonoranlab.repair.mcp_client import MCPClient
+from sonoranlab.repair.operations import request_depth
 from sonoranlab.repair.runtime import AsepriteConverter, bwrap_argv, locate, no_symlinks
 
 MAX_REQUEST = 4 * 1024 * 1024
@@ -41,6 +43,20 @@ class Editor:
                 self.xephyr.kill()
                 self.xephyr.wait()
             self.log.close()
+
+
+def kill_with_parent(parent: int) -> None:
+    libc = ctypes.CDLL(None, use_errno=True)
+    if libc.prctl(1, signal.SIGKILL, 0, 0, 0) != 0:  # PR_SET_PDEATHSIG
+        raise OSError(ctypes.get_errno(), "prctl(PR_SET_PDEATHSIG)")
+    if os.getppid() != parent:  # Parent may have died before prctl.
+        os.kill(os.getpid(), signal.SIGKILL)
+
+
+def socket_path(repair: Path) -> Path:
+    path = no_symlinks(repair / "session/broker.sock")
+    require(len(os.fsencode(path)) <= 107, "socket_path_too_long")
+    return path
 
 
 def launch_editor(repair: Path) -> Editor:
@@ -86,6 +102,7 @@ def launch_editor(repair: Path) -> Editor:
                 capture_output=True,
                 timeout=5,
             )
+            parent = os.getpid()
             xephyr = subprocess.Popen(
                 [
                     "Xephyr",
@@ -99,6 +116,7 @@ def launch_editor(repair: Path) -> Editor:
                     "-title",
                     f"SonoranLab repair: {read_json(repair / 'repair.json')['repair_id']}",
                 ],
+                preexec_fn=lambda parent=parent: kill_with_parent(parent),
                 stdout=log,
                 stderr=log,
             )
@@ -139,12 +157,12 @@ def serve(
     converter: AsepriteConverter | None = None,
     ready_timeout: float = 90,
 ) -> dict:
+    path = socket_path(repair)
     broker = Broker(repair, launcher=launcher, converter=converter, ready_timeout=ready_timeout)
     sock = None
     old_handlers = {}
     try:
         sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        path = no_symlinks(broker.session / "broker.sock")
         if path.exists():
             require(path.is_socket() and path.stat().st_uid == os.getuid(), "unsafe_path")
             path.unlink()  # Only the lease owner may replace a stale socket.
@@ -177,9 +195,10 @@ def serve(
                         line = stream.readline(MAX_REQUEST + 1)
                     require(len(line) <= MAX_REQUEST and line.endswith(b"\n"), "invalid_request")
                     payload = json.loads(line)
-                except (ValueError, Denied, OSError) as e:
+                    request_depth(payload)
+                except (ValueError, Denied, OSError, RecursionError) as e:
                     response = {"ok": False, "error": getattr(e, "code", "invalid_request")}
-                    broker.journal.append(event="transport_rejected", response=response)
+                    broker.journal.append(action=None, error=response["error"])
                 else:
                     # Journal/storage failures must terminate the writer, not be treated as bad input.
                     response = broker.handle(payload)
@@ -188,9 +207,11 @@ def serve(
                     conn.sendall(canonical(response) + b"\n")
         return {"ok": True, "state": broker.state["state"], "stopped": True}
     finally:
-        if sock is not None:
-            sock.close()
-        broker.close()
+        try:
+            broker.close()
+        finally:
+            if sock is not None:
+                sock.close()
         for signum, handler in old_handlers.items():
             signal.signal(signum, handler)
 
@@ -210,6 +231,7 @@ def request(repair: Path, payload: dict) -> dict:
 
 def detach(repair: Path) -> dict:
     repair = no_symlinks(repair)
+    socket_path(repair)
     with lease(repair):
         pass  # Fail immediately for a second writer; the daemon acquires its own lifetime lease.
     ident = read_json(repair / "repair.json")["repair_id"]

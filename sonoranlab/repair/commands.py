@@ -33,6 +33,10 @@ def run(args: argparse.Namespace) -> int:
                     result = request(args.repair, payload)
             else:
                 result = request(args.repair, {**read_json(args.spec), "action": action})
+        elif action == "relay":
+            from sonoranlab.repair.relay import relay
+
+            result = relay(args.repair, args.agent_dir)
         elif action == "abort":
             from sonoranlab.repair.session import abort
 

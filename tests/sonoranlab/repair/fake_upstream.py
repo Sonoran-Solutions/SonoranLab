@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import base64
+import io
 import json
 import sys
 import time
@@ -20,7 +22,7 @@ def main() -> None:
         str(i): np.array(Image.open(workspace / "fake-frames" / f"{i}.png").convert("RGBA"))
         for i in range(1, meta["frame_count"] + 1)
     }
-    origins = {n: [0, 0] for n in frames}
+    origins = doc.get("origins", {n: [0, 0] for n in frames})
     info = {
         "id": 1,
         "filename": "/work/doc.aseprite",
@@ -58,13 +60,16 @@ def main() -> None:
     if fault == "wrong_document":
         info["filename"] = "/work/other.aseprite"
     mutated = False
+    snapshots = 0
+    dropped = 0
+    origin_fault = False
     unrelated = {"filename": "/work/unrelated.aseprite", "pixels": "#abcdef"}
 
     def rgba(value):
         return list(bytes.fromhex(value[1:])) + ([255] if len(value) == 7 else [])
 
     def call(name, a):
-        nonlocal mutated
+        nonlocal mutated, snapshots, dropped, origin_fault
         if name == "preflight":
             assert a == {}
             return {"ready": fault != "not_ready", "mode": "live", "bridgeConnected": True, "pluginConnected": True}
@@ -78,6 +83,14 @@ def main() -> None:
         assert a["sprite"] == "#1" and a["layer"] == "art" and str(a["frame"]) in frames, a
         n = str(a["frame"])
         if name == "sprite_info":
+            snapshots += 1
+            if (snapshots > 1 and fault in ("snapshot_drop", "snapshot_drop_twice")) or (
+                mutated and fault == "snapshot_after_drop_twice"
+            ):
+                limit = 1 if fault == "snapshot_drop" else 2
+                if dropped < limit:
+                    dropped += 1
+                    return {"_drop": True}
             return info
         if name == "read_pixels":
             assert a["composite"] is False
@@ -88,16 +101,51 @@ def main() -> None:
                 pixels = pixels[r["y"] : r["y"] + r["height"], r["x"] : r["x"] + r["width"]]
             colours, grid = np.unique(pixels.reshape(-1, 4), axis=0, return_inverse=True)
             return {"colors": ["#" + bytes(c).hex() for c in colours], "grid": grid.tolist()}
+        if name == "look" and a["op"] in ("preview", "filmstrip", "onion"):
+            out = io.BytesIO()
+            Image.fromarray(frames[n]).save(out, format="PNG")
+            return {
+                "content": [
+                    {"type": "image", "mimeType": "image/png", "data": base64.b64encode(out.getvalue()).decode()}
+                ]
+            }
         if name == "look":
-            return {"op": a["op"], "text": "fake view"}
+            return {"op": a["op"], "text": "fake view", "gridRows": ["..x", "..."]}
         if name == "cel" and a["op"] == "list":
-            return {"cels": [{"layer": "art", "frame": int(n), "x": origins[n][0], "y": origins[n][1]}]}
+            bounds = {}
+            for f, pixels in frames.items():
+                opaque = np.argwhere(pixels[..., 3] != 0)
+                if len(opaque):
+                    y0, x0 = opaque.min(axis=0)
+                    y1, x1 = opaque.max(axis=0) + 1
+                    origins[f] = [int(x0), int(y0)]
+                    bounds[f] = [int(x1 - x0), int(y1 - y0)]
+                else:
+                    bounds[f] = [1, 1]
+            result = {
+                "cels": [
+                    {
+                        "layer": "art",
+                        "frame": int(f),
+                        "x": origins[f][0],
+                        "y": origins[f][1],
+                        "width": bounds[f][0],
+                        "height": bounds[f][1],
+                    }
+                    for f in frames
+                ]
+            }
+            if origin_fault:
+                result["cels"][0]["x"] += 1
+                origin_fault = False
+            return result
         if name == "sprite_manage" and a["op"] == "save":
             assert info["filename"] == "/work/doc.aseprite"
             if fault == "save_mismatch":
                 frames["1"][0, 0] = rgba(meta["palette"][1])
             for num, pixels in frames.items():
                 Image.fromarray(pixels).save(workspace / "fake-frames" / f"{num}.png")
+            doc["origins"] = origins
             meta["durations_ms"] = [f["durationMs"] for f in info["frames"]]
             (workspace / "doc.aseprite").write_text(json.dumps(doc))
             return {"op": "save"}
@@ -147,21 +195,37 @@ def main() -> None:
                                 pixels[op["y"] + y, op["x"] + x] = rgba(c) if c else 0
                 elif kind == "blit":
                     r, to = op["from"], op["to"]
-                    patch = frames[str(op["fromFrame"])][
-                        r["y"] : r["y"] + r["height"], r["x"] : r["x"] + r["width"]
-                    ].copy()
+                    source = frames[str(op["fromFrame"])]
+                    valid = np.zeros(source.shape[:2], dtype=bool)
+                    opaque = np.argwhere(source[..., 3] != 0)
+                    if len(opaque):
+                        y0, x0 = opaque.min(axis=0)
+                        y1, x1 = opaque.max(axis=0) + 1
+                    else:
+                        x0, y0 = origins[str(op["fromFrame"])]
+                        x1, y1 = x0 + 1, y0 + 1
+                    if str(op["fromFrame"]) == n:
+                        # draw grows its target before looking up a same-frame source cel.
+                        x0, y0 = min(x0, to["x"]), min(y0, to["y"])
+                        x1, y1 = max(x1, to["x"] + r["width"]), max(y1, to["y"] + r["height"])
+                    valid[y0:y1, x0:x1] = True
+                    valid = valid[r["y"] : r["y"] + r["height"], r["x"] : r["x"] + r["width"]]
+                    patch = source[r["y"] : r["y"] + r["height"], r["x"] : r["x"] + r["width"]].copy()
                     if op.get("flipHorizontal"):
+                        valid = valid[:, ::-1]
                         patch = patch[:, ::-1]
                     if op.get("flipVertical"):
+                        valid = valid[::-1]
                         patch = patch[::-1]
                     dest = pixels[to["y"] : to["y"] + r["height"], to["x"] : to["x"] + r["width"]]
                     if op.get("skipTransparent", True):
-                        dest[patch[..., 3] != 0] = patch[patch[..., 3] != 0]
-                    else:
-                        dest[:] = patch
+                        valid &= patch[..., 3] != 0
+                    dest[valid] = patch[valid]
                 else:
                     raise AssertionError(kind)
         if first:
+            if fault == "origin":
+                origin_fault = True
             if fault in ("outside", "drop_violation", "restore_failure"):
                 frames[n][15, 15] = rgba(meta["palette"][1])
             elif fault == "frame":

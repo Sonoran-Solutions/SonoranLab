@@ -223,7 +223,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     p.parse_known_args = repair_parse_known
     repair_actions = rp.add_subparsers(dest="repair_action", required=True)
-    for action in ("prepare", "export", "diff", "inspect", "abort", "authorize", "op", "read", "session"):
+    for action in ("prepare", "export", "diff", "inspect", "abort", "authorize", "op", "read", "session", "relay"):
         command = repair_actions.add_parser(action)
         command.error = repair_error
         command.set_defaults(func=repair_cmd)
@@ -245,6 +245,8 @@ def build_parser() -> argparse.ArgumentParser:
                     sub.add_argument("--checkpoint", action="store_true")
         else:
             command.add_argument("repair", type=Path)
+            if action == "relay":
+                command.add_argument("--agent-dir", type=Path, required=True)
             if action in ("authorize", "op", "read"):
                 command.add_argument("--spec", type=Path, required=True)
     return p
