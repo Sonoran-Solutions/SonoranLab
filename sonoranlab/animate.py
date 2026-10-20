@@ -18,6 +18,7 @@ from collections.abc import Callable, Sequence
 from datetime import datetime
 from pathlib import Path
 
+import numpy as np
 from PIL import Image
 
 from sonoranlab import sweep
@@ -84,22 +85,54 @@ def _preflight(profile, character, anim, track, seeds, windows, need_gib, godot_
         raise UsageError(f"out {out} is inside the shipped game {prof.export.godot_project}")
     if not reference_dir.is_dir():
         raise UsageError(f"reference {reference_dir}: not a directory")
-    stills = {}
-    for d in prof.directions.generate:
+    stills, problems = {}, []
+    for d in prof.directions.order:
         p = reference_dir / f"still_{d}.png"
         if not p.is_file():
-            raise UsageError(f"{p}: missing still for generated direction {d}")
+            problems.append(f"{d}: missing still ({p.name})")
+            continue
         try:
             with Image.open(p) as im:
-                mode, size = im.mode, im.size
+                im.load()
+                size = im.size
+                alpha = "A" in im.getbands() or "transparency" in im.info
+                if not alpha or size != spec.cell:
+                    problems.append(
+                        f"{d}: is {im.mode} {size[0]}x{size[1]}, expected {spec.cell[0]}x{spec.cell[1]} "
+                        "with an alpha channel (the cell)"
+                    )
         except OSError as e:
-            raise UsageError(f"{p}: unreadable image ({e})") from None
-        if mode != "RGBA" or size != spec.cell:
-            raise UsageError(
-                f"{p}: is {mode} {size[0]}x{size[1]}, expected RGBA {spec.cell[0]}x{spec.cell[1]} (the cell)"
-            )
+            problems.append(f"{d}: unreadable image ({e})")
         stills[d] = p
+    if problems:
+        raise UsageError(f"export needs the full still set: {'; '.join(problems)}")
     return prof, spec, stills
+
+
+def check_still_column(sheet_png: Path, stills_dir: Path, order: Sequence[str], cell: tuple[int, int]) -> list[str]:
+    """Compare game-layout column 0 with the approved stills, ignoring RGB only where alpha is zero."""
+    cw, ch = cell
+    try:
+        with Image.open(sheet_png) as im:
+            sheet = np.asarray(im.convert("RGBA"))
+    except OSError as e:
+        return [f"still column 0: unreadable sheet ({e})"]
+    if sheet.shape[0] != len(order) * ch or sheet.shape[1] < cw:
+        return [f"still column 0: sheet size does not fit {len(order)} rows of {cw}x{ch}"]
+    problems = []
+    for r, d in enumerate(order):
+        try:
+            with Image.open(stills_dir / f"still_{d}.png") as im:
+                still = np.asarray(im.convert("RGBA"))
+        except OSError as e:
+            problems.append(f"still {d}: unreadable image ({e})")
+            continue
+        actual = sheet[r * ch : (r + 1) * ch, :cw]
+        if still.shape != actual.shape or not np.array_equal(actual[..., 3], still[..., 3]):
+            problems.append(f"still {d}: column 0 size or alpha mismatch")
+        elif not np.array_equal(actual[still[..., 3] > 0, :3], still[still[..., 3] > 0, :3]):
+            problems.append(f"still {d}: column 0 RGB mismatch")
+    return problems
 
 
 def _attempt_records(gen: dict, planned: Sequence[Path]) -> list[dict]:
@@ -251,6 +284,7 @@ def animate(
         "verdict": None,
         "export": None,
         "godot_check": None,
+        "stills": {"directions": list(prof.directions.order), "exported_column0": False},
         "production_usable": False,
         "human": dict(HUMAN),
     }
@@ -294,6 +328,7 @@ def animate(
             out=out / "sweep",
             windows=windows,
             godot_check=godot_check,
+            stills=ref,
         )
         verdict = result["final_verdict"]
         wall_s = clock() - t
@@ -306,6 +341,10 @@ def animate(
         passed = verdict["pass"] is True
         doc["sweep"] = _summary(result) | {"path": str(out / "sweep" / "sweep.json")}
         doc["verdict"] = {k: verdict[k] for k in ("pass", "failures", "warnings", "job", "report", "contact")}
+        if passed:
+            if problems := check_still_column(Path(verdict["export"]["png"]), ref, prof.directions.order, spec.cell):
+                raise ValueError("export still verification failed: " + "; ".join(problems))
+            doc["stills"]["exported_column0"] = True
         doc["export"] = verdict["export"] if passed else None  # pipeline exports only on PASS; keep it that way
         doc["godot_check"] = verdict["godot_check"] if passed else None
         doc.update(outcome="pass" if passed else "validator_fail", exit=0 if passed else 1)

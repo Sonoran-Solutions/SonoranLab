@@ -9,7 +9,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 from PIL import Image
-from test_pipeline import CELL, GEN, SCALE, figure, raw_set, toy_profile, tree_hashes
+from test_pipeline import CELL, GEN, SCALE, figure, raw_set, stills_dir, toy_profile, tree_hashes
 
 from sonoranlab import sweep
 from sonoranlab.cli import main
@@ -174,7 +174,14 @@ def test_direction_slicing_classifies_core_thin_and_ignores_ungated(tmp_path, mo
     assert s.direction_pass and s.n_failures == 0 and s.worst_ratio == 1
 
 
-def test_assemble_pass_fail_and_candidate_slice_is_not_set_verdict(tmp_path):
+def test_assemble_pass_fail_and_candidate_slice_is_not_set_verdict(tmp_path, monkeypatch):
+    real, seen = sweep.pipeline.run, []
+
+    def spy(*args, **kwargs):
+        seen.append(kwargs.get("stills"))
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(sweep.pipeline, "run", spy)
     prof = toy_profile(tmp_path)
     raw = raw_set(tmp_path, lift={("north", 1): 3})
     choice = {d: candidate(tmp_path / d, d) for d in GEN}
@@ -189,7 +196,11 @@ def test_assemble_pass_fail_and_candidate_slice_is_not_set_verdict(tmp_path):
     assert east.direction_pass
     assert not json.loads((east.job_dir / "report.json").read_text())["pass"]
     before = tree_hashes(tmp_path / "east")
-    good = sweep.assemble_and_validate(choice, profile=prof, character="hero", anim="idle", out=tmp_path / "good")
+    stills = stills_dir(tmp_path)
+    good = sweep.assemble_and_validate(
+        choice, profile=prof, character="hero", anim="idle", out=tmp_path / "good", stills=stills
+    )
+    assert seen == [None, stills]
     assert good["pass"] and good["exit"] == 0
     assert tree_hashes(tmp_path / "east") == before
     selected = tmp_path / "good/selected/east/east_0.png"
@@ -227,8 +238,15 @@ def test_sweep_json_keeps_rejections_and_none_qualifies(tmp_path):
         sweep.write_sweep([fail], directions=["east"], final_verdict=verdict, out=none)
 
 
-@pytest.mark.parametrize("lift,code", [(0, 0), (3, 1)])
-def test_rank_cli_end_to_end(tmp_path, capsys, lift, code):
+@pytest.mark.parametrize("lift,code,with_stills", [(0, 0, True), (3, 1, False)])
+def test_rank_cli_end_to_end(tmp_path, capsys, monkeypatch, lift, code, with_stills):
+    real, seen = sweep.pipeline.run, []
+
+    def spy(*args, **kwargs):
+        seen.append(kwargs)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(sweep.pipeline, "run", spy)
     prof, raw = toy_profile(tmp_path), raw_set(tmp_path)
     attempts = [attempt(tmp_path / d, d, lift=lift if d == "north" else 0) for d in GEN]
     attempts.append(attempt(tmp_path / "worse-east", "east", lift=3, seed=2))
@@ -249,7 +267,11 @@ def test_rank_cli_end_to_end(tmp_path, capsys, lift, code):
         "--attempts",
         *map(str, attempts),
     ]
+    stills = stills_dir(tmp_path) if with_stills else None
+    if stills:
+        argv += ["--stills", str(stills)]
     assert main(argv) == code
+    assert seen[-1]["stills"] == stills and all("stills" not in call for call in seen[:-1])
     doc = json.loads((out / "sweep.json").read_text())
     assert doc["technical_pass"] is (code == 0) and doc["qualified"] is (code == 0)
     assert not doc["production_usable"] and len(doc["candidates"]) == 6

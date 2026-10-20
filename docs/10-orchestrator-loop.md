@@ -131,16 +131,24 @@ passes. No sweep score claims production quality, and no output is overwritten.
 `sonoranlab animate --profile P --character C --reference STILLS [--anim run] [--seeds 1,2]
 --out OUT [--exec sonoranlab-comfy] [--need-gib 40] [--windows default|steady] [--godot-check]`
 is one command from approved stills to a validated export. `STILLS` needs a cell-size
-RGBA `still_<d>.png` for every generated direction; Track E only (a Track C first frame
-is refused). It copies the stills to `OUT/reference/`, plans and runs one guarded Track E
+`still_<d>.png` with alpha for every direction in `directions.order` (all eight for Twos
+Are Up, including the three west poses). Missing, unreadable or wrong-size stills are
+usage errors before anything is written. Track E only (a Track C first frame is refused).
+It copies the full still set to `OUT/reference/`, plans and runs one guarded Track E
 generation per direction and seed (`OUT/gen/`, failures kept and counted, never retried),
 builds a carrier from each direction's first good clip (`OUT/carrier/`), runs the sweep
 (`OUT/sweep/`) and lets the final `pipeline.run` export into `OUT/sweep/final/job/export/`
-only on a validator PASS. Nothing is ever written under the profile's `export.godot_project`.
+only on a validator PASS. The final run receives the approved stills for sheet column 0;
+west animation rows are mirrored, while west stills keep their own poses. `animate`
+checks every exported column-0 cell against its still (alpha and visible RGB exactly)
+before reporting PASS; a mismatch is an error (exit 2). `sweep rank --stills DIR` also
+passes stills only to its final run. Nothing is ever written under the profile's `export.godot_project`.
 
 `OUT/animate.json` records inputs and hashes, every request's guard exit and generation
 seconds, counts (`first_pass_ok_rate` = ok / attempts run), the chosen candidate per
-direction, the final verdict, export paths and the Godot check. `timing` has `prepare`,
+direction, the final verdict, export paths and the Godot check. `inputs.reference` hashes
+the full still set; `stills.directions` lists all rows and `stills.exported_column0` becomes
+`true` only after the exported PNG passes the still check. `timing` has `prepare`,
 `generate`, `select_and_process`, `validate_export` and `total` in seconds
 (`validate_export` is the final job's own total, taken out of `select_and_process`).
 Peak memory is not sampled here; the orchestrator measures it externally.

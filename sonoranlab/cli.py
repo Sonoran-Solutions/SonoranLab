@@ -142,6 +142,7 @@ def build_parser() -> argparse.ArgumentParser:
     sr.add_argument("--carrier", type=Path, required=True, help="HD <direction>_<i>.png frames for other directions")
     sr.add_argument("--out", type=Path, required=True)
     sr.add_argument("--windows", choices=("default", "steady"), default="default")
+    sr.add_argument("--stills", type=Path, help="dir with cell-size still_<direction>.png for final sheet column 0")
     sr.set_defaults(func=sweep_rank_cmd)
     sp = sw.add_parser("plan", help="write Track E requests without running generation")
     sp.add_argument("--character", required=True)
@@ -166,7 +167,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     an.add_argument("--profile", type=Path, required=True)
     an.add_argument("--character", required=True)
-    an.add_argument("--reference", type=Path, required=True, help="dir with cell-size RGBA still_<direction>.png")
+    an.add_argument(
+        "--reference",
+        type=Path,
+        required=True,
+        help="dir with cell-size still_<direction>.png with alpha for every row",
+    )
     an.add_argument("--anim", default="run")
     an.add_argument("--track", default="E", help="E only for now")
     an.add_argument("--seeds", type=_seeds, default=(1,), help="comma-separated, e.g. 1,2")
@@ -623,6 +629,7 @@ def sweep_rank_cmd(args: argparse.Namespace) -> int:
             carrier=args.carrier,
             out=args.out,
             windows=args.windows,
+            stills=args.stills,
         )
     except (OSError, ValueError, KeyError, TypeError, PipelineError) as e:
         print(f"sweep rank: {e}", file=sys.stderr)
