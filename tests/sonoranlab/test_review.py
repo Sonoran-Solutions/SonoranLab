@@ -54,6 +54,120 @@ def test_record_review_binds_artifact_and_production_usable(job):
     assert path.read_bytes() == before
 
 
+@pytest.mark.parametrize("relocation", ["copy", "move"])
+def test_relocated_job_requires_a_new_review(job, relocation):
+    record_review(job, **PASS)
+    relocated = job.parent / "relocated"
+    if relocation == "copy":
+        shutil.copytree(job, relocated)
+        assert review_errors(job) == []
+    else:
+        job.rename(relocated)
+    assert any(e["code"] == "REVIEW_BINDING_INVALID" and e["field"] == "binds.job" for e in review_errors(relocated))
+    assert not production_usable(relocated)
+    old = relocated / "review.old.json"
+    (relocated / "review.json").rename(old)
+    record_review(relocated, supersedes=old, **PASS)
+    assert review_errors(relocated) == []
+
+
+@pytest.mark.parametrize("value", [None, 42, [], "wrong-path"])
+def test_missing_or_invalid_job_binding_is_refused(job, value):
+    path = record_review(job, **PASS)
+    review = json.loads(path.read_text())
+    if value is None:
+        del review["binds"]["job"]
+    else:
+        review["binds"]["job"] = value
+    path.write_text(json.dumps(review))
+    assert any(e["code"] == "REVIEW_BINDING_INVALID" and e["field"] == "binds.job" for e in review_errors(job))
+    assert not production_usable(job)
+
+
+@pytest.mark.parametrize("declared", [False, True])
+def test_repair_manifest_is_bound_outside_manifest_outputs(job, declared):
+    manifest_path = job / "manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    if declared:
+        manifest["repair"] = {"manifest": "repair-manifest.json"}
+        manifest_path.write_text(json.dumps(manifest))
+    sidecar = job / "repair-manifest.json"
+    sidecar.write_text('{"authorization": "owner", "operations": []}')
+    path = record_review(job, **PASS)
+    assert sidecar.name not in manifest["outputs"]
+    assert json.loads(path.read_text())["binds"]["repair_manifest_sha256"] == sha256_file(sidecar)
+    assert review_errors(job) == [] and production_usable(job)
+
+
+@pytest.mark.parametrize(
+    "change", ["modified", "deleted", "replaced", "added", "symlink", "dangling", "directory", "fifo"]
+)
+def test_repair_manifest_changes_are_refused(job, change):
+    sidecar = job / "repair-manifest.json"
+    if change != "added":
+        sidecar.write_text('{"operations": []}')
+    record_review(job, **PASS)
+    if change == "modified":
+        sidecar.write_text('{"operations": ["unapproved"]}')
+    elif change == "added":
+        sidecar.write_text('{"operations": []}')
+    else:
+        old = job / "repair-manifest.old.json"
+        sidecar.rename(old)
+        if change == "replaced":
+            sidecar.write_text('{"operations": ["replacement"]}')
+        elif change in ("symlink", "dangling"):
+            sidecar.symlink_to(old if change == "symlink" else job / "missing.json")
+        elif change == "directory":
+            sidecar.mkdir()
+        elif change == "fifo":
+            os.mkfifo(sidecar)
+    assert any(
+        e["code"] == "REVIEW_BINDING_INVALID" and e["field"] == "binds.repair_manifest_sha256"
+        for e in review_errors(job)
+    )
+    assert not production_usable(job)
+
+
+@pytest.mark.parametrize("remove", [False, True], ids=["present", "deleted"])
+def test_declared_repair_without_binding_is_refused(job, remove):
+    manifest_path = job / "manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    manifest["repair"] = {"manifest": "repair-manifest.json"}
+    manifest_path.write_text(json.dumps(manifest))
+    sidecar = job / "repair-manifest.json"
+    sidecar.write_text("{}")
+    path = record_review(job, **PASS)
+    review = json.loads(path.read_text())
+    del review["binds"]["repair_manifest_sha256"]
+    path.write_text(json.dumps(review))
+    if remove:
+        sidecar.unlink()
+    assert any(
+        e["code"] == "REVIEW_BINDING_INVALID" and e["field"] == "binds.repair_manifest_sha256"
+        for e in review_errors(job)
+    )
+    assert not production_usable(job)
+
+
+@pytest.mark.parametrize("kind", ["missing", "symlink", "dangling", "directory", "fifo"])
+def test_record_refuses_declared_repair_without_regular_sidecar(job, kind):
+    manifest_path = job / "manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    manifest["repair"] = {"manifest": "repair-manifest.json"}
+    manifest_path.write_text(json.dumps(manifest))
+    sidecar = job / "repair-manifest.json"
+    if kind in ("symlink", "dangling"):
+        sidecar.symlink_to(job / ("manifest.json" if kind == "symlink" else "missing.json"))
+    elif kind == "directory":
+        sidecar.mkdir()
+    elif kind == "fifo":
+        os.mkfifo(sidecar)
+    with pytest.raises(ValueError, match=r"repair-manifest\.json"):
+        record_review(job, **PASS)
+    assert not (job / "review.json").exists()
+
+
 def test_changed_export_file_invalidates_and_is_named(job):
     record_review(job, **PASS)
     target = exported(job)[0]

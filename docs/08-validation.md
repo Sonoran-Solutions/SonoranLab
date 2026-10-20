@@ -149,6 +149,10 @@ or `REVIEW_BINDING_INVALID`. Bindings cover report, manifest, exports, contact s
 raw inputs, and the manifest's profile file; missing or changed files prevent approval. Every entry under `export/`,
 including its root, is checked without following directory symlinks. Symlinks and special files in exports or hashed
 paths are refused; JSON reads and hashing check `lstat` before opening a regular file. Schema version stays 2.
+Bindings also cover the resolved job path and `repair-manifest.json` when present; a declared repair child requires
+that regular, non-symlink sidecar. Adding, removing or changing it invalidates approval.
+A moved or copied job needs a new review recorded at its new path, superseding the old review with `--supersedes`.
+Move the copied `review.json` aside before recording its replacement; there is no silent relocation.
 
 ## What the validator does not do
 

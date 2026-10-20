@@ -188,6 +188,18 @@ def _provenance(job: Path) -> tuple[dict | None, list[str]]:
         "contact_sha256": sha256_file(contact) if contact.exists() or contact.is_symlink() else None,
         "job": str(job.resolve()),
     }
+    repair_manifest = job / "repair-manifest.json"
+    repair = manifest.get("repair")
+    if (
+        repair_manifest.exists()
+        or repair_manifest.is_symlink()
+        or (isinstance(repair, dict) and repair.get("manifest") == repair_manifest.name)
+    ):
+        try:
+            binds["repair_manifest_sha256"] = sha256_file(repair_manifest)
+        except (OSError, ValueError) as e:
+            binds["repair_manifest_sha256"] = None
+            problems.append(f"repair-manifest.json: {e}")
     return binds, problems
 
 
@@ -269,8 +281,13 @@ def review_errors(job_dir: Path, *, review_path: Path | None = None) -> list[dic
     bound = review.get("binds")
     if not isinstance(bound, dict):
         return [*errors, _error("REVIEW_BINDING_INVALID", "binds", "review.json has no binds block")]
+    if not isinstance(bound.get("job"), str) or bound["job"] != str(job.resolve()):
+        errors.append(_error("REVIEW_BINDING_INVALID", "binds.job", "job differs from the reviewed path"))
     if binds is None:
         return errors
+    key = "repair_manifest_sha256"
+    if (key in bound or key in binds) and (not isinstance(bound.get(key), str) or bound[key] != binds.get(key)):
+        errors.append(_error("REVIEW_BINDING_INVALID", f"binds.{key}", "repair manifest missing, invalid or changed"))
     for key in ("report_sha256", "manifest_sha256", "contact_sha256"):
         if key not in bound or bound[key] != binds[key]:
             errors.append(_error("REVIEW_BINDING_INVALID", f"binds.{key}", f"{key} differs from the reviewed artifact"))
