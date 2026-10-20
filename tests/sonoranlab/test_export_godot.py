@@ -14,6 +14,7 @@ import pytest
 from PIL import Image
 
 from sonoranlab.export.godot import animation_specs, export_godot
+from sonoranlab.pipeline import run_godot
 
 REPO = Path(__file__).resolve().parents[2]
 CHECK = REPO / "tools" / "godot" / "spriteframes_check"
@@ -213,7 +214,8 @@ def godot_project(tmp_path: Path, sheet: np.ndarray) -> Path:
 
 
 def godot(*args: str, cwd: Path) -> subprocess.CompletedProcess:
-    return subprocess.run(["godot", "--headless", *args], cwd=cwd, capture_output=True, text=True, timeout=300)
+    """Via the pipeline's helper: it re-runs only Godot 4.7.2's transient `singleton is null` crash (DYL-101)."""
+    return run_godot("godot", ["--headless", *args], cwd=cwd)
 
 
 @pytest.mark.skipif(shutil.which("godot") is None, reason="godot is not on PATH (CI has none)")
