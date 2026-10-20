@@ -2,6 +2,9 @@
 
 import hashlib
 import json
+import os
+import uuid
+from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -14,6 +17,8 @@ from sonoranlab import cli
 from sonoranlab.comfy.adapters import track_e
 from sonoranlab.comfy.adapters.base import DEFAULT_BACKGROUND, GenerateRequest, RawResult
 from sonoranlab.comfy.adapters.track_e import RUN_PROMPTS, TrackE, alpha_fringe_stats, guarded_argv
+from sonoranlab.comfy.client import Workflow, graph_sha256
+from sonoranlab.comfy.guard import pending_submissions
 
 DIRS = ["north", "north-east", "east", "south-east", "south"]
 
@@ -39,13 +44,28 @@ class FakeClient:
         raw: int | None = None,
         rgba: int | None = None,
         status="success",
-        boom: Exception | None = None,
+        boom: BaseException | None = None,
     ) -> None:
         self.root, self.raw, self.rgba, self.status, self.boom = output_root, raw, rgba, status, boom
         self.calls: list[dict[str, Any]] = []
 
     def run(self, workflow, values, *, timeout_s, expect, prompt_id=None):
-        self.calls.append({"workflow": workflow, "values": dict(values), "timeout_s": timeout_s, "expect": expect})
+        assert str(uuid.UUID(prompt_id)) == prompt_id
+        submissions = [
+            p
+            for p in self.root.parent.parent.rglob("submission.json")
+            if json.loads(p.read_text())["prompt_id"] == prompt_id
+        ]
+        assert len(submissions) == 1 and not (submissions[0].parent / "result.json").exists()
+        self.calls.append(
+            {
+                "workflow": workflow,
+                "values": dict(values),
+                "timeout_s": timeout_s,
+                "expect": expect,
+                "prompt_id": prompt_id,
+            }
+        )
         if self.boom:
             raise self.boom
         n = values["length"]
@@ -76,7 +96,7 @@ class FakeClient:
         ok = self.status == "success"
         err = None if ok else {"code": self.status, "stage": "wait", "message": "timed out", "retryable": True}
         rec = SimpleNamespace(
-            prompt_id="pid-1",
+            prompt_id=prompt_id,
             workflow_source="wf.json",
             workflow_source_sha256="a" * 64,
             workflow_patched_sha256="b" * 64,
@@ -87,7 +107,7 @@ class FakeClient:
             timing={"exec_s": 1.5, "wall_s": 2.0},
             error=err,
         )
-        rec.to_json = lambda: {"prompt_id": "pid-1", "status": self.status}
+        rec.to_json = lambda: {"prompt_id": prompt_id, "status": self.status}
         return rec
 
 
@@ -133,6 +153,7 @@ def test_success_layout_and_values(env) -> None:
         "clip_rgba",
         "preview",
         "request.json",
+        "submission.json",
         "run.json",
         "result.json",
     }
@@ -141,9 +162,24 @@ def test_success_layout_and_values(env) -> None:
     assert len(res.outputs) == 67
     assert RawResult.from_json(json.loads((out / "result.json").read_text())) == res
     assert json.loads((out / "request.json").read_text()) == req.to_json()
-    assert res.prompt_id == "pid-1" and res.models == {"m.gguf": "c" * 64} and res.timing["wall_s"] == 2.0
+    submission = json.loads((out / "submission.json").read_text())
+    assert submission == {
+        "schema": "sonoranlab.submission/1",
+        "prompt_id": res.prompt_id,
+        "client_id": None,
+        "base_url": None,
+        "workflow_source": str(track_e.DEFAULT_WORKFLOW),
+        "workflow_patched_sha256": None,
+        "state": "submitting",
+        "written_at": submission["written_at"],
+    }
+    assert datetime.fromisoformat(submission["written_at"]).utcoffset().total_seconds() == 0
+    assert res.models == {"m.gguf": "c" * 64} and res.timing["wall_s"] == 2.0
+    assert json.loads((out / "run.json").read_text())["prompt_id"] == res.prompt_id
+    assert pending_submissions(out.parent) == []
 
     (call,) = env.client.calls
+    assert call["prompt_id"] == res.prompt_id
     v = call["values"]
     attempt = Path(v["start_image"]).parent.name
     assert v["start_image"] == f"sonoranlab/{attempt}/start_image.png"
@@ -222,6 +258,60 @@ def test_client_exception_is_a_failed_result(env) -> None:
     res = adapter(env).generate(req)
     assert res.status == "failed" and res.error["code"] == "adapter_exception" and "socket gone" in res.error["message"]
     assert (req.out_dir / "request.json").exists() and (req.out_dir / "result.json").exists()
+    assert res.prompt_id == json.loads((req.out_dir / "submission.json").read_text())["prompt_id"]
+
+
+def test_submission_fsynced_before_client_with_workflow_hash(env, monkeypatch) -> None:
+    req = request(env)
+    workflow = Workflow.load(track_e.DEFAULT_WORKFLOW)
+    env.client.client_id = str(uuid.uuid4())
+    env.client.base_url = "http://127.0.0.1:8188"
+    synced = []
+    fsync = os.fsync
+
+    def sync(fd: int) -> None:
+        submission = json.loads((req.out_dir / "submission.json").read_text())
+        assert os.fstat(fd).st_size > 0 and not env.client.calls
+        fsync(fd)
+        synced.append(submission)
+
+    monkeypatch.setattr(track_e.os, "fsync", sync)
+    run = env.client.run
+
+    def checked_run(*a, **kw):
+        assert len(synced) == 1 and synced[0]["prompt_id"] == kw["prompt_id"]
+        return run(*a, **kw)
+
+    monkeypatch.setattr(env.client, "run", checked_run)
+    res = TrackE(env.client, work_root=env.work, workflow=workflow).generate(req)
+    (submission,) = synced
+    assert res.status == "ok"
+    assert submission["workflow_patched_sha256"] == graph_sha256(workflow.patch(env.client.calls[0]["values"]))
+    assert submission["workflow_source"] == str(workflow.source)
+    assert submission["client_id"] == env.client.client_id and submission["base_url"] == env.client.base_url
+
+
+def test_submission_sync_failure_never_submits(env, monkeypatch) -> None:
+    def boom(fd: int) -> None:
+        raise OSError("disk full")
+
+    monkeypatch.setattr(track_e.os, "fsync", boom)
+    res = adapter(env).generate(request(env))
+    assert res.status == "failed" and "disk full" in res.error["message"] and not env.client.calls
+
+
+@pytest.mark.parametrize("boom", [SystemExit(9), KeyboardInterrupt()])
+def test_interrupted_submission_is_recoverable(env, boom) -> None:
+    env.client = FakeClient(env.work / "output", boom=boom)
+    req = request(env)
+    with pytest.raises(type(boom)):
+        adapter(env).generate(req)
+    assert not (req.out_dir / "result.json").exists()
+    submission = json.loads((req.out_dir / "submission.json").read_text())
+    assert submission["prompt_id"] == env.client.calls[0]["prompt_id"]
+    assert pending_submissions(req.out_dir.parent) == [{**submission, "out_dir": str(req.out_dir)}]
+    (req.out_dir / "result.json").write_text("{}")
+    assert pending_submissions(req.out_dir.parent) == []
 
 
 def test_staging_error_is_a_failed_result(env, monkeypatch) -> None:
@@ -319,6 +409,13 @@ def test_guarded_argv() -> None:
 
 @pytest.fixture
 def cli_env(env, monkeypatch):
+    monkeypatch.setenv("SONORANLAB_RUNWINDOW", "12345")
+    monkeypatch.setattr(os, "getppid", lambda: 12345)
+
+    def unexpected_exec(*a):
+        pytest.fail("CLI test must remain inside the fake guard")
+
+    monkeypatch.setattr(cli, "_exec", unexpected_exec)
     monkeypatch.setenv("SONORANLAB_WORK", str(env.work))
     monkeypatch.setattr(track_e, "load_workflow", lambda p: object())
     made = {}

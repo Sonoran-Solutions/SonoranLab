@@ -4,7 +4,7 @@
 ComfyUI client, copies every output into the attempt dir and records alpha facts. Layout of `request.out_dir`:
 
     source/ (original + start_image.png)  clip_rgb/ (node 90)  clip_rgba/ (node 92)  preview/ (node 93, APNG)
-    request.json  run.json (client RunRecord)  result.json (RawResult)
+    request.json  submission.json (durable prompt ID)  run.json (client RunRecord)  result.json (RawResult)
 
 The client is anything with `run(workflow, values, *, timeout_s, expect, prompt_id=None) -> RunRecord` (see
 `sonoranlab.comfy.client.ComfyClient`); it is injected so tests and sweeps need no server. Inside the container the
@@ -19,6 +19,8 @@ import json
 import os
 import re
 import shutil
+import uuid
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -27,12 +29,13 @@ import yaml
 from PIL import Image
 
 from sonoranlab.comfy.adapters.base import DEFAULT_BACKGROUND, GenerateRequest, RawResult
+from sonoranlab.comfy.guard import REPO, TRACK_NEED_GIB
+from sonoranlab.comfy.guard import guarded_argv as guarded_argv
 from sonoranlab.prep import gen_canvas, parse_hex, prepare_start_image
 
-REPO = Path(__file__).resolve().parents[3]
 DEFAULT_WORKFLOW = REPO / "workflows/video/wan22_i2v_lightx2v.json"
 GENERATED_DIRECTIONS = ("north", "north-east", "east", "south-east", "south")  # west is mirrored later (ADR-0007)
-WAN_NEED_GIB = 40  # run-window budget for Wan 2.2, 33 frames (env/runwindow.py: measured <= 27 GiB)
+WAN_NEED_GIB = TRACK_NEED_GIB["E"]
 FRINGE_TOL = 24  # RGB distance to the background that counts as a grey fringe
 MAX_CANVAS = 1024  # Wan A14B at 736^2 is already 2.8x slower than 560^2 (ADR-0004); refuse anything bigger
 
@@ -100,12 +103,6 @@ def make_client(base_url: str, output_root: Path, *, exec_container: str | None 
             "http://127.0.0.1:8188", output_root=output_root, transport=PodmanExecTransport(exec_container)
         )
     return ComfyClient(base_url, output_root=output_root)
-
-
-def guarded_argv(argv: list[str], need_gib: float = WAN_NEED_GIB, allow_pause: tuple[str, ...] = ()) -> list[str]:
-    """Wrap `argv` in the run-window guard. Never passes --gtt-credit (only the owner opts into that heuristic)."""
-    pauses = [x for unit in allow_pause for x in ("--allow-pause", unit)]
-    return ["python3", str(REPO / "env/runwindow.py"), "--need-gib", str(need_gib), *pauses, "--", *argv]
 
 
 def _sha(path: Path) -> str:
@@ -289,15 +286,35 @@ class TrackE:
         length = values["length"]
         res.params = dict(values)
         try:
+            from sonoranlab.comfy.client import graph_sha256
+
+            workflow = self._wf(request, plan)
+            prompt_id = str(uuid.uuid4())
+            res.prompt_id = prompt_id
+            res.workflow_source = str(getattr(workflow, "source", plan.wf_path))
+            res.workflow_patched_sha256 = graph_sha256(workflow.patch(values)) if hasattr(workflow, "patch") else None
+            submission = {
+                "schema": "sonoranlab.submission/1",
+                "prompt_id": prompt_id,
+                "client_id": getattr(self.client, "client_id", None),
+                "base_url": getattr(self.client, "base_url", None),
+                "workflow_source": res.workflow_source,
+                "workflow_patched_sha256": res.workflow_patched_sha256,
+                "state": "submitting",
+                "written_at": datetime.now(UTC).isoformat(),
+            }
+            with open(out / "submission.json", "x") as f:
+                f.write(json.dumps(submission, indent=2) + "\n")
+                f.flush()
+                os.fsync(f.fileno())  # persist the recovery ID before ComfyUI can accept it
             record = self.client.run(
-                self._wf(request, plan), values, timeout_s=self.timeout_s, expect={"90": length, "92": length}
+                workflow, values, timeout_s=self.timeout_s, expect={"90": length, "92": length}, prompt_id=prompt_id
             )
         except Exception as e:  # the contract: a failed generation is a result, not a raise
             fail("adapter_exception", "run", f"{type(e).__name__}: {e}")
             res.write()
             return res
 
-        res.prompt_id = record.prompt_id
         res.workflow_source = record.workflow_source
         res.workflow_source_sha256 = record.workflow_source_sha256
         res.workflow_patched_sha256 = record.workflow_patched_sha256

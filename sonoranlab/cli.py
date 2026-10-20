@@ -9,6 +9,7 @@ import argparse
 import dataclasses
 import hashlib
 import json
+import os
 import signal
 import sys
 from collections.abc import Callable
@@ -120,6 +121,8 @@ def build_parser() -> argparse.ArgumentParser:
     gn.add_argument("--request", type=Path, required=True, help="GenerateRequest JSON (sonoranlab.comfy.adapters.base)")
     gn.add_argument("--base-url", default="http://127.0.0.1:8189")
     gn.add_argument("--timeout", type=float, default=1800, help="seconds to wait for the ComfyUI prompt")
+    gn.add_argument("--need-gib", type=float, help="run-window memory budget (GiB), at least the track minimum")
+    gn.add_argument("--allow-pause", action="append", default=[], metavar="UNIT", help="owner-approved units only")
     gn.add_argument(
         "--exec",
         dest="exec_container",
@@ -485,6 +488,9 @@ def process_cmd(args: argparse.Namespace) -> int:
     return 0
 
 
+_exec = os.execvp
+
+
 def _cancel_on_term(fn: Callable[[], T]) -> T:
     """env/runwindow.py forwards TERM/HUP to its child. Python's default for those exits without unwinding, which would
     leave our prompt queued or running; as KeyboardInterrupt the client cancels it (prompt-scoped) and records why."""
@@ -502,13 +508,31 @@ def _cancel_on_term(fn: Callable[[], T]) -> T:
 
 def generate_cmd(args: argparse.Namespace) -> int:
     """Exit 0 ok, 1 generation failed (result.json says why), 2 bad request/config. The comfy client loads lazily."""
-    from sonoranlab.comfy.adapters import track_e
+    import math
+
     from sonoranlab.comfy.adapters.base import GenerateRequest
+    from sonoranlab.comfy.guard import guarded_argv, inside_guard, min_need_gib
 
     try:
         req = GenerateRequest.from_json(json.loads(args.request.read_text()))
+        minimum = min_need_gib(req.track)
+        if args.need_gib is not None and (not math.isfinite(args.need_gib) or args.need_gib < minimum):
+            raise ValueError(f"refusing an under-budget run window; Track {req.track} needs {minimum:g} GiB")
+        need = args.need_gib or minimum
+        if not inside_guard():
+            child = ["--request", str(args.request), "--base-url", args.base_url, "--timeout", f"{args.timeout:g}"]
+            child += ["--need-gib", f"{need:g}"] + (["--exec", args.exec_container] if args.exec_container else [])
+            # --allow-pause belongs to the guard, not the child; the child sees it only through the run window
+            argv = guarded_argv(
+                [sys.executable, "-m", "sonoranlab.cli", "generate", *child], need, tuple(args.allow_pause)
+            )
+            print(f"generate: entering env/runwindow.py --need-gib {need:g}", file=sys.stderr, flush=True)
+            _exec(argv[0], argv)
+            return 0  # exec only returns in tests
         if req.track != "E":
             raise ValueError(f"track {req.track!r} has no adapter yet")
+        from sonoranlab.comfy.adapters import track_e
+
         work = track_e.default_work()
         client = track_e.make_client(args.base_url, work / "output", exec_container=args.exec_container)
         adapter = track_e.TrackE(client, work_root=work, timeout_s=args.timeout)
