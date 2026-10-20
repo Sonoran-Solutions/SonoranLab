@@ -198,6 +198,43 @@ def build_parser() -> argparse.ArgumentParser:
     rc = rv.add_parser("check", help="exit 0 only if the job is production usable (bound review still matches)")
     rc.add_argument("job", type=Path)
     rc.set_defaults(func=review_check_cmd)
+
+    rp = verbs.add_parser("repair", help="isolated repair workspace and lossless Aseprite interchange")
+
+    def repair_error(message: str) -> None:
+        print(json.dumps({"ok": False, "error": "usage_error", "message": message}))
+        rp.exit(2)
+
+    def repair_cmd(args: argparse.Namespace) -> int:
+        from sonoranlab.repair.cli import run
+
+        return run(args)
+
+    rp.error = repair_error
+    parse_known = p.parse_known_args
+
+    def repair_parse_known(
+        args: list[str] | None = None, namespace: argparse.Namespace | None = None
+    ) -> tuple[argparse.Namespace, list[str]]:
+        parsed, extra = parse_known(args, namespace)
+        if parsed.verb == "repair" and extra:
+            repair_error("unrecognized arguments: " + " ".join(extra))
+        return parsed, extra
+
+    p.parse_known_args = repair_parse_known
+    repair_actions = rp.add_subparsers(dest="repair_action", required=True)
+    for action in ("prepare", "export", "diff", "inspect", "abort"):
+        command = repair_actions.add_parser(action)
+        command.error = repair_error
+        command.set_defaults(func=repair_cmd)
+        if action == "prepare":
+            command.add_argument("parent_job", type=Path)
+            command.add_argument("--profile", type=Path, required=True)
+            command.add_argument("--character", required=True)
+            command.add_argument("--anim", required=True)
+            command.add_argument("--out", type=Path, required=True)
+        else:
+            command.add_argument("repair", type=Path)
     return p
 
 
