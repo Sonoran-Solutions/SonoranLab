@@ -39,6 +39,10 @@ UV="uv run --no-project --with pillow --with numpy --with pixeloe==1.0.0"
     ~/sonoranlab-work/benchmark/calibration-2026-10-18.json
   ```
 
+- `validator_study.py GAME WORK OUT.json [--tables OUT.md]`: DYL-83 study of `foot_slide` / `bbox_drift` (read-only):
+  every shipped run/idle clip in the game and the bound Track E sets, with per-edge, core-silhouette, foot-vs-body,
+  planted-foot and hover metrics. Results: `benchmark/results/2026-10-19-phase2/validator-study.md`; proposal ADR-0008.
+
 ## Sets, scoring and review
 
 A scored set lives in a directory SET (`<results>/E/samurai/2/set/`; for B `<results>/B/<char>/<seed>/<variant>/set/`)
