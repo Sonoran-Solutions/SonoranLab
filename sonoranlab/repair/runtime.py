@@ -184,7 +184,19 @@ def bwrap_argv(
     if mode == "gui":
         if x_socket is None or not re.fullmatch(r"X\d+", x_socket.name) or not x_socket.is_socket():
             raise Refused("GUI requires a nested Xephyr X socket")
-        argv += ["--ro-bind", str(x_socket), f"/tmp/.X11-unix/{x_socket.name}"]
+        argv += [
+            "--dir",
+            "/tmp/.X11-unix",
+            "--ro-bind",
+            str(x_socket),
+            f"/tmp/.X11-unix/{x_socket.name}",
+            "--ro-bind",
+            str(no_symlinks(home.parent / "xauth")),
+            "/home/sbx/.Xauthority",
+            "--ro-bind",
+            str(runtime.artist / "extension"),
+            "/home/sbx/.config/aseprite/extensions/aseprite-ai-artist",
+        ]
     elif mode != "batch":
         raise Refused(f"unknown sandbox mode: {mode}")
     argv += [
@@ -194,7 +206,7 @@ def bwrap_argv(
         "/home/sbx",
         "--setenv",
         "PATH",
-        "/usr/bin",
+        "/opt/node/bin" if mode == "gui" else "/usr/bin",
         "--setenv",
         "ASEPRITE_USER_FOLDER",
         "/home/sbx/.config/aseprite",
@@ -205,7 +217,21 @@ def bwrap_argv(
         "/work",
     ]
     if mode == "gui":
-        argv += ["--setenv", "DISPLAY", f":{x_socket.name[1:]}", "/opt/aseprite/usr/bin/aseprite", "/work/doc.aseprite"]
+        argv += [
+            "--setenv",
+            "DISPLAY",
+            f":{x_socket.name[1:]}",
+            "--setenv",
+            "XAUTHORITY",
+            "/home/sbx/.Xauthority",
+            "--setenv",
+            "TMPDIR",
+            "/tmp",
+            "/bin/sh",
+            "-c",
+            "/opt/aseprite/usr/bin/aseprite /work/doc.aseprite >/work/aseprite.log 2>&1 & "
+            "exec /opt/node/bin/node /opt/artist/dist/cli.js serve",
+        ]
     else:
         if action not in {"build", "export"} or not re.fullmatch(r"export(?:-\d{4,})?", output):
             raise Refused("invalid fixed interchange action/output")
