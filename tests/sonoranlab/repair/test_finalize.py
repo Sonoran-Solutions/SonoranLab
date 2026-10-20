@@ -1,0 +1,448 @@
+"""Saved-document final gate, using actual validation/export and a deterministic Godot stand-in."""
+
+import importlib
+import json
+import shutil
+import socket
+import tempfile
+from pathlib import Path
+
+import numpy as np
+import pytest
+from PIL import Image
+from test_broker import authorization
+from test_interchange import GENERATE, MIRROR, ORDER, PALETTE, fixture, hashes  # noqa: F401
+
+from sonoranlab.artifacts import sha256_file
+from sonoranlab.cli import main
+from sonoranlab.export.godot import export_godot
+from sonoranlab.profile import load_palette
+from sonoranlab.repair import workspace as ws
+from sonoranlab.repair.authorization import Denied, authorize, canonical, lease, persist
+from sonoranlab.repair.broker import Journal
+from sonoranlab.repair.compare import changed_coordinates, load_rgba, read_json
+from sonoranlab.review import production_usable, record_review
+from sonoranlab.slice import slice_sheet
+from sonoranlab.validate import read_frames, read_stills, validate
+
+mod = importlib.import_module("sonoranlab.repair.finalize")
+
+
+def godot_pass(sheet, **kwargs):
+    with tempfile.TemporaryDirectory() as tmp:
+        paths = export_godot(sheet, out_dir=Path(tmp), provenance={}, **kwargs)
+        return {
+            "pass": True,
+            "godot": "fake",
+            "godot_attempts": [{"step": "check", "returncode": 0}],
+            "checked_sha256": {Path(paths[k]).name: sha256_file(Path(paths[k])) for k in ("png", "tres")},
+            "result": {"pass": True},
+        }
+
+
+@pytest.fixture
+def saved(fixture, monkeypatch):  # noqa: F811
+    parent, profile, repair = fixture
+    spec = profile.character("hero")
+    # A real validator PASS: centred feet, stable silhouettes and unique true west stills.
+    for path in [*(parent / "raw").glob("*.png"), *(parent / "processed/05_registered").glob("*.png")]:
+        a = np.zeros((16, 16, 4), np.uint8)
+        a[4:13, 6:10] = (*PALETTE[0], 255)
+        a[5, 6] = (
+            *PALETTE[ORDER.index(path.stem.removeprefix("still_")) if path.name.startswith("still_") else 1],
+            255,
+        )
+        Image.fromarray(a).save(path)
+    frames, _ = read_frames(parent / "processed/05_registered", ORDER)
+    stills, _ = read_stills(parent / "raw", ORDER)
+    report = validate(
+        frames,
+        stills=stills,
+        cell=spec.cell,
+        frames=2,
+        directions=GENERATE,
+        palette=load_palette(profile),
+        foot_y=spec.foot_y,
+        anchor_x=spec.anchor_x,
+        padding=spec.padding,
+        limits=spec.limits,
+        max_colours=8,
+        loop=True,
+        mirror=MIRROR,
+        registration={d: {"clipped_px": [0, 0], "shift_px": [0, 0]} for d in GENERATE},
+    )
+    assert report["pass"], report["failures"]
+    (parent / "report.json").write_text(json.dumps(report))
+    manifest = read_json(parent / "manifest.json")
+    manifest["inputs"] = {p.name: sha256_file(p) for p in (parent / "raw").iterdir()}
+    manifest["outputs"] = {
+        k: v for k, v in hashes(parent).items() if k.startswith(("processed/", "export/")) or k == "report.json"
+    }
+    (parent / "manifest.json").write_text(json.dumps(manifest))
+    (parent / "review.json").unlink()
+    record_review(
+        parent,
+        verdict="pass",
+        reviewer="parent human",
+        cleanup_minutes=0,
+        started_at="2026-10-20T12:00:00+00:00",
+        ended_at="2026-10-20T12:00:00+00:00",
+    )
+    assert production_usable(parent)
+    ws.prepare(parent, profile, "hero", "idle", repair, converter=ws.FakeConverter())
+    auth = authorization(repair)
+    auth["targets"] = [
+        {"kind": "anim", "direction": "east", "index": 0, "mask": {"pixels": [[7, 6]]}, "derive_mirror": True}
+    ]
+    authorize(repair, auth)
+    state = read_json(repair / "state.json")
+    persist(repair / "state.json", {**state, "state": "checkpointed", "session_state": "STOPPED", "iterations": 1})
+    monkeypatch.setattr(mod, "check_in_godot", godot_pass)
+    monkeypatch.setattr(mod, "AsepriteConverter", ws.FakeConverter)
+    return repair, parent, profile, repair.parent / "child"
+
+
+def frame_path(repair, kind="anim", direction="east", index=0):
+    mapping = read_json(repair / "mapping.json")
+    n = next(n for n, e in mapping.items() if (e["kind"], e["direction"], e["index"]) == (kind, direction, index))
+    return repair / "workspace/fake-frames" / f"{n}.png"
+
+
+def edit(repair, xy=(7, 6), colour=(*PALETTE[2], 255), **target):
+    path = frame_path(repair, **target)
+    a = load_rgba(path)
+    x, y = xy
+    a[y, x] = colour
+    Image.fromarray(a).save(path)
+
+
+def test_noop_is_exact_and_new_review_is_required(saved):
+    repair, parent, profile, out = saved
+    immutable = hashes(parent), hashes(repair / "source")
+    assert main(["repair", "finalize", str(repair), "--out", str(out)]) == 0
+    report = read_json(out / "report.json")
+    assert report["pass"] and report["registration"] == read_json(parent / "report.json")["registration"]
+    assert report["provenance"]["profile"]["sha256"] == sha256_file(profile.path)
+    assert len(report["digests"]) == 18
+    for path in (out / "raw").glob("*.png"):
+        assert np.array_equal(load_rgba(path), load_rgba(repair / "source" / path.name))
+    assert (hashes(parent), hashes(repair / "source")) == immutable
+    rm = read_json(out / "repair-manifest.json")
+    assert rm["schema"] == "sonoranlab.repair-manifest/1" and rm["human_review"] == "pending"
+    assert not rm["changed"] and len(rm["unchanged"]) >= 18
+    assert rm["authorization_sha256"] == sha256_file(repair / "authorization.json")
+    assert rm["godot_check"]["godot_attempts"]
+    assert (out / "repair-before.png").is_file() and (out / "repair-after.png").is_file()
+    assert not production_usable(out) and not (out / "review.json").exists()
+    assert main(["review", "check", str(out)]) == 1
+    shutil.copyfile(parent / "review.json", out / "review.json")
+    assert not production_usable(out)
+    (out / "review.json").unlink()
+    assert (
+        main(
+            [
+                "review",
+                "record",
+                str(out),
+                "--verdict",
+                "pass",
+                "--reviewer",
+                "new human",
+                "--cleanup-minutes",
+                "0",
+                "--started",
+                "2026-10-20T12:00:00+00:00",
+                "--ended",
+                "2026-10-20T12:00:00+00:00",
+            ]
+        )
+        == 0
+    )
+    assert production_usable(out)
+    assert main(["review", "check", str(out)]) == 0
+    (out / "export/hero/hero.png").write_bytes(b"changed")
+    assert not production_usable(out)
+    assert main(["review", "check", str(out)]) == 1
+
+
+def test_permitted_edit_and_exact_mirror_true_west_still(saved):
+    repair, _, _, out = saved
+    edit(repair)
+    result = mod.finalize(repair, out)
+    assert result["ok"], result
+    assert changed_coordinates(load_rgba(repair / "source/east_0.png"), load_rgba(out / "raw/east_0.png")) == [[7, 6]]
+    sheet = load_rgba(Path(result["export"]["png"]))
+    cells = slice_sheet(sheet, (16, 16), ORDER, 2, start_col=1)
+    assert np.array_equal(cells["west"][0], cells["east"][0][:, ::-1])
+    assert np.array_equal(sheet[32:48, :16], load_rgba(repair / "source/still_west.png"))
+    rm = read_json(out / "repair-manifest.json")
+    assert "east_0.png" in rm["changed"]
+    assert next(v["changed"] for v in rm["target_diffs"].values()) == [[7, 6]]
+    sidecar = read_json(Path(result["export"]["sidecar"]))
+    assert sidecar["provenance"]["report_sha256"] == sha256_file(out / "report.json")
+
+
+@pytest.mark.parametrize(
+    "damage,code",
+    [
+        ("outside", "unauthorized_pixels"),
+        ("other_frame", "unauthorized_pixels"),
+        ("still", "unauthorized_pixels"),
+        ("duration", "metadata_mismatch"),
+        ("tag", "metadata_mismatch"),
+        ("palette", "invalid_pixels"),
+        ("alpha", "invalid_pixels"),
+        ("missing_still", "frame_set_mismatch"),
+    ],
+)
+def test_export_gate_retains_failed_evidence(saved, damage, code):
+    repair, _, _, out = saved
+    if damage in ("duration", "tag"):
+        path = repair / "workspace/doc.aseprite"
+        doc = read_json(path)
+        if damage == "duration":
+            doc["meta"]["durations_ms"][0] += 1
+        else:
+            doc["meta"]["tags"]["still"] = [1, 7]
+        path.write_text(json.dumps(doc))
+    elif damage == "missing_still":
+        frame_path(repair, kind="still", direction="west").unlink()
+    elif damage == "outside":
+        edit(repair, (8, 6))
+    elif damage == "other_frame":
+        edit(repair, index=1)
+    elif damage == "still":
+        edit(repair, kind="still", direction="west")
+    else:
+        edit(repair, colour=(1, 2, 3, 255) if damage == "palette" else (*PALETTE[2], 128))
+    result = mod.finalize(repair, out)
+    assert not result["ok"] and result["error"] == code
+    assert not read_json(out / "report.json")["pass"]
+    assert read_json(out / "manifest.json")["result"] == {"pass": False, "exported": False, "exit": 1}
+    assert not (out / "export").exists() and (out / "repair-manifest.json").is_file()
+
+
+@pytest.mark.parametrize(
+    "damage,code",
+    [
+        ("source", "source_hash_mismatch"),
+        ("report", "parent_hash_mismatch"),
+        ("export", "parent_hash_mismatch"),
+        ("manifest", "parent_hash_mismatch"),
+        ("review", "parent_hash_mismatch"),
+        ("profile", "profile_hash_mismatch"),
+        ("authorization", "authorization_hash_mismatch"),
+        ("revision", "stale_source_revision"),
+        ("tainted", "tainted"),
+        ("iterations", "iteration_limit"),
+        ("unknown", "outcome_unknown"),
+        ("active", "invalid_state"),
+        ("mirror", "mirror_derivation_required"),
+    ],
+)
+def test_preflight_refuses_before_export_or_child(saved, monkeypatch, damage, code):
+    repair, parent, profile, out = saved
+    state = read_json(repair / "state.json")
+    paths = {
+        "source": repair / "source/east_0.png",
+        "report": parent / "report.json",
+        "manifest": parent / "manifest.json",
+        "review": parent / "review.json",
+        "export": parent / "export/hero/hero.tres",
+        "profile": profile.path,
+        "authorization": repair / "authorization.json",
+    }
+    if damage in paths:
+        path = paths[damage]
+        path.chmod(0o644)
+        path.write_bytes(path.read_bytes() + b" ")
+    elif damage in ("revision", "mirror"):
+        auth = read_json(repair / "authorization.json")
+        if damage == "revision":
+            auth["source_revision"] = "0" * 64
+        else:
+            auth["targets"][0]["derive_mirror"] = False
+        (repair / "authorization.json").chmod(0o644)
+        (repair / "authorization.json").write_bytes(canonical(auth))
+        state["authorization_sha256"] = sha256_file(repair / "authorization.json")
+    elif damage == "tainted":
+        state["session_state"] = "TAINTED"
+    elif damage == "iterations":
+        state["iterations"] = 3
+    elif damage == "active":
+        state.update(state="prepared", session_state="ACTIVE")
+    else:
+        journal = Journal(repair / "session/ops.jsonl", state, repair / "state.json")
+        journal.append(event="outcome_unknown", op_id="lost")
+        journal.close()
+        state.update(state="DISCONNECTED", session_state="DISCONNECTED")
+    persist(repair / "state.json", state)
+    monkeypatch.setattr(ws.FakeConverter, "export", lambda *a: pytest.fail("preflight must run first"))
+    with pytest.raises(Denied, match=code):
+        mod.finalize(repair, out)
+    assert not out.exists()
+
+
+@pytest.mark.parametrize("destination", ["parent", "repair", "game", "existing"])
+def test_unsafe_or_existing_output(saved, destination):
+    repair, parent, profile, out = saved
+    out = {
+        "parent": parent / "child",
+        "repair": repair / "child",
+        "game": profile.export.godot_project / "child",
+        "existing": out,
+    }[destination]
+    if destination == "existing":
+        out.mkdir()
+    with pytest.raises(Denied, match="output_exists" if destination == "existing" else "unsafe_output"):
+        mod.finalize(repair, out)
+
+
+def test_lease_is_held_until_finalize_returns(saved):
+    repair, _, _, out = saved
+    with lease(repair), pytest.raises(Denied, match="lease_held"):
+        mod.finalize(repair, out)
+    assert not out.exists()
+
+
+def test_full_animation_revalidated_and_limits_unchanged(saved, monkeypatch):
+    repair, _, profile, out = saved
+    original = mod.validate
+
+    def unrelated_failure(clips, **kwargs):
+        assert set(clips) == set(GENERATE) and all(len(fs) == 2 for fs in clips.values())
+        assert len(kwargs["stills"]) == 8
+        assert kwargs["limits"] == profile.character("hero").limits
+        assert kwargs["registration"]["north"]["clipped_px"] == [0, 0]
+        rep = original(clips, **kwargs)
+        rep["pass"] = False
+        rep["failures"].append("unrelated north frame failed")
+        return rep
+
+    monkeypatch.setattr(mod, "validate", unrelated_failure)
+    result = mod.finalize(repair, out)
+    assert not result["ok"] and result["error"] == "validation_failed"
+    assert not (out / "export").exists()
+
+
+def test_cli_refusal_is_json_exit_one(saved, capsys):
+    repair, _, _, out = saved
+    out.mkdir()
+    assert main(["repair", "finalize", str(repair), "--out", str(out)]) == 1
+    assert json.loads(capsys.readouterr().out)["error"] == "output_exists"
+    with pytest.raises(SystemExit) as exc:
+        main(["repair", "finalize", str(repair)])
+    assert exc.value.code == 2
+    assert json.loads(capsys.readouterr().out)["error"] == "usage_error"
+
+
+@pytest.mark.parametrize("failure", ["checker", "hash"])
+def test_godot_failure_never_publishes_export(saved, monkeypatch, failure):
+    repair, _, _, out = saved
+
+    def failed(*args, **kwargs):
+        result = godot_pass(*args, **kwargs)
+        if failure == "checker":
+            result["pass"] = False
+        else:
+            result["checked_sha256"] = {}
+        return result
+
+    monkeypatch.setattr(mod, "check_in_godot", failed)
+    result = mod.finalize(repair, out)
+    assert not result["ok"] and not (out / "export").exists()
+    assert not read_json(out / "report.json")["pass"]
+
+
+@pytest.mark.skipif(shutil.which("godot") is None, reason="godot is not on PATH")
+def test_real_godot_roundtrip(saved, monkeypatch):
+    from sonoranlab.pipeline import check_in_godot
+
+    repair, _, _, out = saved
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+            probe.bind(("127.0.0.1", 0))
+    except OSError as e:
+        pytest.skip(f"Godot editor import needs local sockets: {e}")
+    for var in ("XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME"):
+        path = out.parent / var.lower()
+        path.mkdir()
+        monkeypatch.setenv(var, str(path))
+    monkeypatch.setattr(mod, "check_in_godot", check_in_godot)
+    result = mod.finalize(repair, out)
+    assert result["ok"], result
+    gc = read_json(out / "repair-manifest.json")["godot_check"]
+    assert gc["pass"] and gc["godot_attempts"]
+
+
+@pytest.mark.parametrize("damage", ["edit", "truncate"])
+def test_journal_corruption_refused(saved, damage):
+    repair, _, _, out = saved
+    state = read_json(repair / "state.json")
+    path = repair / "session/ops.jsonl"
+    journal = Journal(path, state, repair / "state.json")
+    journal.append(event="session_start")
+    journal.close()
+    row = json.loads(path.read_text())
+    row["event"] = "tampered"
+    path.write_text(json.dumps(row) + "\n" if damage == "edit" else "")
+    with pytest.raises(Denied, match="log_corrupt"):
+        mod.finalize(repair, out)
+    assert not out.exists()
+
+
+def test_resolved_unknown_operation_summary_and_new_snapshot(saved):
+    repair, _, _, out = saved
+    # Earlier snapshots may be failed attempts; finalize always exports again.
+    (repair / "workspace/export").mkdir()
+    state = read_json(repair / "state.json")
+    journal = Journal(repair / "session/ops.jsonl", state, repair / "state.json")
+    target = {"kind": "anim", "direction": "east", "index": 0}
+    journal.append(event="dispatch", op_id="one", request={"action": "op", "op": "draw.pixels", "target": target})
+    journal.append(event="outcome_unknown", op_id="one")
+    journal.append(
+        event="verification",
+        op_id="one",
+        response={"ok": True, "outcome": "applied_within_mask", "changed": {"13": [[7, 6]]}},
+    )
+    journal.close()
+    edit(repair)
+    result = mod.finalize(repair, out)
+    assert result["ok"], result
+    assert (repair / "workspace/export-0002/export.json").is_file()
+    rm = read_json(out / "repair-manifest.json")
+    assert rm["operations"]["sha256"] == sha256_file(repair / "session/ops.jsonl")
+    assert rm["operations"]["operations"] == [
+        {"op_id": "one", "op": "draw.pixels", "target": target, "verdict": "applied_within_mask", "changed_count": 1}
+    ]
+    assert rm["frames"]["west_0.png"]["before"] != rm["frames"]["west_0.png"]["after"]
+
+
+def test_failed_batch_export_still_writes_failed_child(saved, monkeypatch):
+    from sonoranlab.repair import EditorUnavailable
+
+    repair, _, _, out = saved
+
+    def unavailable():
+        raise EditorUnavailable("test runtime absent")
+
+    monkeypatch.setattr(mod, "AsepriteConverter", unavailable)
+    result = mod.finalize(repair, out)
+    assert not result["ok"] and result["error"] == "editor_unavailable"
+    assert not read_json(out / "report.json")["pass"]
+    assert (out / "repair-manifest.json").exists() and not (out / "export").exists()
+
+
+def test_hidden_rgb_is_equivalent_and_iteration_cap_is_inclusive(saved):
+    repair, _, _, out = saved
+    edit(repair, xy=(0, 0), colour=(12, 34, 56, 0))
+    state = read_json(repair / "state.json")
+    state["iterations"] = 2
+    persist(repair / "state.json", state)
+    journal = Journal(repair / "session/ops.jsonl", state, repair / "state.json")
+    journal.append(event="request", request=["rejected malformed client input"])
+    journal.append(event="decision", response={"ok": False, "error": "invalid_request"})
+    journal.close()
+    result = mod.finalize(repair, out)
+    assert result["ok"], result
+    assert not read_json(out / "repair-manifest.json")["changed"]

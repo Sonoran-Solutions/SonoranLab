@@ -16,6 +16,10 @@ def run(args: argparse.Namespace) -> int:
         action = args.repair_action
         if action == "prepare":
             result = ws.prepare(args.parent_job, args.profile, args.character, args.anim, args.out)
+        elif action == "finalize":
+            from sonoranlab.repair.finalize import finalize
+
+            result = finalize(args.repair, args.out)
         elif action == "diff":
             result = diff(args.repair)
         else:
@@ -24,7 +28,7 @@ def run(args: argparse.Namespace) -> int:
     except EditorUnavailable as e:
         result, code = {"ok": False, "error": "editor_unavailable", "message": str(e)}, 1
     except (Refused, FileExistsError) as e:
-        result, code = {"ok": False, "error": "refused", "message": str(e)}, 1
+        result, code = {"ok": False, "error": getattr(e, "code", "refused"), "message": str(e)}, 1
     except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError) as e:
         result, code = {"ok": False, "error": "io_or_usage_error", "message": str(e)}, 2
     print(json.dumps(result, sort_keys=True))
