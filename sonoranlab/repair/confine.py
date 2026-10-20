@@ -1,9 +1,15 @@
 """Destination checks and fd-relative staging reservations.
 
-ponytail: A same-UID process swapping an ancestor AFTER creation can still redirect later
-path-based writes in prepare/finalize until their final verification detects it
-and fails closed. Upgrade by making those writes fd-relative too. Mailbox I/O
-uses directory fds throughout.
+Destination checks and fd-based reservation defend against mistaken or hostile
+paths and symlinks present at check time. They do not defend against a concurrent
+same-UID process renaming or swapping ancestor directories during the command;
+that process can write to those locations directly anyway. Final verification
+is best-effort detection of such interference, not a guarantee. Mailbox I/O uses
+directory fds throughout, with queue identity checks at relay boundaries.
+
+ponytail: For isolation from concurrent ancestor swaps, run prepare/finalize inside
+a mount namespace (bubblewrap) with only the staging root bound writable, and
+the game checkout and repository not mounted.
 
 Refused messages start with a stable refusal code, followed by path-specific detail.
 """
@@ -174,7 +180,7 @@ def check_destination(path: Path, *, root: Path, forbidden: Iterable[Path] = (),
 
 
 def verify_destination(path: Path, fd: int, *, forbidden: Iterable[Path] = ()) -> None:
-    """Fail closed if the reserved directory moved or its area became unsafe."""
+    """Best-effort detection of a moved reservation or an area that became unsafe."""
     try:
         if os.readlink(f"/proc/self/fd/{fd}") != str(path) or _checked_path(path) != path:
             raise Refused("destination moved")

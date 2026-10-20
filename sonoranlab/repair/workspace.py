@@ -1,4 +1,15 @@
-"""Immutable repair inputs, deterministic document plans, and append-only batch exports."""
+"""Immutable repair inputs, deterministic document plans, and append-only batch exports.
+
+Destination checks and fd-based reservation defend against mistaken or hostile
+paths and symlinks present at check time. They do not defend against a concurrent
+same-UID process renaming or swapping ancestors during the command; it can write
+there directly anyway. Final verification detects interference best-effort,
+without guaranteeing that path-based writes stayed in staging.
+
+ponytail: Run prepare/finalize inside a mount namespace (bubblewrap) with only the
+staging root bound writable and the game checkout and repository not mounted to
+isolate writes from concurrent ancestor swaps.
+"""
 
 from __future__ import annotations
 
