@@ -10,6 +10,7 @@ import json
 import platform
 import re
 import shutil
+import stat
 import subprocess
 from datetime import UTC, datetime
 from importlib import metadata
@@ -21,6 +22,17 @@ from PIL import Image
 SCHEMA = "sonoranlab.manifest/1"
 _STAGE = re.compile(r"^[0-9]{2}_[a-z_]+$")
 _REPO = Path(__file__).resolve().parent.parent
+
+
+def require_regular_file(path: Path, *, root: Path | None = None) -> None:
+    """Refuse a symlink or special file (checked with lstat, before opening), and symlinked directories below `root`."""
+    path = Path(path).absolute()
+    if not stat.S_ISREG(path.lstat().st_mode):
+        raise ValueError(f"{path}: not a regular file")
+    if root is not None:
+        root = Path(root).absolute()
+        if any(p.is_symlink() for p in path.parents if p.is_relative_to(root) and p != root):
+            raise ValueError(f"{path}: symlinked directory inside {root}")
 
 
 def sha256_file(path: Path) -> str:
@@ -97,11 +109,14 @@ def write_stage(job: Path, stage: str, frames: dict[str, list[np.ndarray]]) -> d
     return hashes
 
 
-def write_json(job: Path, name: str, obj: object) -> Path:
-    """Write `job/<name>` (sorted keys, indent 1, trailing newline); refuses to overwrite."""
+def write_json(job: Path, name: str, obj: object, *, max_bytes: int | None = None, strict: bool = False) -> Path:
+    """Write `job/<name>` exclusively (sorted keys, indent 1); `strict` refuses NaN/Infinity, `max_bytes` caps size."""
     p = Path(job) / _flat_name(name)
-    with open(p, "x") as f:
-        f.write(json.dumps(obj, sort_keys=True, indent=1) + "\n")
+    data = (json.dumps(obj, sort_keys=True, indent=1, allow_nan=not strict) + "\n").encode("utf-8")
+    if max_bytes is not None and len(data) > max_bytes:
+        raise ValueError(f"{p}: JSON exceeds {max_bytes} bytes")
+    with open(p, "xb") as f:
+        f.write(data)
     return p
 
 
@@ -160,16 +175,20 @@ def build_manifest(
     }
 
 
-def verify_raw(job: Path) -> list[str]:
-    """Recompute `raw/` hashes against `manifest.json` inputs; returns mismatch descriptions (empty = unchanged)."""
+def verify_raw(job: Path, *, inputs: dict[str, str] | None = None) -> list[str]:
+    """Recompute raw hashes against manifest inputs (optionally already loaded); return mismatch descriptions."""
     job = Path(job)
-    expected = json.loads((job / "manifest.json").read_text())["inputs"]
+    expected = inputs if inputs is not None else json.loads((job / "manifest.json").read_text())["inputs"]
     raw = job / "raw"
+    if raw.is_symlink():
+        return ["raw/: is a symlink"]
     problems = []
     for name, want in sorted(expected.items()):
-        p = raw / name
-        if not p.is_file():
+        p = raw / _flat_name(name)
+        if not p.exists() and not p.is_symlink():
             problems.append(f"raw/{name}: missing")
+        elif not stat.S_ISREG(p.lstat().st_mode):
+            problems.append(f"raw/{name}: not a regular file")
         elif (got := sha256_file(p)) != want:
             problems.append(f"raw/{name}: sha256 {got} != manifest {want}")
     problems += [f"raw/{p.name}: not in manifest" for p in sorted(raw.iterdir()) if p.name not in expected]

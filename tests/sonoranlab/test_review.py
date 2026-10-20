@@ -1,14 +1,19 @@
 """Production review is bound to the exact reviewed artifact; it cannot make a failed or altered job usable."""
 
+import builtins
+import io
 import json
+import os
 import shutil
+import stat
+from pathlib import Path
 
 import pytest
 from test_pipeline import process, raw_set, toy_profile
 
 from sonoranlab.artifacts import sha256_file
 from sonoranlab.cli import main
-from sonoranlab.review import production_usable, record_review, review_problems
+from sonoranlab.review import production_usable, record_review, review_errors, review_problems
 
 INTERVAL = {"started_at": "2026-10-19T10:00:00+00:00", "ended_at": "2026-10-19T10:05:00+00:00"}
 PASS = {"verdict": "pass", "reviewer": "Dylan", "cleanup_minutes": 5, **INTERVAL}
@@ -47,6 +52,120 @@ def test_record_review_binds_artifact_and_production_usable(job):
     with pytest.raises(ValueError, match="exists"):
         record_review(job, **{**PASS, "verdict": "fail"})
     assert path.read_bytes() == before
+
+
+@pytest.mark.parametrize("relocation", ["copy", "move"])
+def test_relocated_job_requires_a_new_review(job, relocation):
+    record_review(job, **PASS)
+    relocated = job.parent / "relocated"
+    if relocation == "copy":
+        shutil.copytree(job, relocated)
+        assert review_errors(job) == []
+    else:
+        job.rename(relocated)
+    assert any(e["code"] == "REVIEW_BINDING_INVALID" and e["field"] == "binds.job" for e in review_errors(relocated))
+    assert not production_usable(relocated)
+    old = relocated / "review.old.json"
+    (relocated / "review.json").rename(old)
+    record_review(relocated, supersedes=old, **PASS)
+    assert review_errors(relocated) == []
+
+
+@pytest.mark.parametrize("value", [None, 42, [], "wrong-path"])
+def test_missing_or_invalid_job_binding_is_refused(job, value):
+    path = record_review(job, **PASS)
+    review = json.loads(path.read_text())
+    if value is None:
+        del review["binds"]["job"]
+    else:
+        review["binds"]["job"] = value
+    path.write_text(json.dumps(review))
+    assert any(e["code"] == "REVIEW_BINDING_INVALID" and e["field"] == "binds.job" for e in review_errors(job))
+    assert not production_usable(job)
+
+
+@pytest.mark.parametrize("declared", [False, True])
+def test_repair_manifest_is_bound_outside_manifest_outputs(job, declared):
+    manifest_path = job / "manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    if declared:
+        manifest["repair"] = {"manifest": "repair-manifest.json"}
+        manifest_path.write_text(json.dumps(manifest))
+    sidecar = job / "repair-manifest.json"
+    sidecar.write_text('{"authorization": "owner", "operations": []}')
+    path = record_review(job, **PASS)
+    assert sidecar.name not in manifest["outputs"]
+    assert json.loads(path.read_text())["binds"]["repair_manifest_sha256"] == sha256_file(sidecar)
+    assert review_errors(job) == [] and production_usable(job)
+
+
+@pytest.mark.parametrize(
+    "change", ["modified", "deleted", "replaced", "added", "symlink", "dangling", "directory", "fifo"]
+)
+def test_repair_manifest_changes_are_refused(job, change):
+    sidecar = job / "repair-manifest.json"
+    if change != "added":
+        sidecar.write_text('{"operations": []}')
+    record_review(job, **PASS)
+    if change == "modified":
+        sidecar.write_text('{"operations": ["unapproved"]}')
+    elif change == "added":
+        sidecar.write_text('{"operations": []}')
+    else:
+        old = job / "repair-manifest.old.json"
+        sidecar.rename(old)
+        if change == "replaced":
+            sidecar.write_text('{"operations": ["replacement"]}')
+        elif change in ("symlink", "dangling"):
+            sidecar.symlink_to(old if change == "symlink" else job / "missing.json")
+        elif change == "directory":
+            sidecar.mkdir()
+        elif change == "fifo":
+            os.mkfifo(sidecar)
+    assert any(
+        e["code"] == "REVIEW_BINDING_INVALID" and e["field"] == "binds.repair_manifest_sha256"
+        for e in review_errors(job)
+    )
+    assert not production_usable(job)
+
+
+@pytest.mark.parametrize("remove", [False, True], ids=["present", "deleted"])
+def test_declared_repair_without_binding_is_refused(job, remove):
+    manifest_path = job / "manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    manifest["repair"] = {"manifest": "repair-manifest.json"}
+    manifest_path.write_text(json.dumps(manifest))
+    sidecar = job / "repair-manifest.json"
+    sidecar.write_text("{}")
+    path = record_review(job, **PASS)
+    review = json.loads(path.read_text())
+    del review["binds"]["repair_manifest_sha256"]
+    path.write_text(json.dumps(review))
+    if remove:
+        sidecar.unlink()
+    assert any(
+        e["code"] == "REVIEW_BINDING_INVALID" and e["field"] == "binds.repair_manifest_sha256"
+        for e in review_errors(job)
+    )
+    assert not production_usable(job)
+
+
+@pytest.mark.parametrize("kind", ["missing", "symlink", "dangling", "directory", "fifo"])
+def test_record_refuses_declared_repair_without_regular_sidecar(job, kind):
+    manifest_path = job / "manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    manifest["repair"] = {"manifest": "repair-manifest.json"}
+    manifest_path.write_text(json.dumps(manifest))
+    sidecar = job / "repair-manifest.json"
+    if kind in ("symlink", "dangling"):
+        sidecar.symlink_to(job / ("manifest.json" if kind == "symlink" else "missing.json"))
+    elif kind == "directory":
+        sidecar.mkdir()
+    elif kind == "fifo":
+        os.mkfifo(sidecar)
+    with pytest.raises(ValueError, match=r"repair-manifest\.json"):
+        record_review(job, **PASS)
+    assert not (job / "review.json").exists()
 
 
 def test_changed_export_file_invalidates_and_is_named(job):
@@ -112,7 +231,7 @@ def test_report_only_job_dir_is_refused_for_missing_provenance(tmp_path):
     assert not (tmp_path / "review.json").exists() and not production_usable(tmp_path)
 
 
-@pytest.mark.parametrize("minutes", [None, -1, float("nan"), float("inf")])
+@pytest.mark.parametrize("minutes", [None, -1, float("nan"), float("inf"), float("-inf"), "5", "NaN", True])
 def test_passing_review_requires_non_negative_finite_cleanup(job, minutes):
     with pytest.raises(ValueError, match="cleanup_minutes"):
         record_review(job, **{**PASS, "cleanup_minutes": minutes})
@@ -213,3 +332,339 @@ def test_review_cli(job, capsys):
     capsys.readouterr()
     assert main(["review", "check", str(job)]) == 1
     assert target.name in capsys.readouterr().out
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "code"),
+    [
+        ("schema", None, "REVIEW_SCHEMA_INVALID"),
+        ("schema", "sonoranlab.review/99", "REVIEW_SCHEMA_INVALID"),
+        ("reviewer", "", "REVIEW_REVIEWER_INVALID"),
+        ("reviewer", " \t\n", "REVIEW_REVIEWER_INVALID"),
+        ("reviewer", None, "REVIEW_REVIEWER_INVALID"),
+        ("reviewer", 42, "REVIEW_REVIEWER_INVALID"),
+        ("reviewer", [], "REVIEW_REVIEWER_INVALID"),
+        ("verdict", None, "REVIEW_VERDICT_INVALID"),
+        ("verdict", "approved", "REVIEW_VERDICT_INVALID"),
+        ("verdict", [], "REVIEW_VERDICT_INVALID"),
+        ("verdict", "fail", "REVIEW_NOT_PASS"),
+        ("started_at", "yesterday", "REVIEW_TIMESTAMP_INVALID"),
+        ("started_at", "2026-10-19T10:00:00", "REVIEW_TIMESTAMP_INVALID"),
+        ("started_at", "2026-10-19X10:00:00Z", "REVIEW_TIMESTAMP_INVALID"),
+        ("started_at", None, "REVIEW_TIMESTAMP_INVALID"),
+        ("ended_at", "not-a-date", "REVIEW_TIMESTAMP_INVALID"),
+        ("ended_at", "2026-10-19T10:05:00", "REVIEW_TIMESTAMP_INVALID"),
+        ("ended_at", None, "REVIEW_TIMESTAMP_INVALID"),
+        ("ended_at", 42, "REVIEW_TIMESTAMP_INVALID"),
+        ("ended_at", "2026-10-19T09:59:59Z", "REVIEW_INTERVAL_INVALID"),
+        ("ended_at", "2026-10-19T10:05:00+01:00", "REVIEW_INTERVAL_INVALID"),
+        ("cleanup_minutes", None, "REVIEW_CLEANUP_INVALID"),
+        ("cleanup_minutes", "NaN", "REVIEW_CLEANUP_INVALID"),
+        ("cleanup_minutes", "inf", "REVIEW_CLEANUP_INVALID"),
+        ("cleanup_minutes", -1, "REVIEW_CLEANUP_INVALID"),
+        ("cleanup_minutes", "5", "REVIEW_CLEANUP_INVALID"),
+        ("cleanup_minutes", True, "REVIEW_CLEANUP_INVALID"),
+        ("cleanup_minutes", [], "REVIEW_CLEANUP_INVALID"),
+        ("cleanup_minutes", float("nan"), "REVIEW_UNREADABLE"),
+        ("cleanup_minutes", float("inf"), "REVIEW_UNREADABLE"),
+        ("cleanup_minutes", float("-inf"), "REVIEW_UNREADABLE"),
+    ],
+)
+def test_edited_review_metadata_is_rejected(job, field, value, code):
+    path = record_review(job, **PASS)
+    review = json.loads(path.read_text())
+    review[field] = value
+    path.write_text(json.dumps(review))
+    errors = review_errors(job)
+    assert errors[0]["code"] == code
+    assert errors[0]["field"] == ("review.json" if code == "REVIEW_UNREADABLE" else field)
+    assert not production_usable(job)
+
+
+@pytest.mark.parametrize("field", ["schema", "reviewer", "verdict", "started_at", "ended_at", "cleanup_minutes"])
+def test_missing_review_metadata_is_rejected(job, field):
+    path = record_review(job, **PASS)
+    review = json.loads(path.read_text())
+    del review[field]
+    path.write_text(json.dumps(review))
+    code = {
+        "schema": "REVIEW_SCHEMA_INVALID",
+        "reviewer": "REVIEW_REVIEWER_INVALID",
+        "verdict": "REVIEW_VERDICT_INVALID",
+        "started_at": "REVIEW_TIMESTAMP_INVALID",
+        "ended_at": "REVIEW_TIMESTAMP_INVALID",
+        "cleanup_minutes": "REVIEW_CLEANUP_INVALID",
+    }[field]
+    assert any(e["code"] == code and e["field"] == field for e in review_errors(job))
+    assert not production_usable(job)
+
+
+@pytest.mark.parametrize("minutes", [0, 0.0])
+@pytest.mark.parametrize(
+    "timestamp", [INTERVAL["started_at"], "2026-10-19T10:00:00.1Z", "2026-10-19T10:00:00.123456+23:59"]
+)
+def test_zero_cleanup_and_equal_timestamps_pass(job, minutes, timestamp):
+    record_review(job, **{**PASS, "cleanup_minutes": minutes, "started_at": timestamp, "ended_at": timestamp})
+    assert review_errors(job) == []
+    assert production_usable(job)
+
+
+@pytest.mark.parametrize("target", ["export", "report.json", "manifest.json", "contact.png", "raw", "processed"])
+@pytest.mark.parametrize("remove", [False, True], ids=["changed", "missing"])
+def test_production_usable_rechecks_all_artifacts(job, target, remove):
+    record_review(job, **PASS)
+    assert production_usable(job)
+    path = job / target
+    if path.is_dir():
+        path = next(p for p in path.rglob("*") if p.is_file())
+    if remove:
+        path.unlink()
+    else:
+        path.chmod(0o644)
+        path.write_bytes(path.read_bytes() + b" ")
+    errors = review_errors(job)
+    assert errors and all(e["code"] == "REVIEW_BINDING_INVALID" for e in errors)
+    assert not production_usable(job)
+
+
+@pytest.mark.parametrize("remove", [False, True], ids=["changed", "missing"])
+def test_profile_binding_is_rechecked(job, remove):
+    manifest_path = job / "manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    profile = job / "profile.yaml"
+    shutil.copyfile(manifest["profile"]["path"], profile)
+    manifest["profile"]["path"] = str(profile)
+    manifest_path.write_text(json.dumps(manifest))
+    record_review(job, **PASS)
+    assert production_usable(job)
+    if remove:
+        profile.unlink()
+    else:
+        profile.write_text(profile.read_text() + "\n")
+    errors = review_errors(job)
+    assert errors[0]["code"] == "REVIEW_BINDING_INVALID" and "profile" in errors[0]["message"]
+    assert not production_usable(job)
+
+
+def test_review_cli_exposes_structured_errors(job, capsys):
+    path = record_review(job, **PASS)
+    review = json.loads(path.read_text())
+    review["reviewer"] = None
+    path.write_text(json.dumps(review))
+    assert main(["review", "check", str(job)]) == 1
+    assert json.loads(capsys.readouterr().out) == {
+        "code": "REVIEW_REVIEWER_INVALID",
+        "field": "reviewer",
+        "message": "reviewer must be a non-empty string",
+    }
+
+
+@pytest.mark.parametrize(
+    "target",
+    [
+        "export",
+        "export/hidden",
+        "export/nested/hidden",
+        "report.json",
+        "manifest.json",
+        "review.json",
+        "raw",
+        "processed",
+    ],
+)
+def test_symlink_entries_are_refused(job, target):
+    record_review(job, **PASS)
+    path = job / target
+    aside = job.parent / "linked"
+    if path.exists():
+        path.rename(aside)
+    else:
+        aside.mkdir()
+        (aside / "unreviewed.txt").write_text("hidden")
+        path.parent.mkdir(parents=True, exist_ok=True)
+    path.symlink_to(aside, target_is_directory=aside.is_dir())
+    errors = review_errors(job)
+    code = "REVIEW_UNREADABLE" if target == "review.json" else "REVIEW_BINDING_INVALID"
+    assert any(e["code"] == code for e in errors)
+    assert not production_usable(job)
+
+
+@pytest.mark.parametrize("kind", ["fifo", "socket", "device", "directory"])
+@pytest.mark.parametrize(
+    "target",
+    [
+        "export/nested/extra",
+        "export",
+        "report.json",
+        "manifest.json",
+        "review.json",
+        "contact.png",
+        "raw",
+        "processed",
+        "profile",
+    ],
+)
+def test_non_regular_files_are_refused_without_opening(job, monkeypatch, target, kind):
+    # Give the job its own profile so replacing it cannot damage the shared fixture.
+    manifest_path = job / "manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    profile = job / "profile.yaml"
+    shutil.copyfile(manifest["profile"]["path"], profile)
+    manifest["profile"]["path"] = str(profile)
+    manifest_path.write_text(json.dumps(manifest))
+    record_review(job, **PASS)
+    path = profile if target == "profile" else job / target
+    if target in ("raw", "processed"):
+        path = next(p for p in path.rglob("*") if p.is_file())
+    if path.is_dir():
+        shutil.rmtree(path)
+    elif path.exists():
+        path.unlink()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if kind == "fifo":
+        os.mkfifo(path)
+    elif kind in ("socket", "device"):
+        # Socket binds and mknod are sandbox-restricted; emulate their lstat modes.
+        path.touch()
+        original_lstat = Path.lstat
+
+        def special_lstat(self, *args, **kwargs):
+            info = original_lstat(self, *args, **kwargs)
+            mode = stat.S_IFSOCK if kind == "socket" else stat.S_IFCHR
+            return os.stat_result((mode, *info[1:])) if self == path else info
+
+        monkeypatch.setattr(Path, "lstat", special_lstat)
+    else:
+        path.mkdir()
+        if target.startswith("export/"):
+            # Real directories are allowed in export; all other cases replace hashed files.
+            os.mkfifo(path / "hidden")
+
+    def guard(opener):
+        def checked(file, *args, **kwargs):
+            if isinstance(file, (str, os.PathLike)):
+                assert stat.S_ISREG(Path(file).lstat().st_mode), f"attempted to open {file}"
+            return opener(file, *args, **kwargs)
+
+        return checked
+
+    monkeypatch.setattr(builtins, "open", guard(builtins.open))
+    monkeypatch.setattr(io, "open", guard(io.open))
+    errors = review_errors(job)
+    code = "REVIEW_UNREADABLE" if target == "review.json" else "REVIEW_BINDING_INVALID"
+    assert any(e["code"] == code for e in errors)
+    assert not production_usable(job)
+
+
+@pytest.mark.parametrize("target", ["review.json", "manifest.json", "report.json"])
+@pytest.mark.parametrize("invalid", ["nested", "oversized", "duplicate", "nested-duplicate"])
+def test_hostile_json_is_a_structured_refusal(job, target, invalid):
+    record_review(job, **PASS)
+    path = job / target
+    if invalid == "nested":
+        data = "[" * 10000 + "0" + "]" * 10000
+    elif invalid == "oversized":
+        data = path.read_text() + " " * (16 * 1024 * 1024)
+    else:
+        key, first, last = ("verdict", '"fail"', '"pass"') if target == "review.json" else ("pass", "false", "true")
+        duplicate = f'"{key}":{first},"{key}":{last}'
+        if invalid == "nested-duplicate":
+            duplicate = f'"duplicate":{{{duplicate}}}'
+        data = path.read_text().replace("{", "{" + duplicate + ",", 1)
+    path.write_text(data)
+    if target != "review.json":
+        # Rebind hashes so parsing must refuse even when the bytes are otherwise approved.
+        if target == "report.json":
+            manifest = json.loads((job / "manifest.json").read_text())
+            manifest["outputs"]["report.json"] = sha256_file(path)
+            (job / "manifest.json").write_text(json.dumps(manifest))
+        review = json.loads((job / "review.json").read_text())
+        review["binds"]["manifest_sha256"] = sha256_file(job / "manifest.json")
+        review["binds"]["report_sha256"] = sha256_file(job / "report.json")
+        (job / "review.json").write_text(json.dumps(review))
+    errors = review_errors(job)
+    code = "REVIEW_UNREADABLE" if target == "review.json" else "REVIEW_BINDING_INVALID"
+    assert any(e["code"] == code for e in errors)
+    assert not production_usable(job)
+
+
+@pytest.mark.parametrize("offset", ["+00:60", "-00:60", "+00:00:60", "+24:00", "+0000"])
+def test_normalized_or_nonstandard_timestamp_offsets_are_refused(job, offset):
+    value = "2026-10-19T10:00:00" + offset
+    with pytest.raises(ValueError, match="REVIEW_TIMESTAMP_INVALID"):
+        record_review(job, **{**PASS, "started_at": value})
+    path = record_review(job, **PASS)
+    doc = json.loads(path.read_text())
+    doc["started_at"] = value
+    path.write_text(json.dumps(doc))
+    assert any(e["code"] == "REVIEW_TIMESTAMP_INVALID" for e in review_errors(job))
+    assert not production_usable(job)
+
+
+@pytest.mark.parametrize("field", ["notes", "carried_from", "supersedes"])
+@pytest.mark.parametrize("value", [float("nan"), 42, [], {}])
+def test_writer_and_reader_refuse_invalid_optional_metadata(job, field, value):
+    with pytest.raises(ValueError, match=field):
+        record_review(job, **{**PASS, field: value})
+    assert not (job / "review.json").exists()
+    path = record_review(job, **PASS)
+    doc = json.loads(path.read_text())
+    doc[field] = value
+    path.write_text(json.dumps(doc))
+    assert any(e["code"] in ("REVIEW_UNREADABLE", "REVIEW_METADATA_INVALID") for e in review_errors(job))
+    assert not production_usable(job)
+
+
+def test_superseded_metadata_is_validated_before_writing(job):
+    old = job / "review.old.json"
+    old.write_text('{"reviewer":1e400}')
+    with pytest.raises(ValueError, match="supersedes"):
+        record_review(job, supersedes=old, **PASS)
+    assert not (job / "review.json").exists()
+    path = record_review(job, **PASS)
+    doc = json.loads(path.read_text())
+    doc["supersedes"] = {"reviewer": 1e400}
+    path.write_text(json.dumps(doc).replace("Infinity", "1e400"))
+    assert any(e["code"] == "REVIEW_METADATA_INVALID" for e in review_errors(job))
+    assert not production_usable(job)
+
+
+def test_oversized_review_is_not_created(job):
+    with pytest.raises(ValueError, match="JSON exceeds"):
+        record_review(job, notes="x" * (16 * 1024 * 1024), **PASS)
+    assert not (job / "review.json").exists()
+
+
+def test_overflowing_integer_cleanup_is_a_structured_refusal(job):
+    minutes = 10**400
+    with pytest.raises(ValueError, match="REVIEW_CLEANUP_INVALID"):
+        record_review(job, **{**PASS, "cleanup_minutes": minutes})
+    assert not (job / "review.json").exists()
+    path = record_review(job, **PASS)
+    doc = json.loads(path.read_text())
+    doc["cleanup_minutes"] = minutes
+    path.write_text(json.dumps(doc))
+    assert any(e["code"] == "REVIEW_CLEANUP_INVALID" for e in review_errors(job))
+    assert not production_usable(job)
+
+
+def test_shared_hasher_and_writer_stay_permissive_for_the_pipeline(tmp_path):
+    """Review strictness must not leak into the pipeline: symlinked ancestors and inf scores are legitimate there."""
+    import json as _json
+
+    from sonoranlab.artifacts import sha256_file as pipeline_sha256
+    from sonoranlab.artifacts import write_json as pipeline_write_json
+
+    real = tmp_path / "real"
+    real.mkdir()
+    (real / "a.png").write_bytes(b"x")
+    (tmp_path / "alias").symlink_to(real)
+    assert pipeline_sha256(tmp_path / "alias" / "a.png") == pipeline_sha256(real / "a.png")
+    out = pipeline_write_json(tmp_path, "sweep.json", {"worst_ratio": float("inf")})
+    assert _json.loads(out.read_text())["worst_ratio"] == float("inf")
+
+
+@pytest.mark.parametrize("name", ["\u200b", "\u200b \u2060", "\t\n"])
+def test_invisible_reviewer_is_refused(job, name):
+    with pytest.raises(ValueError, match="REVIEW_REVIEWER_INVALID"):
+        record_review(job, **{**PASS, "reviewer": name})
