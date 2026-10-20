@@ -1,5 +1,10 @@
 # Phase 2 senior-review handoff (2026-10-19)
 
+**Update 2026-10-19:** the owner approved the exported relay_sentinel animation at 1×. The senior review asked for
+three export-boundary fixes in #24, and they are made (`a6ffabd`; `phase2-gate.md` §8): the standalone export is
+bound to the validated asset by digests, stills are validated, and `--sheet` keeps or explicitly refuses column-0
+stills. The combined tree (main + #15 + #17 + #24) is checked in draft PR #25 (do not merge).
+
 **Recommendation: GO for Phase 3, conditional.** The Phase 2 exit criterion is met on the Phase 1 data. Phase 3 can
 start once the owner has (1) reviewed and merged the PR stack below and (2) watched the exported relay_sentinel
 SpriteFrames play at 1× (a human check; the validator does not judge art). The open items below are Phase 3 work.
