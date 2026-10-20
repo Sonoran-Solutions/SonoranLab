@@ -97,6 +97,40 @@ request (samurai east still as image2, Track D bake skeleton `f7/g736/pose/east/
 followed, katana present, identity held. `prep.start_image_from_rgba` turns it into a 560² grey Track E start image.
 It was not needed for either humanoid pass, so no clip was generated from it.
 
+## 6. Senior-review revisions (2026-10-20)
+
+The senior review of #26–#32 found three P1 defects and one P2. All four are fixed; no GPU generation was rerun.
+
+| finding | fix (PR) | evidence |
+|---|---|---|
+| P1 `animate` exported the sheet with an **empty still column 0**; only 5 of the 8 game stills were collected | all 8 `still_<direction>.png` required (missing/wrong-size → usage error before anything runs); stills passed to the final `pipeline.run`; exported column 0 verified pixel-exact against the supplied stills (#31) | the reviewed pyromancer export's column 0 is fully transparent (confirmed); re-export `gate-105/export-v2` from the same assembled raw set with the 8 shipped stills: column 0 = the stills for all 8 rows (west rows are the game's own poses, not mirrors); animation columns byte-identical to the reviewed export; validator PASS; Godot 4.7.2 import + playback pass |
+| P1 human approval **not bound to the artifact** | `review.json` schema 2 binds the report, manifest, every export file and contact sheet by sha256; `production_usable()` / `sonoranlab review check` recompute them (changed, added or removed export files, changed report, raw mismatch → not usable); a report without manifest/export provenance is refused (#30) | on a copy of the approved pyromancer job, one changed PNG byte flips `review check` from exit 0 to exit 1 naming the file |
+| P1 `sonoranlab generate` ran **outside the memory guard**; `sweep run` used 40 GiB for Track C | `generate` enters `env/runwindow.py` by default (same direct-parent ownership rule as `env/smoke.sh`), budget = the request's track minimum (E 40, C 60); an explicit `--need-gib` below it is refused; no skip flag. `run_generation` reads every request's track first and applies or enforces the same minimums (#28, #29, #30) | tests: direct CLI execs the guard with 40 / 60, refuses `--need-gib 30` (E) and `40` (C); a Track C request through the generic sweep gets `--need-gib 60`, an explicit 40 is refused before anything runs |
+| P2 prompt UUID not durable before submission | adapters fsync `submission.json` (prompt UUID, client id, patched workflow hash, state) before posting; `guard.pending_submissions()` lists attempts with a submission but no result (#28, #29) | tests: the file exists with the posted id when the client is called; a killed run leaves it findable |
+
+**Approvals re-bound, not re-given.** The owner's existing verdicts were re-recorded unchanged as schema-2 reviews bound to
+the exact artifacts they were given on; the original files are kept as `review.v1.json` and referenced by hash
+(`supersedes`). No file in either job changed after the original review (checked by modification time).
+
+| job | report | export PNG | .tres | review.json (supersedes) |
+|---|---|---|---|---|
+| samurai `validate/samurai-grey-final-godot` | 153f4e093274ff66 | 6581b870a3ef43d9 | b7053fa1c0a67459 | 36d7352b75ab821c (23c79de13b24694c) |
+| pyromancer reviewed `gate-105/job/sweep/final/job` | 7a7f953fecec64ab | c8e641a9991098a5 | 98bf0f45cdde888c | 0bbd9645bccc1b44 (d5bc1ff9209f7f6a) |
+| pyromancer corrected `gate-105/export-v2` | 871a6653f9afedf2 | 4c20b6563dc5dfed | 98bf0f45cdde888c | **none yet** |
+
+(sha256 prefixes.) The corrected pyromancer export differs from the reviewed one only in column 0, which now holds the
+owner's own shipped stills; it is **not production-usable until the owner gives it a 1× confirmation**, which will be
+recorded as its own bound review. The samurai export also has an empty column 0 (it was produced before `animate`
+existed); it remains the validator evidence for the humanoid gate, not a game-ready sheet.
+
+## Disclosures kept from the gate
+
+- **60-minute criterion: PASS, n = 1.** The owner's review stopwatch figure was never supplied (it arrived as "N");
+  review time is the ≤ 0.72-minute interval between sending the material and the approval. This shows that this run met
+  the limit, not that every character will.
+- Samurai east sits at exactly 16 / 16 drift: a valid pass with zero margin. Later sweeps should prefer candidates
+  with headroom; the validator is not changed.
+
 ## Limitations
 
 - One new character, one run; the pass rate across characters is not established. Pyromancer is an easier humanoid
