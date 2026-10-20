@@ -9,13 +9,19 @@ import argparse
 import dataclasses
 import hashlib
 import json
+import os
+import signal
 import sys
+from collections.abc import Callable
 from pathlib import Path
+from typing import TypeVar
 
 import numpy as np
 
 from sonoranlab.profile import ProfileError, check_profile, load_palette, load_profile, sha256_file
 from sonoranlab.validate import frame_digest, read_frames, read_stills, validate
+
+T = TypeVar("T")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -110,6 +116,20 @@ def build_parser() -> argparse.ArgumentParser:
     pr.add_argument("--anchors", type=Path, help="per-frame rig anchors (refused until the validator gates rig)")
     pr.add_argument("--godot-check", action="store_true", help="import + check the export in Godot (needs godot)")
     pr.set_defaults(func=process_cmd)
+
+    gn = verbs.add_parser("generate", help="run one generation request (Track E: a Wan clip) against ComfyUI")
+    gn.add_argument("--request", type=Path, required=True, help="GenerateRequest JSON (sonoranlab.comfy.adapters.base)")
+    gn.add_argument("--base-url", default="http://127.0.0.1:8189")
+    gn.add_argument("--timeout", type=float, default=1800, help="seconds to wait for the ComfyUI prompt")
+    gn.add_argument("--need-gib", type=float, help="run-window memory budget (GiB), at least the track minimum")
+    gn.add_argument("--allow-pause", action="append", default=[], metavar="UNIT", help="owner-approved units only")
+    gn.add_argument(
+        "--exec",
+        dest="exec_container",
+        metavar="CONTAINER",
+        help="reach ComfyUI through `podman exec` (the `env/comfy.sh up --offline` container, e.g. sonoranlab-comfy)",
+    )
+    gn.set_defaults(func=generate_cmd)
     return p
 
 
@@ -466,6 +486,62 @@ def process_cmd(args: argparse.Namespace) -> int:
         n = gc["result"].get("animations_checked")
         print(f"godot:   {gc['godot']}: import + SpriteFrames check passed ({n} animations)")
     return 0
+
+
+_exec = os.execvp
+
+
+def _cancel_on_term(fn: Callable[[], T]) -> T:
+    """env/runwindow.py forwards TERM/HUP to its child. Python's default for those exits without unwinding, which would
+    leave our prompt queued or running; as KeyboardInterrupt the client cancels it (prompt-scoped) and records why."""
+
+    def interrupt(signum: int, _frame: object) -> None:
+        raise KeyboardInterrupt(f"signal {signum}")
+
+    old = {s: signal.signal(s, interrupt) for s in (signal.SIGTERM, signal.SIGHUP)}
+    try:
+        return fn()
+    finally:
+        for s, h in old.items():
+            signal.signal(s, h)
+
+
+def generate_cmd(args: argparse.Namespace) -> int:
+    """Exit 0 ok, 1 generation failed (result.json says why), 2 bad request/config. The comfy client loads lazily."""
+    import math
+
+    from sonoranlab.comfy.adapters.base import GenerateRequest
+    from sonoranlab.comfy.guard import guarded_argv, inside_guard, min_need_gib
+
+    try:
+        req = GenerateRequest.from_json(json.loads(args.request.read_text()))
+        minimum = min_need_gib(req.track)
+        if args.need_gib is not None and (not math.isfinite(args.need_gib) or args.need_gib < minimum):
+            raise ValueError(f"refusing an under-budget run window; Track {req.track} needs {minimum:g} GiB")
+        need = args.need_gib or minimum
+        if not inside_guard():
+            child = ["--request", str(args.request), "--base-url", args.base_url, "--timeout", f"{args.timeout:g}"]
+            child += ["--need-gib", f"{need:g}"] + (["--exec", args.exec_container] if args.exec_container else [])
+            # --allow-pause belongs to the guard, not the child; the child sees it only through the run window
+            argv = guarded_argv(
+                [sys.executable, "-m", "sonoranlab.cli", "generate", *child], need, tuple(args.allow_pause)
+            )
+            print(f"generate: entering env/runwindow.py --need-gib {need:g}", file=sys.stderr, flush=True)
+            _exec(argv[0], argv)
+            return 0  # exec only returns in tests
+        if req.track != "E":
+            raise ValueError(f"track {req.track!r} has no adapter yet")
+        from sonoranlab.comfy.adapters import track_e
+
+        work = track_e.default_work()
+        client = track_e.make_client(args.base_url, work / "output", exec_container=args.exec_container)
+        adapter = track_e.TrackE(client, work_root=work, timeout_s=args.timeout)
+        res = _cancel_on_term(lambda: adapter.generate(req))
+    except (OSError, ValueError, TypeError, KeyError) as e:  # ValueError covers bad JSON; TypeError/KeyError bad fields
+        print(f"generate: {e!r}" if isinstance(e, (KeyError, TypeError)) else f"generate: {e}", file=sys.stderr)
+        return 2
+    print(json.dumps(res.to_json(), indent=2))
+    return 0 if res.status == "ok" else 1
 
 
 def main(argv: list[str] | None = None) -> int:
