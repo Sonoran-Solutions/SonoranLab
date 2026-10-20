@@ -32,7 +32,14 @@ from sonoranlab.repair.compare import (
     read_json,
     source_name,
 )
-from sonoranlab.repair.confine import check_destination, create_destination, git_root, repair_root, verify_destination
+from sonoranlab.repair.confine import (
+    admit_repair,
+    check_destination,
+    create_destination,
+    git_root,
+    repair_root,
+    verify_destination,
+)
 from sonoranlab.repair.runtime import AsepriteConverter, no_symlinks, seed_home
 
 SCHEMA = "sonoranlab.repair/1"
@@ -224,6 +231,7 @@ def inspect(repair: Path) -> dict:
 
 def export(repair: Path, *, converter: AsepriteConverter | FakeConverter | None = None) -> dict:
     """Append a new export snapshot; retain failed attempts, which hold diff until another export succeeds."""
+    repair = admit_repair(repair)
     repair = no_symlinks(repair)
     info = inspect(repair)
     if info["state"] != "prepared":
@@ -271,6 +279,7 @@ def export(repair: Path, *, converter: AsepriteConverter | FakeConverter | None 
 
 
 def abort(repair: Path) -> dict:
+    repair = admit_repair(repair)
     repair = no_symlinks(repair)
     info = inspect(repair)
     if info["state"] != "aborted":

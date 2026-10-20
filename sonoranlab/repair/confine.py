@@ -25,6 +25,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from sonoranlab import artifacts
+from sonoranlab.profile import load_profile
 from sonoranlab.repair import Refused
 
 _MARKERS = (
@@ -102,7 +103,7 @@ def git_root(path: Path) -> Path | None:
             check=False,
         )
         # Even a partial positive answer is grounds for refusal.
-        if "true" in result.stdout.splitlines()[:2]:
+        if "true" in getattr(result, "stdout", "").splitlines()[:2]:
             return existing
     except (OSError, subprocess.SubprocessError):
         pass  # Positive markers above never depend on being able to execute Git.
@@ -176,6 +177,136 @@ def check_destination(path: Path, *, root: Path, forbidden: Iterable[Path] = (),
             raise Refused(f"forbidden_path: {path} would contain forbidden area {area}")
     if must_not_exist and path.exists():
         raise Refused(f"destination_exists: {path}: exists; staging directories are never reused")
+    return path
+
+
+def admit_repair(path: Path | str) -> Path:
+    """Verify that path is an existing, safe, and valid repair workspace before mutation.
+
+    Returns the canonical repair Path. Creates nothing, no lease, no mkdir.
+    Refusal messages always begin with 'repair_not_admitted: <code_or_reason>'.
+    """
+    try:
+        path = _checked_path(Path(path))
+    except Refused as e:
+        raise Refused(f"repair_not_admitted: {e}") from e
+
+    repo = artifacts._REPO.resolve()
+    if path.is_relative_to(repo):
+        raise Refused(f"repair_not_admitted: repository_path: {path} is inside the SonoranLab repository")
+    if repo.is_relative_to(path):
+        raise Refused(f"repair_not_admitted: forbidden_path: {path} would contain repository {repo}")
+
+    git_areas = tuple(
+        Path(os.environ[key]).expanduser().resolve() for key in ("GIT_DIR", "GIT_WORK_TREE") if os.environ.get(key)
+    )
+    for area in git_areas:
+        if path.is_relative_to(area):
+            raise Refused(f"repair_not_admitted: forbidden_path: {path} is inside Git area {area}")
+        if area.is_relative_to(path):
+            raise Refused(f"repair_not_admitted: forbidden_path: {path} would contain Git area {area}")
+
+    try:
+        root = repair_root()
+    except Refused as e:
+        raise Refused(f"repair_not_admitted: {e}") from e
+
+    if path == root or not path.is_relative_to(root):
+        raise Refused(f"repair_not_admitted: outside_root: {path} must be strictly inside staging root {root}")
+
+    if checkout := git_root(path):
+        raise Refused(f"repair_not_admitted: git_worktree: {path} is inside Git working tree {checkout}")
+
+    for ancestor in path.parents:
+        if ancestor == root or not ancestor.is_relative_to(root):
+            break
+        if (ancestor / "raw").is_dir() and (ancestor / "processed").is_dir():
+            raise Refused(f"repair_not_admitted: nested_workspace: {path} is inside an existing job ({ancestor})")
+        for marker in _MARKERS:
+            entry = ancestor / marker
+            if entry.exists() or entry.is_symlink():
+                raise Refused(
+                    f"repair_not_admitted: nested_workspace: {path} is inside an existing job/repair ({entry})"
+                )
+
+    if not path.is_dir() or path.is_symlink():
+        raise Refused(f"repair_not_admitted: not_a_directory: {path} is not a directory")
+
+    staging_path = path / ".sonoranlab-staging"
+    if staging_path.is_symlink() or not staging_path.is_file():
+        raise Refused(f"repair_not_admitted: missing_staging_marker: {staging_path} is not a regular file")
+    try:
+        with staging_path.open("r", encoding="utf-8") as f:
+            staging_data = json.load(f)
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError) as e:
+        raise Refused(f"repair_not_admitted: invalid_staging_marker: {staging_path}: {e}") from e
+    if not isinstance(staging_data, dict):
+        raise Refused(f"repair_not_admitted: invalid_staging_marker: {staging_path} is not a JSON object")
+    if staging_data.get("kind") != "repair":
+        raise Refused(f"repair_not_admitted: invalid_staging_marker: {staging_path} kind is not 'repair'")
+    staging_id = staging_data.get("id")
+    if not isinstance(staging_id, str) or not staging_id:
+        raise Refused(f"repair_not_admitted: invalid_staging_marker: {staging_path} missing or invalid id")
+
+    repair_json = path / "repair.json"
+    if repair_json.is_symlink() or not repair_json.is_file():
+        raise Refused(f"repair_not_admitted: missing_repair_json: {repair_json} is not a regular file")
+    try:
+        with repair_json.open("r", encoding="utf-8") as f:
+            repair_data = json.load(f)
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError) as e:
+        raise Refused(f"repair_not_admitted: invalid_repair_json: {repair_json}: {e}") from e
+    if not isinstance(repair_data, dict):
+        raise Refused(f"repair_not_admitted: invalid_repair_json: {repair_json} is not a JSON object")
+    if repair_data.get("schema") != "sonoranlab.repair/1":
+        raise Refused(f"repair_not_admitted: invalid_repair_json: {repair_json} schema is not 'sonoranlab.repair/1'")
+    if repair_data.get("repair_id") != staging_id:
+        raise Refused(
+            f"repair_not_admitted: marker_id_mismatch: {staging_path} id {staging_id!r} "
+            f"does not match {repair_json} repair_id {repair_data.get('repair_id')!r}"
+        )
+
+    mapping_json = path / "mapping.json"
+    if mapping_json.is_symlink() or not mapping_json.is_file():
+        raise Refused(f"repair_not_admitted: missing_mapping_json: {mapping_json} is not a regular file")
+    try:
+        with mapping_json.open("r", encoding="utf-8") as f:
+            mapping_data = json.load(f)
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError) as e:
+        raise Refused(f"repair_not_admitted: invalid_mapping_json: {mapping_json}: {e}") from e
+    if not isinstance(mapping_data, dict):
+        raise Refused(f"repair_not_admitted: invalid_mapping_json: {mapping_json} is not a JSON object")
+
+    for name in ("source", "workspace"):
+        d = path / name
+        if d.is_symlink() or not d.is_dir():
+            raise Refused(f"repair_not_admitted: invalid_structure: {d} must be a directory without symlinks")
+
+    profile_entry = repair_data.get("profile")
+    if not isinstance(profile_entry, dict) or "path" not in profile_entry:
+        raise Refused(f"repair_not_admitted: invalid_repair_json: {repair_json} missing profile.path")
+    try:
+        profile_path = _checked_path(Path(profile_entry["path"]))
+        profile = load_profile(profile_path)
+    except Exception as e:
+        raise Refused(f"repair_not_admitted: invalid_profile: {e}") from e
+
+    godot_project = Path(profile.export.godot_project).expanduser().resolve()
+    palette_checkout = git_root(Path(profile.palette.source).expanduser().resolve())
+    forbidden = (godot_project, *((palette_checkout,) if palette_checkout else ()))
+    for area in forbidden:
+        if path.is_relative_to(area):
+            raise Refused(f"repair_not_admitted: forbidden_path: {path} is inside forbidden area {area}")
+        if area.is_relative_to(path):
+            raise Refused(f"repair_not_admitted: forbidden_path: {path} would contain forbidden area {area}")
+
+    if parent_job := repair_data.get("parent_job"):
+        parent_area = Path(parent_job).expanduser().resolve()
+        if path.is_relative_to(parent_area):
+            raise Refused(f"repair_not_admitted: forbidden_path: {path} is inside parent job {parent_area}")
+        if parent_area.is_relative_to(path):
+            raise Refused(f"repair_not_admitted: forbidden_path: {path} would contain parent job {parent_area}")
+
     return path
 
 
