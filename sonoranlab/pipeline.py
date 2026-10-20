@@ -145,28 +145,81 @@ def expected_godot(
     }
 
 
+GODOT_RETRIES = 2  # DYL-101: at most this many re-runs, only for the editor-singleton crash below
+GODOT_BACKOFF = (1.0, 3.0)  # seconds slept before retry 1 and 2
+_SINGLETON = ('Parameter "singleton" is null', "is_cmdline_mode")
+_ERRORISH = re.compile(r"ERROR|Parse Error|Failed|failed|Cannot|Invalid")
+
+
+def is_transient_singleton(p: subprocess.CompletedProcess) -> bool:
+    """Godot 4.7.2's intermittent `--import` crash: EditorNode::is_cmdline_mode() runs with no EditorNode (SIGABRT).
+    True only for returncode -6/134, both signature strings in stderr, and nothing else that reads as a failure: every
+    ERROR-ish line must be one of the two signature lines and the checker's JSON verdict (if any) must not be a fail."""
+    if p.returncode not in (-6, 134) or not all(s in p.stderr for s in _SINGLETON):
+        return False
+    for ln in (ANSI.sub("", p.stdout) + p.stderr).splitlines():
+        if ln.startswith("{") and '"pass":false' in ln.replace(" ", ""):
+            return False
+        if _ERRORISH.search(ln) and not any(s in ln for s in _SINGLETON):
+            return False
+    return True
+
+
+def run_godot(
+    godot: str,
+    args: list[str],
+    *,
+    cwd: Path,
+    step: str = "godot",
+    attempts: list[dict] | None = None,
+    sleep=time.sleep,
+) -> subprocess.CompletedProcess:
+    """`godot *args`, re-run (<= GODOT_RETRIES, with backoff) only on the transient singleton crash. Every attempt is
+    appended to `attempts` as {step, returncode, transient_signature, seconds}; the LAST attempt's result is returned
+    and judged by the caller exactly as before, so a retry can never turn a real failure into a pass."""
+    for n in range(GODOT_RETRIES + 1):
+        t = time.perf_counter()
+        p = subprocess.run([godot, *args], cwd=cwd, capture_output=True, text=True, timeout=300)
+        transient = is_transient_singleton(p)
+        if attempts is not None:
+            attempts.append(
+                {
+                    "step": step,
+                    "returncode": p.returncode,
+                    "transient_signature": transient,
+                    "seconds": round(time.perf_counter() - t, 3),
+                }
+            )
+        if not transient or n == GODOT_RETRIES:
+            return p
+        sleep(GODOT_BACKOFF[n])
+    raise AssertionError("unreachable")
+
+
 def check_in_godot(
     sheet: np.ndarray, *, character: str, cell: tuple[int, int], rows: list[str], clips: list[dict]
 ) -> dict:
     """Export into a temp copy of tools/godot/spriteframes_check, `godot --import` it and run the checker there
-    (as tests/sonoranlab/test_export_godot.py does). Returns the record for manifest.json; leaves nothing behind."""
+    (as tests/sonoranlab/test_export_godot.py does). Returns the record for manifest.json; leaves nothing behind.
+    `godot_attempts` lists every godot process run (see run_godot); only the final attempt of a step is judged."""
     godot = shutil.which("godot")
     if godot is None:
         raise PipelineError("--godot-check: godot not found on PATH")
+    attempts: list[dict] = []
 
-    def call(*args: str, cwd: Path) -> subprocess.CompletedProcess:
-        return subprocess.run([godot, *args], cwd=cwd, capture_output=True, text=True, timeout=300)
+    def call(*args: str, cwd: Path, step: str) -> subprocess.CompletedProcess:
+        return run_godot(godot, list(args), cwd=cwd, step=step, attempts=attempts)
 
     with tempfile.TemporaryDirectory(prefix="sonoranlab-godot-") as tmp:
         proj = Path(tmp) / "proj"
         shutil.copytree(GODOT_CHECK, proj)
         paths = export_godot(sheet, character=character, cell=cell, rows=rows, clips=clips, out_dir=proj, provenance={})
         (proj / "expected.json").write_text(json.dumps(expected_godot(sheet, character, cell, rows, clips)))
-        version = call("--version", cwd=Path(tmp)).stdout.strip()
-        imp = call("--headless", "--path", str(proj), "--import", cwd=Path(tmp))
+        version = call("--version", cwd=Path(tmp), step="version").stdout.strip()
+        imp = call("--headless", "--path", str(proj), "--import", cwd=Path(tmp), step="import")
         chk = call(
             "--headless", "--path", str(proj), "--fixed-fps", "60", "--script", "res://check_spriteframes.gd", "--",
-            f"res://{character}/{character}_frames.tres", "res://expected.json", cwd=Path(tmp),
+            f"res://{character}/{character}_frames.tres", "res://expected.json", cwd=Path(tmp), step="check",
         )  # fmt: skip
         log = imp.stdout + imp.stderr + chk.stdout + chk.stderr
         lines = [ANSI.sub("", ln) for ln in log.splitlines() if ln.strip() and not ln.startswith("{")]
@@ -180,6 +233,7 @@ def check_in_godot(
             "godot": version,
             "import_exit": imp.returncode,
             "check_exit": chk.returncode,
+            "godot_attempts": attempts,
             "result": result,
             "checked_sha256": {Path(paths[k]).name: artifacts.sha256_file(Path(paths[k])) for k in ("png", "tres")},
             "log_tail": lines[-8:],
@@ -485,5 +539,5 @@ def run(
         "report": str(job / "report.json"),
         "contact": str(job / "contact.png"),
         "export": export,
-        "godot_check": None if gc is None else {k: gc[k] for k in ("pass", "godot", "result")},
+        "godot_check": None if gc is None else {k: gc[k] for k in ("pass", "godot", "result", "godot_attempts")},
     }
