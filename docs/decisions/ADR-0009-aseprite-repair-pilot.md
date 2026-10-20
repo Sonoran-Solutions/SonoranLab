@@ -188,4 +188,12 @@ Evidence: [`dyl110-trials.md`](../../benchmark/results/2026-10-20-phase3.5/dyl11
   colours already in the frame. The validator correctly refused an otherwise better-looking edit that added 3 colours.
   Lifting this is an owner decision about the threshold or about authorizing out-of-mask colour merges; it is not part of
   this ADR.
-- Disposition: pending the owner's 1× reviews (see the gate document).
+- Owner 1× visual approval recorded 2026-10-20 (A1, A2, B1, B2 it.2, C1); artifact-bound reviews written with a
+  timestamp-bounded interval (no stopwatch). Senior review: REVISE before merge, narrow ADOPT recommended; its P1/P2 findings
+  (staging-path confinement, repair-manifest approval binding, `binds.job`) are corrected (gate document, revision 2).
+- **Threat model of the path checks:** they defend against mistaken or hostile paths and symlinks present at check time; a
+  concurrent same-UID process renaming ancestor directories during a command is out of scope (it can write there directly);
+  final verification is best-effort detection. Upgrade: mount-namespace isolation for prepare/finalize.
+- Proposed scope if adopted: optional contained editor; supported operations `draw.pixels`, `draw.grid`, `draw.clear`, bounded
+  `draw.blit` on authorized frames; `cel.move`, transforms, rigging and animation creation are not adopted.
+- Disposition: **pending the owner's formal ADOPT / DEFER / REJECT / HOLD** (status stays proposed until then).

@@ -1,5 +1,94 @@
 # Phase 3.5 gate (DYL-111): senior-review package
 
+## Revision 2 (2026-10-20, after the senior review) — supersedes the status, heads and recommendation below
+
+**Status: READY_FOR_SENIOR_REVIEW (revision 2).** Senior verdict was REVISE before merge, narrow ADOPT recommended.
+Both P1 categories and the P2 are corrected. Owner visual approval is recorded. The formal disposition is still the owner's.
+
+- **Owner 1× decision:** "I approve visually" (orchestrator session, 2026-10-20 ≈ 21:00Z). Accepted: A1, A2, B1, B2 iteration 2
+  and C1. B2 iteration 1 stays a documented technical failure (67 > 64 colours).
+- **Artifact-bound reviews recorded** on the five children (`~/sonoranlab-work/phase3.5/trials/runs/*-child*/review.json`):
+  - verdict pass, reviewer "Dylan (owner)", `cleanup_minutes` 0 (no owner edits);
+  - interval 2026-10-20T20:24:10Z → 21:03:13Z, a **timestamp upper bound** (review page generated → approval received), not a
+    stopwatch time; the critic's cleanup estimate is not substituted;
+  - every review binds `repair_manifest_sha256`; all five pass `review check`.
+
+### Corrections
+
+| finding | fix | PR |
+|---|---|---|
+| P1 staging paths: prepare/relay/finalize not fully confined | explicit roots `SONORANLAB_REPAIR_ROOT` (default `~/sonoranlab-work/repairs`) and `SONORANLAB_AGENT_ROOT` (`~/sonoranlab-work/agents`). `confine.check_destination` refuses, **before anything is created**: outside the root; symlinked components; existing paths; any Git checkout (`.git` dir with HEAD, `gitdir:` file, bare repos, `GIT_DIR`/`GIT_WORK_TREE`, `git rev-parse` cross-check); the SonoranLab repo; the game checkout and Godot project; the parent; the repair; any existing job/repair. Reservation walks no-follow dir fds, writes a staging marker first and verifies the fd. The relay does all mailbox I/O through fds, reuses only its own repair-bound mailbox, and re-verifies the mailbox and each queue before every claim/publish (`ok:false` on interference). | #35, #37, #38 |
+| P1 repair lineage not bound to approval | the child `manifest.json` declares `{"repair": {"manifest": "repair-manifest.json", ...}}` with no sidecar hash (no circularity). `review record` binds `repair_manifest_sha256`. `review check` refuses a missing, symlinked, modified, replaced or added-after-review sidecar, and a declared child without a binding. | #36, #38 |
+| P2 `binds.job` unchecked | `review check` requires `binds.job` == the job's resolved path. A copied or moved approved job loses approval; relocation = a new review with `--supersedes`. | #36 |
+
+### Threat model for the path checks
+
+- **Defended:** mistaken or hostile *paths* (including agent-supplied ones) and symlinks that exist at check time.
+- **Not defended:** a **concurrent same-UID process** renaming or swapping ancestor directories *during* a command. Such a
+  process can write into those locations directly anyway, and no userspace path discipline can stop it relocating an ancestor
+  of the staging root. The final verification is best-effort detection, not a guarantee.
+- The Astra re-audit reproduced such races (a transient swap restored before verification; moving a pinned ancestor). They are
+  recorded here as accepted residuals, not hidden.
+- Upgrade path: run prepare/finalize inside a mount namespace where only the staging root is writable and the game and
+  repository are not mounted. This would also close those races, and is proposed as a follow-up.
+
+### Review history of the corrections
+
+- Codex sol implemented. The coordinator fixed:
+  - the checkout detector being fooled by an empty sandbox `/tmp/.git` mount point;
+  - relay reuse with worker files present;
+  - an output race under the lease.
+- Astra audit 1: **REJECT** (ancestor-swap at reservation, `GIT_DIR`/bare repos, marker-less failed prepare) → fd reservation,
+  Git detection and marker-first fixes.
+- Astra audit 2: **REJECT** (post-creation transient swap, relay queues, moved pinned ancestor). The queues were fixed; the two
+  concurrent-race classes were scoped out as above.
+- Astra audit 3 (narrow, at `63fd9df`): **REJECT** on one non-race gap (a Git repository inside a relay queue). It confirmed
+  the queue identity fix, the threat-model wording, and the sidecar and `binds.job` controls. Fixed in `3172de5`; the auditor's
+  own reproducers now refuse every variant (zero broker calls, nothing claimed or published). That last fix was verified by the
+  coordinator with those reproducers, not by a further Astra pass.
+
+### PRs and heads (revision 2)
+
+| PR | ticket | head | base | CI |
+|---|---|---|---|---|
+| #36 | DYL-109 core (review hardening + job identity + sidecar binding) | `04cfda5` | main | green |
+| #35 | DYL-107 (+ confinement) | `d9db1c2` | #36 | green |
+| #37 | DYL-108 (+ relay confinement, queue identity/layout/Git checks) | `3172de5` | #35 | green |
+| #38 | DYL-109 finalize (+ out confinement, sidecar declaration, race tests) | `a8a1832` | #37 | green |
+| [#39](https://github.com/Sonoran-Solutions/SonoranLab/pull/39) | **DO NOT MERGE** published combined check (= #38 head) | `a8a1832` | main | green |
+| #34 | docs (this file) | this branch | main | green |
+
+- **Merge order:** #36 → #35 → #37 → #38; #34 is independent. Close #39 unmerged after.
+- **Stack integrity:** each correction round was split into the stack by file, and the resulting top tree was checked to be
+  blob-identical to the tested worker tree.
+- **Intermediate tips stand alone:** #35 tip 98 repair tests pass; #37 tip 260.
+
+### R2. Evidence at the published combined tree `a8a1832`
+
+- Full suite at `a8a1832` (= #38 = #39 head, contains #36/#35/#37): **1375 passed, 0 skipped**, ruff format/check clean.
+  The core imports no `sonoranlab.repair` module. Hosted CI is green on #35, #36, #37, #38 and #39 heads. An earlier #39 failure
+  was a flaky pre-existing ops test (`test_concurrent_same_job_is_re…`, code untouched by this stack), green on re-run.
+- **Trials:** they ran on `52c5174`. The corrections change only path confinement and approval binding, not the pixel,
+  validation or export logic. The senior review accepted synthetic verification without re-running the trials. The full suite
+  here includes the live sandboxed Aseprite GUI session and the Godot checks on the Strix Halo box.
+
+### Recommendation (revision 2)
+
+- **ADOPT, narrow and optional,** per the senior review:
+  - the contained editor with the tested bounded `draw.pixels/grid/clear/blit` repair workflow only;
+  - `cel.move`, transforms, rigging and animation creation outside the adopted capability;
+  - SonoranLab authoritative for validation, export, lineage and approval.
+- **Then GO for core Phase 4,** with the editor optional and not a dependency of the MCP server.
+- **Owner decisions still needed:**
+  1. Record the disposition.
+  2. Merge approval.
+  3. The user-scope diivi aseprite-mcp / PixelLab MCP for ordinary workers. The senior recommends removing them, or disabling them
+     by default; this is the owner's configuration and was not changed.
+  4. Whether to schedule the mount-namespace isolation follow-up.
+
+---
+
+
 **Status: READY_FOR_SENIOR_REVIEW.** The coordinator's disposition recommendation is **HOLD** until the owner's 1× reviews are
 recorded. After that the recommendation becomes conditional: **ADOPT, narrow and optional**, if the owner passes C1 (or B2), and
 **DEFER** otherwise. The owner decides. No PR is merged, auto-merge is off, and Phase 4 has not started.
