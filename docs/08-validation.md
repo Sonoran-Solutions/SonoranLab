@@ -7,7 +7,7 @@ can read and act on. Thresholds come from the profile.
 ## Report shape
 
 Implemented by `sonoranlab/validate.py` (`validate(...)`, DYL-83) and `sonoranlab validate FRAMES_DIR --profile P
---character C --anim A [--out report.json]` (exit 0 pass, 1 failed, 2 usage/config/input error; `--out` never
+--character C --anim A [--stills DIR] [--out report.json]` (exit 0 pass, 1 failed, 2 usage/config/input error; `--out` never
 overwrites). Abridged, with illustrative values:
 
 ```json
@@ -20,6 +20,8 @@ overwrites). Abridged, with illustrative values:
              "loop_closure_ratio_warn": 1.18, "source": "characters.samurai", "bbox_drift_gated": true},
   "notes": [],
   "frame_count": {"expected": 35, "actual": 35, "ok": true},
+  "digests": {"east_6": "<sha256>", "still_south": "<sha256>"},
+  "stills": [{"direction": "south", "canvas": [184, 184], "issues": [], "ok": true}],
   "frames": [
     {
       "index": 27, "direction": "east", "frame": 6, "ok": false,
@@ -61,6 +63,12 @@ overwrites). Abridged, with illustrative values:
 - `pre` (per frame) and `registration` (per direction) are provenance: what the chain changed. They are not verdicts
   and not proof the raw poses were consistent. `params` and `provenance` (profile + input hashes) are added by the
   CLI / pipeline.
+- `digests` binds every validated clip cell (`<direction>_<i>`) and supplied still (`still_<direction>`) to its
+  pixels: SHA-256 of `"<height>x<width>x<channels>:".encode() + frame.tobytes()`, independent of PNG encoding.
+- `--stills DIR` reads `still_<direction>.png`. Stills use the same canvas, empty, palette, fringe, binary-alpha,
+  colour-cap and padding gates as frames, with failures such as `palette: still south has 3 off-palette pixels`.
+  They have no foot, motion, loop or registration gates. Unknown still directions are input errors.
+  `stills` holds their records separately from `frames`; bad stills fail the report and prevent pipeline export.
 - Frames are indexed in the order the clips are passed (the CLI uses the profile's sheet row order).
 
 ## Rules

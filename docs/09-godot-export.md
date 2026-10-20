@@ -9,7 +9,10 @@ checked against Godot 4.7.2 and the private game checkout (read-only) on 2026-10
 
 `sonoranlab process` (README "How to run") calls the exporter itself, only after a validator PASS, with the clip
 starting at column 1 and the west rows mirrored from east as real pixels; `--stills DIR` fills column 0 from
-`DIR/still_<direction>.png`. With `--godot-check` it first exports into a temp copy of `tools/godot/spriteframes_check`,
+`DIR/still_<direction>.png`, validated before export. In `--sheet` mode, populated column-0 cells are preserved
+and validated when scale is 1. HD sheets (scale > 1) must have transparent column 0; populated column 0 plus
+`--stills` is also an input error. Both errors occur before the job dir is created. With `--godot-check` it first
+exports into a temp copy of `tools/godot/spriteframes_check`,
 runs the import and the checker below on it and writes `<job>/export/` only if both pass and the checked PNG/.tres hash
 the same as the final ones (result in `manifest.json` `godot_check`); without `godot` on PATH that flag is an error.
 
@@ -25,6 +28,15 @@ Copying into the game is a separate, human-reviewed step.
 ```
 
 Deterministic: same inputs give byte-identical files (no timestamps, no UIDs, Pillow's PNG encoder at a fixed setting).
+
+Standalone `sonoranlab export godot` requires `--profile P --report report.json` and a single `--clip`.
+The report must have `pass: true`, matching `character` and `animation`, and pixel digests for every generated
+clip cell and every non-empty column-0 still. All report digests must match a sheet cell; mirrored clip rows must
+be exact horizontal flips of their sources. Stills also pass the profile's cell rules. `--rows` and `--cell` must
+match the profile; clip start must be ≥ 1, and unused columns must be transparent. Old reports without digests
+are refused (exit 2, no files written). Re-run validation to obtain a bound report.
+`--forbid-under` defaults to the profile's `export.godot_project`. Sidecar `provenance.validator` records
+`pass`, `report_sha256`, `character`, `animation`, and `frames_bound` (matched clip and still digest count).
 
 ## Sheet (the game's convention, verified in `assets/pixel/v0/characters/`)
 
@@ -74,9 +86,10 @@ Deterministic: same inputs give byte-identical files (no timestamps, no UIDs, Pi
 import, check:
 
 ```
-cp -r tools/godot/spriteframes_check /tmp/p && sonoranlab export godot sheet.png --character toy --cell 16 \
+cp -r tools/godot/spriteframes_check /tmp/p
+sonoranlab export godot sheet.png --profile toy.yaml --report report.json --character toy --cell 16 \
   --rows north,north-west,west,south-west,south,south-east,east,north-east \
-  --clip run:1:4:10:loop --clip cast:5:3:6:once:1 --out /tmp/p
+  --clip run:1:4:10:loop --out /tmp/p
 godot --headless --path /tmp/p --import                       # must print no ERROR
 godot --headless --path /tmp/p --fixed-fps 60 --script res://check_spriteframes.gd -- \
   res://toy/toy_frames.tres res://expected.json               # JSON result, exit 0 = pass

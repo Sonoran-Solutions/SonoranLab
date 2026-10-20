@@ -115,3 +115,26 @@ committed tree (manifests record `git: cca758cd…`):
 - samurai/1 run: exit 1, no `export/` dir; report, contact sheet and manifest written.
 An earlier orchestrator re-run of §1 on the uncommitted tree (job `orch-verify-…`) also matched, and oathguard/2
 exited 1 with no export and stderr naming each failing frame with its moved edge and core delta.
+
+## 8. Senior-review fixes (export boundary), 2026-10-19
+
+The owner approved the exported relay_sentinel animation at 1×. The senior review (#24: REVISE) found three
+export-boundary holes, now fixed in #24:
+- **The standalone export is bound to the validated asset.**
+  - `sonoranlab export godot` now needs `--profile` and a report whose character, animation and per-cell pixel
+    digests (`report.digests`, new) match the sheet.
+  - Mirrored rows must equal their flipped source, column-0 stills must be digest-bound and valid, and stray
+    columns are refused.
+  - On real data, relay_sentinel 2's sheet with its own report exits 0. Set 3's sheet with set 2's report exits 2
+    ("sheet north frame 0 does not match the validated report"), and nothing is written. A report in the old
+    format (no digests) is refused.
+- **Stills are validated.** Each still is checked for canvas, empty, palette, semi-alpha, colour cap, fringe and
+  padding, and the results are in `report.stills`. A bad still fails the run: exit 1, no export.
+- **`--sheet` column 0.**
+  - At scale 1 the stills round-trip, pixel-identical and validated.
+  - A populated HD column 0, or column 0 together with `--stills`, exits 2 before a job dir exists.
+- **Re-run of §1:** exit 0, Godot check pass. The export PNG (`05678453…`) and `.tres` (`613de77e…`) are unchanged.
+  `report.json` changes hash because it now carries `digests` and `stills`.
+- **Tests:** 435 package tests in 3 consecutive local runs (Godot and real data included). One earlier run had a
+  single failure that did not reproduce in those runs or in 6 loops of the Godot tests. The failing test was not
+  captured; it is recorded here as unexplained.

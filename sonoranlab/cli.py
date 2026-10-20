@@ -15,7 +15,7 @@ from pathlib import Path
 import numpy as np
 
 from sonoranlab.profile import ProfileError, check_profile, load_palette, load_profile, sha256_file
-from sonoranlab.validate import read_frames, validate
+from sonoranlab.validate import frame_digest, read_frames, read_stills, validate
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -67,6 +67,7 @@ def build_parser() -> argparse.ArgumentParser:
         "godot", help="write the game-layout PNG, a SpriteFrames .tres and a provenance sidecar (docs/09)"
     )
     g.add_argument("sheet", type=Path, help="RGBA sheet PNG already in the game layout (a row per direction)")
+    g.add_argument("--profile", type=Path, required=True)
     g.add_argument("--character", required=True)
     g.add_argument("--cell", type=int, required=True, help="square cell edge in pixels")
     g.add_argument("--rows", required=True, help="comma-separated directions, top row first (profile order)")
@@ -75,7 +76,7 @@ def build_parser() -> argparse.ArgumentParser:
         action="append",
         required=True,
         metavar="NAME:START:FRAMES:FPS:loop|once[:LOOP_FROM]",
-        help="repeatable",
+        help="one clip per validated report",
     )
     g.add_argument("--out", type=Path, required=True, help="writes OUT/<character>/; must not already hold files")
     g.add_argument("--provenance", type=Path, help="JSON object copied into the sidecar")
@@ -91,6 +92,7 @@ def build_parser() -> argparse.ArgumentParser:
     v.add_argument("--anim", required=True, help="clip name in the character's animations (frame count, loop)")
     v.add_argument("--cell", type=int, help="cell size for a character without a profile row")
     v.add_argument("--out", type=Path, help="write the report here (never overwrites) instead of printing it")
+    v.add_argument("--stills", type=Path, help="dir with final-resolution still_<direction>.png cells")
     v.add_argument("--registration", type=Path, help="registration dict JSON from a pipeline report or manifest")
     v.set_defaults(func=validate_frames)
 
@@ -217,6 +219,7 @@ def export_godot_cmd(args: argparse.Namespace) -> int:
     from PIL import Image
 
     from sonoranlab.export.godot import export_godot
+    from sonoranlab.slice import slice_sheet
 
     try:
         try:
@@ -226,21 +229,90 @@ def export_godot_cmd(args: argparse.Namespace) -> int:
             raise ValueError("export needs a passing validator report") from e
         if not isinstance(report, dict) or report.get("pass") is not True:
             raise ValueError("export needs a passing validator report")
+        prof = load_profile(args.profile)
+        spec = prof.character(args.character, cell=args.cell)
+        rows = list(prof.directions.order)
+        if args.rows.split(",") != rows or (args.cell, args.cell) != spec.cell:
+            raise ValueError("--rows and --cell must match the profile; export refused")
+        if len(args.clip) != 1:
+            raise ValueError("export needs a single --clip matching the validated report; export refused")
+        clip = _parse_clip(args.clip[0])
+        if report.get("character") != args.character:
+            raise ValueError("report character does not match --character; export refused")
+        if report.get("animation") != clip["name"]:
+            raise ValueError("report animation does not match --clip; export refused")
+        if clip["start"] < 1:
+            raise ValueError("--clip must start after still column 0; export refused")
+        if not isinstance(report.get("digests"), dict) or not report["digests"]:
+            raise ValueError("report has no frame digests; export refused")
+        remaining = dict(report["digests"])
         with Image.open(args.sheet) as im:
             sheet = np.asarray(im.convert("RGBA"))
+        cells = slice_sheet(sheet, spec.cell, rows, clip["frames"], start_col=clip["start"])
+
+        def bind(key: str, f: np.ndarray, tag: str) -> None:
+            digest = frame_digest(f)
+            if remaining.pop(key, None) != digest:
+                raise ValueError(f"sheet {tag} does not match the validated report (digest {digest}); export refused")
+
+        for d in rows:
+            if d in prof.directions.generate:
+                for i, f in enumerate(cells[d]):
+                    bind(f"{d}_{i}", f, f"{d} frame {i}")
+        for d, src in prof.directions.mirror_animations.items():
+            for i, f in enumerate(cells[d]):
+                if not np.array_equal(f, cells[src][i][:, ::-1]):
+                    raise ValueError(f"sheet {d} frame {i} does not mirror {src}; export refused")
+                if (key := f"{d}_{i}") in remaining:
+                    bind(key, f, f"{d} frame {i}")
+        cw, ch = spec.cell
+        stills = {}
+        for r, d in enumerate(rows):
+            f = sheet[r * ch : (r + 1) * ch, :cw]
+            if (f[..., 3] > 0).any():
+                bind(f"still_{d}", f, f"still {d}")
+                stills[d] = f
+        if remaining:
+            raise ValueError(f"report digest {next(iter(remaining))} has no matching sheet cell; export refused")
+        if (sheet[:, cw : clip["start"] * cw, 3] > 0).any():
+            raise ValueError("sheet has populated columns outside --clip and still column 0; export refused")
+        still_report = validate(
+            {},
+            stills=stills,
+            cell=spec.cell,
+            frames=0,
+            directions=rows,
+            palette=load_palette(prof),
+            foot_y=spec.foot_y,
+            anchor_x=spec.anchor_x,
+            padding=spec.padding,
+            limits=spec.limits,
+            max_colours=prof.palette.max_colors_per_cell,
+            loop=False,
+            anchor_mode=spec.anchor_mode,
+            fringe_tolerance=prof.alpha.fringe_tolerance,
+        )
+        if not still_report["pass"]:
+            raise ValueError(f"{still_report['failures'][0]}; export refused")
         prov = json.loads(args.provenance.read_text()) if args.provenance else {}
         if not isinstance(prov, dict):
             raise ValueError("provenance must be a JSON object")
-        prov["validator"] = {"pass": True, "report_sha256": hashlib.sha256(report_bytes).hexdigest()}
+        prov["validator"] = {
+            "pass": True,
+            "report_sha256": hashlib.sha256(report_bytes).hexdigest(),
+            "character": args.character,
+            "animation": clip["name"],
+            "frames_bound": len(report["digests"]),
+        }
         paths = export_godot(
             sheet,
             character=args.character,
             cell=(args.cell, args.cell),
-            rows=args.rows.split(","),
-            clips=[_parse_clip(c) for c in args.clip],
+            rows=rows,
+            clips=[clip],
             out_dir=args.out,
             provenance=prov,
-            forbid_under=args.forbid_under,
+            forbid_under=args.forbid_under or prof.export.godot_project,
             anim_name=args.anim_name,
         )
     except (OSError, ValueError) as e:  # ValueError covers bad clips, bad JSON, refusals
@@ -281,6 +353,10 @@ def validate_frames(args: argparse.Namespace) -> int:
     }
     try:
         clips, files = read_frames(args.frames_dir, prof.directions.order)
+        stills, still_files = read_stills(args.stills, prof.directions.order) if args.stills else ({}, [])
+        if args.stills and not still_files:
+            raise ValueError(f"{args.stills}: no still_<direction>.png cells")
+        files += still_files
         registration = json.loads(args.registration.read_text()) if args.registration else None
         if args.registration and (
             not isinstance(registration, dict)
@@ -295,7 +371,13 @@ def validate_frames(args: argparse.Namespace) -> int:
         ):
             raise ValueError("registration must map clip directions to per-frame non-negative clipped_px counts")
         rep = validate(
-            clips, palette=pal, limits=spec.limits, limits_source=spec.limits_source, registration=registration, **kw
+            clips,
+            stills=stills,
+            palette=pal,
+            limits=spec.limits,
+            limits_source=spec.limits_source,
+            registration=registration,
+            **kw,
         )
         if not args.registration:
             rep["warnings"].append("registration provenance not supplied: clipping off the cell cannot be checked")

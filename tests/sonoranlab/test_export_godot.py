@@ -13,7 +13,6 @@ import numpy as np
 import pytest
 from PIL import Image
 
-from sonoranlab.cli import main
 from sonoranlab.export.godot import animation_specs, export_godot
 
 REPO = Path(__file__).resolve().parents[2]
@@ -171,57 +170,6 @@ def test_refuses_inside_the_game_and_never_overwrites(tmp_path):
 def test_custom_anim_name(tmp_path):
     paths = export(make_sheet(), tmp_path, anim_name="{direction}/{animation}")
     assert '&"north/run"' in Path(paths["tres"]).read_text()
-
-
-def test_cli(tmp_path, capsys):
-    png = tmp_path / "sheet.png"
-    Image.fromarray(make_sheet(), "RGBA").save(png)
-    prov = tmp_path / "prov.json"
-    prov.write_text(json.dumps({"job": "cli", "validator": {"pass": False}}))
-    report = tmp_path / "report.json"
-    report.write_text(json.dumps({"pass": True}))
-    argv = ["export", "godot", str(png), "--character", "toy", "--cell", "16", "--rows", ",".join(ROWS)]
-    argv += ["--report", str(report)]
-    argv += ["--clip", "run:1:4:10:loop", "--clip", "cast:5:3:6:once:1", "--out", str(tmp_path / "o")]
-    assert main([*argv, "--provenance", str(prov)]) == 0
-    meta = json.loads((tmp_path / "o" / "toy" / "toy.sonoranlab.json").read_text())
-    assert meta["provenance"] == {
-        "job": "cli",
-        "validator": {"pass": True, "report_sha256": hashlib.sha256(report.read_bytes()).hexdigest()},
-    }
-    assert meta["characters_json_entry"]["clips"][1]["loop_from"] == 1
-    assert main(argv) == 2  # second run into the same dir: refuses
-    assert "never overwrite" in capsys.readouterr().err
-    assert main([*argv[:-2], "--out", str(tmp_path / "p"), "--clip", "bad"]) == 2
-    assert main(["export", "godot", str(tmp_path / "missing.png"), *argv[3:-2], "--out", str(tmp_path / "q")]) == 2
-
-
-@pytest.mark.parametrize("report_text", [None, '{"pass": false}', "{}", '{"pass": 1}', '{"pass": "true"}', "[]", "bad"])
-def test_cli_requires_passing_report(tmp_path, capsys, report_text):
-    png, out = tmp_path / "sheet.png", tmp_path / "out"
-    Image.fromarray(make_sheet()).save(png)
-    args = [
-        "export",
-        "godot",
-        str(png),
-        "--character",
-        "toy",
-        "--cell",
-        "16",
-        "--rows",
-        ",".join(ROWS),
-        "--clip",
-        "run:1:4:10:loop",
-        "--out",
-        str(out),
-    ]
-    if report_text is not None:
-        report = tmp_path / "report.json"
-        report.write_text(report_text)
-        args += ["--report", str(report)]
-    assert main(args) == 2
-    assert "export needs a passing validator report" in capsys.readouterr().err
-    assert not out.exists()
 
 
 # --- the real engine -------------------------------------------------------------------------------------------------

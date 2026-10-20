@@ -82,7 +82,9 @@ uv run sonoranlab process RAW_DIR --profile profiles/twos-are-up.yaml \
 
 Exit 0 = PASS and exported, 1 = validator FAIL (report and contact sheet written,
 no export), 2 = usage/config/input error. `--sheet` takes one raw sheet in the
-game layout instead of a frame dir. Every parameter comes from the profile; the job
+game layout instead of a frame dir. Column-0 stills are validated and preserved
+at scale 1; HD sheets need transparent column 0. Populated column 0 and `--stills`
+cannot be combined. Every parameter comes from the profile; the job
 dir layout is in [docs/01](docs/01-architecture.md), the export in
 [docs/09](docs/09-godot-export.md). Nothing runs on the network, ComfyUI or a GPU.
 

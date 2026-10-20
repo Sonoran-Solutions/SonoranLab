@@ -249,13 +249,14 @@ def test_usage_and_input_errors_exit_2(tmp_path, toy, capsys, case, msg):
 
 def test_raw_sheet_input_matches_frame_dir(tmp_path, toy):
     raw, prof = toy
-    sheet = np.zeros((len(ORDER) * CELL * SCALE, 3 * CELL * SCALE, 3), np.uint8)
-    sheet[:] = (255, 0, 255)
+    sheet = np.zeros((len(ORDER) * CELL * SCALE, 3 * CELL * SCALE, 4), np.uint8)
     e = CELL * SCALE
     for r, d in enumerate(ORDER):
         for i in range(2):
             if d in GEN:
-                sheet[r * e : (r + 1) * e, (1 + i) * e : (2 + i) * e] = np.asarray(Image.open(raw / f"{d}_{i}.png"))
+                sheet[r * e : (r + 1) * e, (1 + i) * e : (2 + i) * e] = np.asarray(
+                    Image.open(raw / f"{d}_{i}.png").convert("RGBA")
+                )
     (tmp_path / "sheets").mkdir()
     Image.fromarray(sheet).save(tmp_path / "sheets" / "raw_sheet.png")
     assert process(tmp_path / "sheets" / "raw_sheet.png", prof, tmp_path / "s", "--sheet") == 0
@@ -265,6 +266,65 @@ def test_raw_sheet_input_matches_frame_dir(tmp_path, toy):
     assert (tmp_path / "s" / "raw" / "raw_sheet.png").is_file()
     assert json.loads((tmp_path / "s" / "manifest.json").read_text())["params"]["input"]["start_col"] == 1
     assert process(tmp_path / "sheets" / "raw_sheet.png", prof, tmp_path / "t", "--sheet", "--start-col", "0") == 2
+
+
+@pytest.mark.parametrize("rule", ["palette", "semi_alpha", "touches_edge"])
+def test_invalid_still_fails_without_export(tmp_path, toy, capsys, rule):
+    raw, prof = toy
+    stills = stills_dir(tmp_path)
+    path = stills / "still_south.png"
+    f = np.asarray(Image.open(path)).copy()
+    if rule == "palette":
+        f[5, 11] = (1, 2, 3, 255)
+    elif rule == "semi_alpha":
+        f[5, 11, 3] = 128
+    else:
+        f[1, 11] = (*PALETTE[0], 255)
+    Image.fromarray(f).save(path)
+    job = tmp_path / "job"
+    assert process(raw, prof, job, "--stills", str(stills)) == 1
+    assert f"{rule}: still south" in capsys.readouterr().err
+    rep = json.loads((job / "report.json").read_text())
+    assert not rep["pass"] and any(m.startswith(f"{rule}: still south") for m in rep["failures"])
+    assert (job / "contact.png").is_file() and (job / "manifest.json").is_file()
+    assert not (job / "export").exists()
+
+
+def test_still_size_error_remains_preflight(tmp_path, toy, capsys):
+    raw, prof = toy
+    stills = stills_dir(tmp_path)
+    Image.new("RGBA", (CELL + 1, CELL)).save(stills / "still_south.png")
+    assert process(raw, prof, tmp_path / "job", "--stills", str(stills)) == 2
+    assert "still is 25x24" in capsys.readouterr().err and not (tmp_path / "job").exists()
+
+
+@pytest.mark.parametrize("case", ["roundtrip", "bad_still", "hd", "two_sources"])
+def test_sheet_column_zero_stills(tmp_path, case, capsys):
+    prof = toy_profile(tmp_path)
+    clips = {d: [figure(d, i) for i in range(2)] for d in GEN}
+    stills = {d: figure("south", 0) for d in ORDER}
+    if case == "bad_still":
+        stills["south"] = stills["south"].copy()
+        stills["south"][10, 11] = (1, 2, 3, 255)
+    sheet = pipeline.pack_sheet(clips, (CELL, CELL), ORDER, 2, mirror=MIRROR, stills=stills)
+    if case == "hd":
+        sheet = sheet.repeat(2, 0).repeat(2, 1)
+    path, job = tmp_path / "still_south.png", tmp_path / "job"
+    Image.fromarray(sheet).save(path)
+    extra = ["--stills", str(stills_dir(tmp_path))] if case == "two_sources" else []
+    code = {"roundtrip": 0, "bad_still": 1, "hd": 2, "two_sources": 2}[case]
+    assert process(path, prof, job, "--sheet", *extra) == code
+    err = capsys.readouterr().err
+    if case == "roundtrip":
+        exported = np.asarray(Image.open(job / "export/hero/hero.png").convert("RGBA"))
+        assert np.array_equal(exported[:, :CELL], sheet[:, :CELL])
+        rep = json.loads((job / "report.json").read_text())
+        assert rep["pass"] and len(rep["stills"]) == len(ORDER)
+    elif case == "bad_still":
+        assert "palette: still south" in err and not (job / "export").exists()
+    else:
+        assert ("HD scale 2" if case == "hd" else "two sources of stills") in err
+        assert not job.exists()
 
 
 def test_process_frame_matches_processing_v1(tmp_path):

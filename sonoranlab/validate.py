@@ -22,6 +22,7 @@ Diagnostics are reported, never gated. `pass` is True iff `failures` is empty.
 
 from __future__ import annotations
 
+import hashlib
 import re
 from collections.abc import Mapping, Sequence
 from functools import reduce
@@ -43,6 +44,12 @@ CHAIN_NOTE = (
     "they are not proof that the raw poses were consistent"
 )
 F2_NOTE = "foot_slide: not computed or gated for anchor_mode bbox_bottom (ADR-0008 F2); hover warnings instead"
+
+
+def frame_digest(frame: np.ndarray) -> str:
+    """Bind the canvas and RGBA pixels independently of their PNG encoding."""
+    h, w, c = frame.shape
+    return hashlib.sha256(f"{h}x{w}x{c}:".encode() + frame.tobytes()).hexdigest()
 
 
 def bbox(mask: np.ndarray) -> list[int] | None:
@@ -117,6 +124,7 @@ def validate(
     gate_bbox_drift: bool = True,
     fringe_tolerance: int = 0,
     mirror: Mapping[str, str] | None = None,
+    stills: dict[str, np.ndarray] | None = None,
     accessory: Mapping[str, Any] | None = None,
     pre: Mapping[str, list[dict]] | None = None,
     registration: Mapping[str, dict] | None = None,
@@ -126,6 +134,7 @@ def validate(
     order (pass the profile's sheet order). `limits` has LIMIT_KEYS (and HOVER_KEYS for bbox_bottom) as attributes;
     none may be None. `directions` are the rows the clip must have (`frames` each); every row in `clips` is checked.
     `mirror` {mirrored: source}: when both rows are present the mirrored frames must equal the source flipped.
+    `stills` are final-resolution cells; only the shared cell rules apply (no clip/anchor rules).
     `accessory` {"colours": [[r, g, b], ...], "min_pixels": 1, "min_share": 0.9}: warn when fewer frames show it.
     `pre` (per frame) and `registration` (per direction) are the chain's records: copied into the report, and a
     registration with clipped_px is a failure."""
@@ -142,11 +151,62 @@ def validate(
     acc = None
     if accessory:
         acc = {tuple(c) for c in accessory["colours"]}, accessory.get("min_pixels", 1), accessory.get("min_share", 0.9)
+
+    def check_cell(f: np.ndarray, b: list[int] | None, tag: str) -> dict:
+        a = f[..., 3]
+        opaque = a == 255
+        px = [tuple(c) for c in f[opaque, :3].tolist()]
+        fringe = sum(tuple(c) not in palset for c in f[border(opaque), :3].tolist())
+        edges = []
+        if b:
+            hits = (b[0] < padding, b[1] < padding, b[2] > w - 1 - padding, b[3] > h - 1 - padding)
+            edges = [n for n, hit in zip(EDGES, hits, strict=True) if hit]
+        r: dict = {
+            "ok": True,
+            "issues": [],
+            "canvas": list(f.shape[1::-1]),
+            "bbox": b,
+            "opaque_pixels": int(opaque.sum()),
+            "colours": len(set(px)),
+            "off_palette_after": sum(c not in palset for c in px),
+            "fringe_pixels": fringe,
+            "semi_alpha_pixels": int(((a > 0) & (a < 255)).sum()),
+            "touches_edge": edges or False,
+        }
+        issues = r["issues"]
+        if r["canvas"] != [w, h]:
+            issues.append(f"canvas: {tag} is {r['canvas'][0]}x{r['canvas'][1]}, expected {w}x{h}")
+        if b is None:
+            issues.append(f"empty: {tag} has no opaque pixels")
+        if r["off_palette_after"]:
+            issues.append(f"palette: {tag} has {r['off_palette_after']} off-palette pixels")
+        if fringe > fringe_tolerance:
+            issues.append(
+                f"fringe: {tag} has {fringe} off-palette silhouette-border pixels, tolerance {fringe_tolerance}"
+            )
+        if r["semi_alpha_pixels"]:
+            issues.append(f"semi_alpha: {tag} has {r['semi_alpha_pixels']} semi-transparent pixels")
+        if r["colours"] > max_colours:
+            issues.append(f"colours: {tag} uses {r['colours']} colours, limit {max_colours}")
+        if edges:
+            issues.append(f"touches_edge: {tag} {'/'.join(edges)} edge inside padding {padding}, clipping")
+        r["ok"] = not issues
+        return r
+
     failures: list[str] = []
     warnings: list[str] = []
     diagnostics: list[dict] = []
     rows: list[dict] = []
     cycles: dict[str, dict] = {}
+    still_rows: list[dict] = []
+    digests = {}
+    for d, f in (stills or {}).items():
+        if d not in set(directions) | set(mirror or {}):
+            raise ValueError(f"still direction {d!r} is not in the profile direction order")
+        r = {"direction": d, **check_cell(f, bbox(f[..., 3] > 0), f"still {d}")}
+        still_rows.append(r)
+        failures += r["issues"]
+        digests[f"still_{d}"] = frame_digest(f)
     for d in directions:
         if (n := len(clips.get(d, []))) != frames:
             failures.append(f"frame_count: {d} has {n} frames, expected {frames}")
@@ -162,16 +222,9 @@ def validate(
         clipped = ((registration or {}).get(d) or {}).get("clipped_px") or []
         recs = []
         for i, (f, b, cb) in enumerate(zip(fs, boxes, cores, strict=True)):
+            digests[f"{d}_{i}"] = frame_digest(f)
             idx = len(rows)
             tag = f"frame {idx} ({d}/{i})"
-            a = f[..., 3]
-            opaque = a == 255
-            px = [tuple(c) for c in f[opaque, :3].tolist()]
-            fringe = sum(tuple(c) not in palset for c in f[border(opaque), :3].tolist())
-            edges = []
-            if b:
-                hits = (b[0] < padding, b[1] < padding, b[2] > w - 1 - padding, b[3] > h - 1 - padding)
-                edges = [n for n, hit in zip(EDGES, hits, strict=True) if hit]
             contact = b is not None and lows[i] >= clip_low - 1
             fx = foot_x(f, lows[i]) if b else None
             slide = foot_slide(anchor_mode, fx, anchor_x) if contact else None
@@ -182,43 +235,18 @@ def validate(
                 "index": idx,
                 "direction": d,
                 "frame": i,
-                "ok": True,
-                "issues": [],
-                "canvas": list(f.shape[1::-1]),
-                "bbox": b,
+                **check_cell(f, b, tag),
                 "foot_y": lows[i],
                 "contact": contact,
                 "foot_x": fx,
                 "foot_slide": slide,
                 "foot_body": body,
                 "bbox_drift": drift,
-                "opaque_pixels": int(opaque.sum()),
-                "colours": len(set(px)),
-                "off_palette_after": sum(c not in palset for c in px),
-                "fringe_pixels": fringe,
-                "semi_alpha_pixels": int(((a > 0) & (a < 255)).sum()),
-                "touches_edge": edges or False,
             }
             if acc:
-                r["accessory_pixels"] = sum(c in acc[0] for c in px)
+                r["accessory_pixels"] = sum(tuple(c) in acc[0] for c in f[f[..., 3] == 255, :3].tolist())
             r["pre"] = dict(pre[d][i]) if pre and d in pre and i < len(pre[d]) else None
             issues = r["issues"]
-            if r["canvas"] != [w, h]:
-                issues.append(f"canvas: {tag} is {r['canvas'][0]}x{r['canvas'][1]}, expected {w}x{h}")
-            if b is None:
-                issues.append(f"empty: {tag} has no opaque pixels")
-            if r["off_palette_after"]:
-                issues.append(f"palette: {tag} has {r['off_palette_after']} off-palette pixels")
-            if fringe > fringe_tolerance:
-                issues.append(
-                    f"fringe: {tag} has {fringe} off-palette silhouette-border pixels, tolerance {fringe_tolerance}"
-                )
-            if r["semi_alpha_pixels"]:
-                issues.append(f"semi_alpha: {tag} has {r['semi_alpha_pixels']} semi-transparent pixels")
-            if r["colours"] > max_colours:
-                issues.append(f"colours: {tag} uses {r['colours']} colours, limit {max_colours}")
-            if edges:
-                issues.append(f"touches_edge: {tag} {'/'.join(edges)} edge inside padding {padding}, clipping")
             if slide is not None and slide > max_slide:
                 issues.append(
                     f"foot_slide: {tag} foot {slide:g}px from anchor x {anchor_x} ({body:g}px from the body core), "
@@ -327,6 +355,8 @@ def validate(
             "ok": all(len(clips.get(d, [])) == frames for d in directions),
         },
         "frames": rows,
+        "stills": still_rows,
+        "digests": digests,
         "cycle": {
             k: cmax(k)
             for k in ("foot_slide_max", "bbox_drift_max", "opaque_area_cv", "loop_closure_delta", "loop_closure_ratio")
@@ -343,6 +373,19 @@ def validate(
     }
     assert report["pass"] is (not report["failures"]), "a report with failures can never pass"
     return report
+
+
+def read_stills(stills_dir: Path, order: Sequence[str]) -> tuple[dict[str, np.ndarray], list[Path]]:
+    """Read final-resolution still_<direction>.png cells, refusing unknown directions."""
+    stills = {}
+    paths = sorted(Path(stills_dir).glob("still_*.png"))
+    for p in paths:
+        d = p.stem.removeprefix("still_")
+        if d not in order:
+            raise ValueError(f"{p}: still direction {d!r} is not in the profile direction order")
+        with Image.open(p) as im:
+            stills[d] = np.asarray(im.convert("RGBA")).copy()
+    return stills, paths
 
 
 def read_frames(frames_dir: Path, order: Sequence[str]) -> tuple[dict[str, list[np.ndarray]], list[Path]]:

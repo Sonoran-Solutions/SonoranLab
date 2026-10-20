@@ -239,6 +239,7 @@ def run(
             raise PipelineError(f"--start-col {start_col}: must be >= 0")
         with Image.open(raw) as im:
             w, h = im.size
+            sheet_px = np.asarray(im.convert("RGBA"))
         cols = start_col + clip.frames
         if h % len(order) or w % cols:
             raise PipelineError(
@@ -246,6 +247,14 @@ def run(
                 f"(profile directions.order; clip {anim} = {clip.frames} frames from column {start_col})"
             )
         scale = _scale((w // cols, h // len(order)), spec.cell, f"{raw.name} cell")
+        if start_col > 0 and (sheet_px[:, : spec.cell[0] * scale, 3] > 0).any():
+            if stills is not None:
+                raise PipelineError("--sheet column 0 and --stills: two sources of stills")
+            if scale > 1:
+                raise PipelineError(
+                    f"--sheet column 0 holds still poses at HD scale {scale}; the chain has no still-processing "
+                    "policy: pass final-resolution stills with --stills, or blank column 0"
+                )
         sources[raw.name] = raw
     else:
         if not raw.is_dir():
@@ -289,12 +298,22 @@ def run(
     rawdir = job / "raw"
     t_ingest = time.perf_counter()
 
+    still_px = {}
+    for n in still_names:
+        with Image.open(rawdir / n) as im:
+            still_px[n.removeprefix("still_").removesuffix(".png")] = np.asarray(im.convert("RGBA")).copy()
     if sheet:
         with Image.open(rawdir / raw.name) as im:
+            sheet_px = np.asarray(im.convert("RGBA"))
             cells = slice_sheet(
-                np.asarray(im.convert("RGBA")), (spec.cell[0] * scale, spec.cell[1] * scale), order, clip.frames,
+                sheet_px, (spec.cell[0] * scale, spec.cell[1] * scale), order, clip.frames,
                 start_col=start_col,
             )  # fmt: skip
+        if start_col > 0 and scale == 1:
+            for r, d in enumerate(order):
+                f = sheet_px[r * spec.cell[1] : (r + 1) * spec.cell[1], : spec.cell[0]]
+                if (f[..., 3] > 0).any():
+                    still_px[d] = f.copy()
         frames_in = {d: [Image.fromarray(f, "RGBA") for f in cells[d]] for d in gen}
     else:
         frames_in = {d: [Image.open(p) for p in ps] for d, ps in read_frame_dir(rawdir, gen).items()}
@@ -364,6 +383,7 @@ def run(
     try:
         rep = validate(
             registered,
+            stills=still_px,
             cell=spec.cell,
             frames=clip.frames,
             directions=gen,
@@ -401,10 +421,6 @@ def run(
         clips = [{"name": anim, "start": 1, "frames": clip.frames, "fps": clip.fps, "loop": clip.loop}]
         if clip.loop_from is not None:
             clips[0]["loop_from"] = clip.loop_from
-        still_px = {}
-        for n in still_names:
-            with Image.open(rawdir / n) as im:
-                still_px[n.removeprefix("still_").removesuffix(".png")] = np.asarray(im.convert("RGBA")).copy()
         try:
             packed = pack_sheet(
                 registered, spec.cell, order, clip.frames, mirror=dict(mirror), stills=still_px or None, start_col=1,

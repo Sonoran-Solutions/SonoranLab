@@ -5,6 +5,7 @@ the calibrated Phase 1 validator (benchmark/tools/process.py). The real-data reg
 sets from SONORANLAB_WORK (default ~/sonoranlab-work) and skips when they are absent.
 """
 
+import hashlib
 import json
 import os
 import re
@@ -19,7 +20,8 @@ from PIL import Image
 
 from sonoranlab.cli import main
 from sonoranlab.profile import load_palette, load_profile, sha256_file
-from sonoranlab.validate import foot_slide, opening, read_frames, validate
+from sonoranlab.slice import pack_sheet
+from sonoranlab.validate import foot_slide, frame_digest, opening, read_frames, validate
 
 REPO = Path(__file__).resolve().parents[2]
 FIX = REPO / "tests" / "fixtures" / "dyl83"
@@ -368,6 +370,189 @@ def test_opening_removes_thin_parts():
     m[2:9, 2:8] = True
     m[5, 8:12] = True  # 1 px arm
     assert np.array_equal(opening(m), np.pad(np.ones((7, 6), bool), ((2, 3), (2, 4))))
+
+
+@pytest.mark.parametrize("case", ["clean", "off_palette", "semi_alpha", "touches_edge", "canvas", "colours", "fringe"])
+def test_stills_share_cell_rules_without_clip_rules(case):
+    _, clips, _ = run_case(case)
+    still = clips["east"][2 if case in ("touches_edge", "colours", "fringe") else 1]
+    rep = validate(load("clean"), stills={"east": still}, **KW)
+    assert rep["pass"] is (case == "clean")
+    assert len(rep["frames"]) == 8 and len(rep["stills"]) == 1
+    assert all(": still east " in m for m in rep["failures"])
+    assert rep["stills"][0]["ok"] is rep["pass"]
+    assert rep["digests"]["still_east"] == frame_digest(still)
+    assert len(rep["digests"]) == 9
+
+
+def test_empty_still_and_unknown_direction():
+    rep = validate(load("clean"), stills={"south": np.zeros((24, 24, 4), np.uint8)}, **KW)
+    assert rep["failures"] == ["empty: still south has no opaque pixels"]
+    with pytest.raises(ValueError, match="still direction 'unknown'"):
+        validate(load("clean"), stills={"unknown": load("clean")["south"][0]}, **KW)
+
+
+def test_still_does_not_need_foot_line_or_accessory():
+    still = np.zeros((24, 24, 4), np.uint8)
+    still[4:6, 4:6] = (*M.SKIN, 255)
+    rep = validate(load("clean"), stills={"south": still}, **KW)
+    assert rep["pass"] and not rep["warnings"]
+    assert frame_digest(still) == hashlib.sha256(b"24x24x4:" + still.tobytes()).hexdigest()
+    assert frame_digest(still) != frame_digest(still.reshape(12, 48, 4))
+
+
+@pytest.mark.parametrize("case, exit_code", [("clean", 0), ("off_palette", 1)])
+def test_cli_validate_stills(profile, tmp_path, capsys, case, exit_code):
+    path = frames_dir(tmp_path, "clean")
+    stills = tmp_path / "stills"
+    stills.mkdir()
+    Image.fromarray(load(case)["east"][1]).save(stills / "still_west.png")
+    assert (
+        main(
+            [
+                "validate",
+                str(path),
+                "--profile",
+                str(profile),
+                "--character",
+                "hero",
+                "--anim",
+                "idle",
+                "--stills",
+                str(stills),
+            ]
+        )
+        == exit_code
+    )
+    rep = json.loads(capsys.readouterr().out)
+    assert rep["stills"][0]["direction"] == "west" and "still_west" in rep["digests"]
+    assert "still_west.png" in rep["provenance"]["inputs"]
+
+
+@pytest.fixture
+def bound_export(profile, tmp_path):
+    clips = load("clean")
+    stills = {"west": clips["south"][0]}
+    report = {**validate(clips, stills=stills, mirror={"west": "east"}, **KW), "character": "hero", "animation": "idle"}
+    assert report["pass"]
+    sheet = pack_sheet(clips, (24, 24), ["west", "south", "east"], 4, mirror={"west": "east"}, stills=stills)
+    png, rep = tmp_path / "sheet.png", tmp_path / "report.json"
+    Image.fromarray(sheet).save(png)
+    rep.write_text(json.dumps(report))
+    argv = [
+        "export",
+        "godot",
+        str(png),
+        "--profile",
+        str(profile),
+        "--character",
+        "hero",
+        "--cell",
+        "24",
+        "--rows",
+        "west,south,east",
+        "--clip",
+        "idle:1:4:5:loop",
+        "--report",
+        str(rep),
+        "--out",
+        str(tmp_path / "out"),
+    ]
+    return argv, sheet, report, png, rep
+
+
+def test_cli_export_bound_asset(bound_export, tmp_path, capsys):
+    argv, _, report, _, rep = bound_export
+    prov = tmp_path / "prov.json"
+    prov.write_text(json.dumps({"job": "cli", "validator": {"pass": False}}))
+    assert main([*argv, "--provenance", str(prov)]) == 0
+    meta = json.loads((tmp_path / "out/hero/hero.sonoranlab.json").read_text())
+    assert meta["provenance"] == {
+        "job": "cli",
+        "validator": {
+            "pass": True,
+            "report_sha256": hashlib.sha256(rep.read_bytes()).hexdigest(),
+            "character": "hero",
+            "animation": "idle",
+            "frames_bound": len(report["digests"]),
+        },
+    }
+    assert main(argv) == 2
+    assert "never overwrite" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    "case, message",
+    [
+        ("pixel", "sheet east frame 3 does not match"),
+        ("character", "report character"),
+        ("animation", "report animation"),
+        ("missing_character", "report character"),
+        ("missing_animation", "report animation"),
+        ("old_report", "report character"),
+        ("no_digests", "no frame digests"),
+        ("mirror", "sheet west frame 1 does not mirror east"),
+        ("still", "sheet still west does not match"),
+        ("extra_digest", "report digest east_4 has no matching"),
+        ("rows", "must match the profile"),
+        ("cell", "profile says [24, 24]"),
+        ("multi_clip", "single --clip"),
+        ("game", "inside the shipped game"),
+    ],
+)
+def test_cli_export_refuses_unbound_assets(bound_export, tmp_path, capsys, case, message):
+    argv, sheet, report, png, rep = bound_export
+    if case == "pixel":
+        sheet[2 * 24 + 10, 4 * 24 + 12] = (*M.SKIN, 255)
+        # Guarantee one changed pixel, regardless of the fixture's colour at that location.
+        sheet[2 * 24 + 10, 4 * 24 + 12, 0] ^= 1
+    elif case == "mirror":
+        sheet[10, 2 * 24 + 12, 0] ^= 1
+    elif case == "still":
+        sheet[10, 12, 0] ^= 1
+    elif case in ("character", "animation"):
+        report[case] = "another"
+    elif case.startswith("missing_"):
+        report.pop(case.removeprefix("missing_"))
+    elif case == "old_report":
+        report = {"pass": True}
+    elif case == "no_digests":
+        report.pop("digests")
+    elif case == "extra_digest":
+        report["digests"]["east_4"] = report["digests"]["east_0"]
+    elif case in ("rows", "cell"):
+        argv[argv.index("--" + case) + 1] = "east,south,west" if case == "rows" else "16"
+    elif case == "multi_clip":
+        argv += ["--clip", "cast:1:4:5:once"]
+    elif case == "game":
+        argv[-1] = str(tmp_path / "game/out")
+    Image.fromarray(sheet).save(png)
+    rep.write_text(json.dumps(report))
+    assert main(argv) == 2
+    assert message in capsys.readouterr().err
+    assert not (tmp_path / "out").exists() and not (tmp_path / "game/out").exists()
+
+
+@pytest.mark.parametrize("report_text", [None, '{"pass": false}', "{}", '{"pass": 1}', '{"pass": "true"}', "[]", "bad"])
+def test_cli_export_requires_passing_report(bound_export, tmp_path, capsys, report_text):
+    argv, _, _, _, rep = bound_export
+    if report_text is None:
+        i = argv.index("--report")
+        del argv[i : i + 2]
+    else:
+        rep.write_text(report_text)
+    assert main(argv) == 2
+    assert "export needs a passing validator report" in capsys.readouterr().err
+    assert not (tmp_path / "out").exists()
+
+
+def test_cli_export_requires_profile(bound_export):
+    argv, *_ = bound_export
+    i = argv.index("--profile")
+    del argv[i : i + 2]
+    with pytest.raises(SystemExit) as error:
+        main(argv)
+    assert error.value.code == 2
 
 
 # ---------------------------------------------------------------- real Phase 1 data (private; skipped when absent)
