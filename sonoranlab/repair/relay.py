@@ -109,6 +109,9 @@ def _verify_queue(mailbox: int, name: str, queue: int) -> None:
         )
         entries = set(os.listdir(queue))
         require(not entries.intersection(_MARKERS), "unsafe_mailbox")
+        # A queue must never be (part of) a Git repository: any .git entry, or a bare-repository layout.
+        bare = {"HEAD", "objects", "refs"} <= entries
+        require(".git" not in entries and not bare, "unsafe_mailbox")
         require(
             not (
                 {"raw", "processed"} <= entries

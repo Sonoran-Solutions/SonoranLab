@@ -391,3 +391,21 @@ def test_reuse_allows_worker_files_but_needs_marker(repair, tmp_path, monkeypatc
     with pytest.raises(Denied, match="invalid_mailbox"):
         run_relay(repair, agent)  # no marker: not a mailbox this relay created
     assert not (agent / ".sonoranlab-mailbox").exists()
+
+
+@pytest.mark.parametrize("queue", ["outbox", "processing", "inbox"])
+@pytest.mark.parametrize("kind", ["checkout", "bare"])
+def test_git_repository_in_a_queue_is_refused_before_broker_contact(repair, tmp_path, monkeypatch, queue, kind):
+    """Re-audit: a queue that is a Git repository (git init before reuse) must not be relayed into or mutated."""
+    import subprocess
+
+    agent = tmp_path / "worker"
+    create_mailbox(repair, agent, monkeypatch)
+    args = ["git", "init", "-q"] + (["--bare"] if kind == "bare" else []) + [str(agent / queue)]
+    subprocess.run(args, check=True)
+    (agent / "outbox" / "query.json").write_text(json.dumps({"action": "status"}))
+    monkeypatch.setattr(module, "request", lambda *a: pytest.fail("broker must not be contacted"))
+    before = snapshot(agent)
+    result = module.relay(repair, agent)
+    assert result["ok"] is False and result["error"] == "unsafe_mailbox", result
+    assert snapshot(agent) == before
