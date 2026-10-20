@@ -130,6 +130,52 @@ def build_parser() -> argparse.ArgumentParser:
         help="reach ComfyUI through `podman exec` (the `env/comfy.sh up --offline` container, e.g. sonoranlab-comfy)",
     )
     gn.set_defaults(func=generate_cmd)
+
+    sw = verbs.add_parser("sweep", help="plan generation or rank clip/loop candidates").add_subparsers(
+        dest="action", required=True
+    )
+    sr = sw.add_parser("rank", help="score directions, assemble the best and validate the full set")
+    sr.add_argument("--profile", type=Path, required=True)
+    sr.add_argument("--character", required=True)
+    sr.add_argument("--anim", required=True)
+    sr.add_argument("--attempts", type=Path, nargs="+", required=True)
+    sr.add_argument("--carrier", type=Path, required=True, help="HD <direction>_<i>.png frames for other directions")
+    sr.add_argument("--out", type=Path, required=True)
+    sr.add_argument("--windows", choices=("default", "steady"), default="default")
+    sr.set_defaults(func=sweep_rank_cmd)
+    sp = sw.add_parser("plan", help="write Track E requests without running generation")
+    sp.add_argument("--character", required=True)
+    sp.add_argument("--anim", required=True)
+    sp.add_argument("--directions", nargs="+", required=True)
+    sp.add_argument("--seeds", nargs="+", type=int, required=True)
+    sp.add_argument("--stills-dir", type=Path, required=True)
+    sp.add_argument("--out", type=Path, required=True)
+    sp.add_argument("--background", default="#808080")
+    sp.set_defaults(func=sweep_plan_cmd)
+    sg = sw.add_parser("run", help="run requests serially through the run-window guard")
+    sg.add_argument("--requests", nargs="+", type=Path, required=True)
+    sg.add_argument(
+        "--need-gib", type=float, default=None, help="run-window GiB; default is the per-track minimum (E 40 / C 60)"
+    )
+    sg.add_argument("--repo", type=Path, default=Path(__file__).resolve().parent.parent)
+    sg.add_argument("--exec", dest="exec_container", metavar="CONTAINER")
+    sg.set_defaults(func=sweep_run_cmd)
+
+    rv = verbs.add_parser("review", help="record human production review").add_subparsers(dest="action", required=True)
+    rr = rv.add_parser("record", help="exclusively write review.json in a technically passing job")
+    rr.add_argument("job", type=Path)
+    rr.add_argument("--verdict", choices=("pass", "fail"), required=True)
+    rr.add_argument("--reviewer", required=True)
+    rr.add_argument("--cleanup-minutes", type=float)
+    rr.add_argument("--started", required=True)
+    rr.add_argument("--ended", required=True)
+    rr.add_argument("--notes", default="")
+    rr.add_argument("--supersedes", type=Path, help="earlier review file this replaces (move it aside first)")
+    rr.add_argument("--carried-from", help="free-text provenance of an approval given before binding existed")
+    rr.set_defaults(func=review_record_cmd)
+    rc = rv.add_parser("check", help="exit 0 only if the job is production usable (bound review still matches)")
+    rc.add_argument("job", type=Path)
+    rc.set_defaults(func=review_check_cmd)
     return p
 
 
@@ -546,6 +592,89 @@ def generate_cmd(args: argparse.Namespace) -> int:
         return 2
     print(json.dumps(res.to_json(), indent=2))
     return 0 if res.status == "ok" else 1
+
+
+def sweep_rank_cmd(args: argparse.Namespace) -> int:
+    from sonoranlab.pipeline import PipelineError
+    from sonoranlab.sweep import run_sweep
+
+    try:
+        result = run_sweep(
+            args.attempts,
+            profile=args.profile,
+            character=args.character,
+            anim=args.anim,
+            carrier=args.carrier,
+            out=args.out,
+            windows=args.windows,
+        )
+    except (OSError, ValueError, KeyError, TypeError, PipelineError) as e:
+        print(f"sweep rank: {e}", file=sys.stderr)
+        return 2
+    print(args.out / "sweep.json")
+    if not result["technical_pass"]:
+        for reason in result["final_verdict"]["failures"]:
+            print(reason, file=sys.stderr)
+    return 0 if result["technical_pass"] else 1
+
+
+def sweep_plan_cmd(args: argparse.Namespace) -> int:
+    from sonoranlab.sweep import plan_generation
+
+    try:
+        paths = plan_generation(
+            args.character, args.anim, args.directions, args.seeds, args.stills_dir, args.out, args.background
+        )
+    except (OSError, ValueError) as e:
+        print(f"sweep plan: {e}", file=sys.stderr)
+        return 2
+    print(json.dumps([str(p) for p in paths], indent=2))
+    return 0
+
+
+def sweep_run_cmd(args: argparse.Namespace) -> int:
+    from sonoranlab.sweep import run_generation
+
+    try:
+        result = run_generation(
+            args.requests, need_gib=args.need_gib, repo=args.repo, exec_container=args.exec_container
+        )
+    except (OSError, ValueError) as e:
+        print(f"sweep run: {e}", file=sys.stderr)
+        return 2
+    print(json.dumps(result, indent=2))
+    return result["stop_exit"] or int(any(r["exit"] != 0 for r in result["requests"]))
+
+
+def review_record_cmd(args: argparse.Namespace) -> int:
+    from sonoranlab.review import record_review
+
+    try:
+        path = record_review(
+            args.job,
+            verdict=args.verdict,
+            reviewer=args.reviewer,
+            cleanup_minutes=args.cleanup_minutes,
+            started_at=args.started,
+            ended_at=args.ended,
+            notes=args.notes,
+            supersedes=args.supersedes,
+            carried_from=args.carried_from,
+        )
+    except (OSError, ValueError) as e:
+        print(f"review record: {e}", file=sys.stderr)
+        return 2
+    print(path)
+    return 0
+
+
+def review_check_cmd(args: argparse.Namespace) -> int:
+    from sonoranlab.review import review_problems
+
+    problems = review_problems(args.job)
+    for msg in problems:
+        print(msg)
+    return int(bool(problems))
 
 
 def main(argv: list[str] | None = None) -> int:
