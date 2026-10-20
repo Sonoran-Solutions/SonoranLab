@@ -11,8 +11,8 @@ recorded. After that the recommendation becomes conditional: **ADOPT, narrow and
 | [#34](https://github.com/Sonoran-Solutions/SonoranLab/pull/34) | DYL-106, DYL-110, DYL-111 | this branch | main | ADR-0009 (proposed), PLAN Phase 3.5, architecture, environment, trials and gate evidence (docs only) | green |
 | [#35](https://github.com/Sonoran-Solutions/SonoranLab/pull/35) | DYL-107 | `3eb423e` | main | `sonoranlab repair prepare/export/diff/inspect/abort`, sandboxed batch interchange | green |
 | [#36](https://github.com/Sonoran-Solutions/SonoranLab/pull/36) | DYL-109 (core) | `6dc6751` | main | review-metadata hardening; independent of the pilot and to be kept under any disposition | green |
-| [#37](https://github.com/Sonoran-Solutions/SonoranLab/pull/37) | DYL-108 | `5a9acbd` | #35 | lease, sandboxed live session, bounded and verified ops, relay | see PR |
-| [#38](https://github.com/Sonoran-Solutions/SonoranLab/pull/38) | DYL-109 | `d13327f` | #37 | finalize into a child job; a fresh review is required | see PR |
+| [#37](https://github.com/Sonoran-Solutions/SonoranLab/pull/37) | DYL-108 | `5a9acbd` | #35 | lease, sandboxed live session, bounded and verified ops, relay | green |
+| [#38](https://github.com/Sonoran-Solutions/SonoranLab/pull/38) | DYL-109 | `d13327f` | #37 | finalize into a child job; a fresh review is required | green |
 
 - **Merge order:** #36 can merge at any time. Then #35 → #37 → #38. #34 is docs and has no code dependency.
 - **Integration check:** the local, unpushed tree `ce1db86` (tree `b816be38`) = #38 `d13327f` + #36 `6dc6751`. Its full-suite
@@ -27,7 +27,10 @@ recorded. After that the recommendation becomes conditional: **ADOPT, narrow and
 - **Local, Strix Halo box (Aseprite runtime, Xephyr, Godot 4.7.2 present):**
   - `tests/sonoranlab/repair`: 205 passed with 0 skipped at `d13327f`. That includes the live GUI broker session, the live batch
     round trip, Unix-socket CLI integration, the relay, and Godot finalize checks.
-  - Full suite on the integration tree: see the PR #34 description (recorded after this file was written).
+  - Full suite on the integration tree `ce1db86`: **1193 passed, 0 skipped**, ruff format/check clean.
+- Editor absent (`SONORANLAB_EDITOR_RUNTIME=/nonexistent`): core suite (`tests/sonoranlab` minus `repair/`) 848 passed; importing
+  the CLI, pipeline, validator, Godot exporter and review imports no `sonoranlab.repair` module; `repair prepare` returns
+  `editor_unavailable` (exit 1).
 - **Independent reviews:**
   - #36: Codex Astra adversarial REJECT (7 findings) → fixed → re-audit found 2 regressions → fixed → the auditor's probes rerun green.
   - #37: Claude Opus ACCEPT_WITH_NITS (no P1/P2) → all P3s and nits fixed.
