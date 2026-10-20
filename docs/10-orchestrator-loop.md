@@ -94,3 +94,34 @@ Not per-call quality (it won't, at first). Project memory: the loop compares
 every new class against approved siblings, knows which seeds and tracks
 worked for similar silhouettes, and can re-run any step from `manifest.json`.
 The hosted service forgets everything between calls.
+
+## Seed and loop-window sweeps
+
+`sonoranlab sweep plan --character C --anim run --directions north east --seeds 1 2
+--stills-dir STILLS --out PLAN` writes Track E request JSONs without generating.
+`sweep run --requests PLAN/requests/*.json [--exec CONTAINER]` runs each request
+serially through the run-window guard (40 GiB by default). Nonzero exits are
+reported and retained; guard refusal/busy exits 3/4 stop the remaining requests.
+
+`sweep rank --profile P --character C --anim A --attempts ATTEMPT [ATTEMPT ...]
+--carrier RAW --out OUT [--windows steady]` scores each clip/window with the
+other directions supplied by RAW (`<direction>_<i>.png`, HD). Default windows
+use the loop selector's pick; steady also tries every distinct start from frame
+6 with the same period and an available seam endpoint. Ranking is stable by
+pass, core failures, total failures, worst gated value/limit, thin-part pixel
+count CV, loop seam score, then generation seconds. Thin-part CV measures
+pixels removed by a 5×5 opening of the selected HD alpha masks.
+
+Every candidate job stays in `OUT/candidates/`; `OUT/sweep.json` records scores,
+chosen/rejected reasons and each unqualified direction's best blocking reasons.
+The best candidates are copied into `OUT/final/raw-set/` and the unchanged
+pipeline validates the whole set in `OUT/final/job/`. Only that final verdict
+sets `technical_pass`; ranking exits 0 for pass, 1 for validation failure, 2 for
+bad input. Sweep outputs always have `production_usable: false`.
+
+Human review is a separate, exclusive record:
+`sonoranlab review record OUT/final/job --verdict pass --reviewer NAME
+--cleanup-minutes 5 --started ISO --ended ISO [--notes TEXT]`.
+A failed technical job cannot be reviewed. A passing review needs non-negative
+cleanup time; `review.production_usable(job)` requires both technical and human
+passes. No sweep score claims production quality, and no output is overwritten.
