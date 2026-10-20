@@ -241,6 +241,24 @@ def export_godot_cmd(args: argparse.Namespace) -> int:
             raise ValueError("report character does not match --character; export refused")
         if report.get("animation") != clip["name"]:
             raise ValueError("report animation does not match --clip; export refused")
+        bound = report.get("provenance") if isinstance(report.get("provenance"), dict) else {}
+        bound = bound.get("profile") if isinstance(bound.get("profile"), dict) else {}
+        report_sha, profile_sha = bound.get("sha256"), sha256_file(args.profile)
+        if not isinstance(report_sha, str) or not report_sha:
+            raise ValueError("report has no profile provenance; export refused")
+        if report_sha != profile_sha:
+            raise ValueError(f"report was validated with a different profile (sha256 {report_sha}); export refused")
+        anim_spec = spec.animations.get(clip["name"])
+        if anim_spec is None:
+            raise ValueError(
+                f"--clip {clip['name']!r} is not a clip of {spec.name} ({', '.join(spec.animations)}); export refused"
+            )
+        for field in ("frames", "fps", "loop", "loop_from"):
+            want, got = getattr(anim_spec, field), clip[field]
+            if got != want:  # frames/fps/loop equal numerically; None == None for loop_from
+                raise ValueError(
+                    f"--clip {field} {got} does not match the profile's {clip['name']} {field} {want}; export refused"
+                )
         if clip["start"] < 1:
             raise ValueError("--clip must start after still column 0; export refused")
         if not isinstance(report.get("digests"), dict) or not report["digests"]:
@@ -303,6 +321,7 @@ def export_godot_cmd(args: argparse.Namespace) -> int:
             "character": args.character,
             "animation": clip["name"],
             "frames_bound": len(report["digests"]),
+            "profile_sha256": profile_sha,
         }
         paths = export_godot(
             sheet,
@@ -312,7 +331,7 @@ def export_godot_cmd(args: argparse.Namespace) -> int:
             clips=[clip],
             out_dir=args.out,
             provenance=prov,
-            forbid_under=args.forbid_under or prof.export.godot_project,
+            forbid_under=[prof.export.godot_project, *([args.forbid_under] if args.forbid_under else [])],
             anim_name=args.anim_name,
         )
     except (OSError, ValueError) as e:  # ValueError covers bad clips, bad JSON, refusals

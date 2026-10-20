@@ -1,7 +1,8 @@
 """Godot 4 export (docs/09): the game-layout sheet PNG, a text SpriteFrames `.tres` and a provenance sidecar.
 
 Pure function of its inputs: same arrays and parameters give byte-identical files (no timestamps, no random UIDs).
-Writes only under `out_dir/<character>/` and refuses to if that is inside the shipped game (`forbid_under`).
+Writes only under `out_dir/<character>/` and refuses to if that is inside the shipped game (`forbid_under`, one or more
+protected directories, all checked, never replaced).
 """
 
 from __future__ import annotations
@@ -123,19 +124,25 @@ def export_godot(
     clips: Sequence[dict],
     out_dir: Path,
     provenance: dict,
-    forbid_under: Path | None = None,
+    forbid_under: Path | Sequence[Path] | None = None,
     anim_name: str = "{animation}_{direction}",
 ) -> dict[str, str]:
     """Write `out_dir/<character>/{<character>.png, <character>_frames.tres, <character>.sonoranlab.json}`.
 
     `sheet` is already in the game layout: one row per `rows` entry (mirrored west rows as real pixels), column 0
     the still or empty, clip frames from each clip's `start`. Returns `{"png", "tres", "sidecar"}` -> path.
-    ValueError for bad inputs, a target inside `forbid_under`, or a target directory that is not empty.
+    ValueError for bad inputs, a target inside any `forbid_under` directory, or a target directory that is not empty.
     """
     columns = _check_inputs(sheet, character, cell, rows, clips)
     target = (Path(out_dir) / character).resolve()
-    if forbid_under is not None:
-        game = Path(forbid_under).expanduser().resolve()
+    if forbid_under is None:
+        protected: Sequence[Path] = ()
+    elif isinstance(forbid_under, (str, Path)):
+        protected = (forbid_under,)
+    else:
+        protected = forbid_under
+    for protect in protected:
+        game = Path(protect).expanduser().resolve()
         if target == game or game in target.parents:
             raise ValueError(f"refusing to write inside the shipped game {game}: {target}")
     if target.exists() and (not target.is_dir() or any(target.iterdir())):

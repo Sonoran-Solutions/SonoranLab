@@ -138,3 +138,19 @@ export-boundary holes, now fixed in #24:
 - **Tests:** 435 package tests in 3 consecutive local runs (Godot and real data included). One earlier run had a
   single failure that did not reproduce in those runs or in 6 loops of the Godot tests. The failing test was not
   captured; it is recorded here as unexplained.
+
+## 9. Senior re-review fixes (standalone export guards), 2026-10-19
+
+- **Report bound to the profile.** `export godot` refuses a report whose `provenance.profile.sha256` is missing or
+  differs from `--profile`'s file hash.
+- **Clip bound to the profile.** `--clip` frames, fps, loop and loop_from must equal the character's animation in
+  that profile. On real data, relay_sentinel 2 with `idle:1:4:60:once` exits 2 ("--clip fps 60 does not match the
+  profile's idle fps 5"). The correct clip still exits 0.
+- **Game protection is unconditional.** The profile's `export.godot_project` is always protected; `--forbid-under`
+  adds a directory and never replaces it. On real data, `--out` inside `~/Projects/TwosAreUp` with
+  `--forbid-under /tmp/unrelated` exits 2. Nothing was created, and `git status` in the game is unchanged.
+- **Tests:** 447 package tests pass locally (Godot and real data included).
+- **Known flake, now identified:** the headless Godot boot in the engine tests and `--godot-check` occasionally fails
+  with `Parameter "singleton" is null` (editor_node.cpp). It passes on rerun, and it also happens on the tree before
+  these fixes. It fails safe: the check reports failure and nothing is exported. It is the likely cause of the
+  single unexplained failure in §8.
