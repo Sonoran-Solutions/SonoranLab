@@ -17,13 +17,55 @@ from sonoranlab.artifacts import sha256_file, verify_raw, write_json
 SCHEMA = "sonoranlab.review/2"
 
 
+def _reject_constant(value: str) -> None:
+    raise ValueError(f"non-standard JSON constant {value}")
+
+
 def _load(path: Path) -> object:
     if path.is_symlink():
         raise ValueError(f"{path.name} is a symlink")
     try:
-        return json.loads(path.read_text())
+        return json.loads(path.read_text(), parse_constant=_reject_constant)
     except (OSError, ValueError) as e:
         raise ValueError(f"{path.name}: unreadable ({e})") from None
+
+
+def _error(code: str, field: str, message: str) -> dict[str, str]:
+    return {"code": code, "field": field, "message": message}
+
+
+def _metadata_errors(review: dict) -> list[dict[str, str]]:
+    errors = []
+    if review.get("schema") != SCHEMA:
+        errors.append(_error("REVIEW_SCHEMA_INVALID", "schema", f"review.json must use schema {SCHEMA}"))
+    reviewer = review.get("reviewer")
+    if not isinstance(reviewer, str) or not reviewer.strip():
+        errors.append(_error("REVIEW_REVIEWER_INVALID", "reviewer", "reviewer must be a non-empty string"))
+    verdict = review.get("verdict")
+    if verdict not in ("pass", "fail"):
+        errors.append(_error("REVIEW_VERDICT_INVALID", "verdict", "verdict must be pass|fail"))
+    minutes = review.get("cleanup_minutes")
+    if (verdict == "pass" or minutes is not None) and (
+        type(minutes) not in (int, float) or minutes < 0 or (isinstance(minutes, float) and not math.isfinite(minutes))
+    ):
+        errors.append(
+            _error("REVIEW_CLEANUP_INVALID", "cleanup_minutes", "cleanup_minutes must be a finite, non-negative number")
+        )
+    times = {}
+    for field in ("started_at", "ended_at"):
+        try:
+            value = review.get(field)
+            if not isinstance(value, str) or "T" not in value.upper():
+                raise ValueError
+            timestamp = datetime.fromisoformat(value)
+            if timestamp.utcoffset() is None:
+                raise ValueError
+            times[field] = timestamp
+        except ValueError:
+            errors.append(_error("REVIEW_TIMESTAMP_INVALID", field, f"{field} must be ISO-8601 with a timezone"))
+    if len(times) == 2 and times["ended_at"] < times["started_at"]:
+        errors.append(_error("REVIEW_INTERVAL_INVALID", "ended_at", "ended_at precedes started_at"))
+    return errors
 
 
 def _report_passes(job_dir: Path) -> bool:
@@ -56,20 +98,33 @@ def _provenance(job: Path) -> tuple[dict | None, list[str]]:
         problems.append("manifest.json result is not a passing, exported job")
     if not isinstance(outputs, dict):
         return None, [*problems, "manifest.json has no outputs"]
+    if not isinstance(manifest.get("inputs"), dict):
+        return None, [*problems, "manifest.json has no inputs"]
     if "report.json" not in outputs:
         problems.append("manifest outputs lack report.json")
     listed_export = sorted(k for k in outputs if k.startswith("export/"))
     if not listed_export:
         problems.append("manifest outputs list no export/ files")
     export = _export_files(job)
-    for rel in sorted(set(outputs) & ({"report.json", "contact.png"} | set(listed_export))):
+    for rel in sorted(outputs):
         p = job / rel
-        if p.is_symlink() or not p.is_file():
+        if Path(rel).is_absolute() or ".." in Path(rel).parts:
+            problems.append(f"{rel}: output path must be relative to the job")
+        elif p.is_symlink() or not p.is_file():
             problems.append(f"{rel}: missing or not a regular file")
         elif sha256_file(p) != outputs[rel]:
             problems.append(f"{rel}: sha256 differs from manifest")
     if set(export) != set(listed_export):
         problems.append(f"export/ files differ from manifest: {sorted(set(export) ^ set(listed_export))}")
+    profile = manifest.get("profile")
+    if not isinstance(profile, dict) or not isinstance(profile.get("path"), str) or not profile["path"]:
+        problems.append("manifest.json has no profile path")
+    else:
+        p = Path(profile["path"])
+        if p.is_symlink() or not p.is_file():
+            problems.append(f"profile {p}: missing or not a regular file")
+        elif sha256_file(p) != profile.get("sha256"):
+            problems.append(f"profile {p}: sha256 differs from manifest")
     try:
         problems += verify_raw(job)
     except (OSError, ValueError, KeyError, TypeError) as e:
@@ -105,17 +160,6 @@ def record_review(
     binds, problems = _provenance(job_dir)
     if problems:
         raise ValueError(f"{job_dir}: cannot bind a review: " + "; ".join(problems))
-    if verdict not in {"pass", "fail"} or not reviewer.strip():
-        raise ValueError("verdict must be pass|fail and reviewer must be named")
-    if (verdict == "pass" and cleanup_minutes is None) or (
-        cleanup_minutes is not None and (not math.isfinite(cleanup_minutes) or cleanup_minutes < 0)
-    ):
-        raise ValueError("passing review requires finite, non-negative cleanup_minutes")
-    try:
-        if datetime.fromisoformat(ended_at) < datetime.fromisoformat(started_at):
-            raise ValueError("ended_at precedes started_at")
-    except (TypeError, ValueError) as e:
-        raise ValueError(f"invalid ISO review interval: {e}") from e
     doc: dict = {
         "schema": SCHEMA,
         "verdict": verdict,
@@ -126,6 +170,8 @@ def record_review(
         "notes": notes,
         "binds": binds,
     }
+    if errors := _metadata_errors(doc):
+        raise ValueError("; ".join(f"{e['code']}: {e['message']}" for e in errors))
     if carried_from is not None:
         doc["carried_from"] = carried_from
     if supersedes is not None:
@@ -144,37 +190,55 @@ def record_review(
         raise ValueError(f"{job_dir / 'review.json'} exists; reviews cannot be overwritten") from e
 
 
-def review_problems(job_dir: Path) -> list[str]:
-    """Why `job_dir` is not production usable (empty = usable)."""
+def review_errors(job_dir: Path, *, review_path: Path | None = None) -> list[dict[str, str]]:
+    """Recheck metadata and all artifact bindings; empty means production usable.
+
+    `review_path` allows read-only checking of archived reviews against the same job.
+    """
     job = Path(job_dir)
-    binds, problems = _provenance(job)
     try:
-        review = _load(job / "review.json")
+        binds, problems = _provenance(job)
+    except (OSError, ValueError, KeyError, TypeError) as e:
+        binds, problems = None, [f"artifact verification failed: {e}"]
+    errors = [_error("REVIEW_BINDING_INVALID", "binds", p) for p in problems]
+    try:
+        review = _load(review_path if review_path is not None else job / "review.json")
     except ValueError as e:
-        return [*problems, f"no usable review: {e}"]
-    if not isinstance(review, dict) or review.get("schema") != SCHEMA:
-        return [*problems, f"review.json is not schema {SCHEMA} (legacy reviews are not bound to the artifact)"]
-    if review.get("verdict") != "pass":
-        problems.append("review verdict is not pass")
+        return [*errors, _error("REVIEW_UNREADABLE", "review.json", f"no usable review: {e}")]
+    if not isinstance(review, dict):
+        return [*errors, _error("REVIEW_SCHEMA_INVALID", "schema", "review.json must be a schema 2 object")]
+    errors += _metadata_errors(review)
+    if review.get("verdict") == "fail":
+        errors.append(_error("REVIEW_NOT_PASS", "verdict", "review verdict is not pass"))
     bound = review.get("binds")
-    if not isinstance(bound, dict) or binds is None:
-        return [*problems, "review.json has no binds block"] if binds is not None else problems
+    if not isinstance(bound, dict):
+        return [*errors, _error("REVIEW_BINDING_INVALID", "binds", "review.json has no binds block")]
+    if binds is None:
+        return errors
     for key in ("report_sha256", "manifest_sha256", "contact_sha256"):
-        if bound.get(key) != binds[key]:
-            problems.append(f"{key} differs from the reviewed artifact")
+        if key not in bound or bound[key] != binds[key]:
+            errors.append(_error("REVIEW_BINDING_INVALID", f"binds.{key}", f"{key} differs from the reviewed artifact"))
     reviewed = bound.get("export")
     if not isinstance(reviewed, dict) or not reviewed:
-        return [*problems, "review binds no export files"]
+        return [*errors, _error("REVIEW_BINDING_INVALID", "binds.export", "review binds no export files")]
     for rel in sorted(set(reviewed) | set(binds["export"])):
         if rel not in binds["export"]:
-            problems.append(f"{rel}: reviewed file was removed")
+            message = f"{rel}: reviewed file was removed"
         elif rel not in reviewed:
-            problems.append(f"{rel}: file added after review")
+            message = f"{rel}: file added after review"
         elif reviewed[rel] != binds["export"][rel]:
-            problems.append(f"{rel}: changed after review")
-    return problems
+            message = f"{rel}: changed after review"
+        else:
+            continue
+        errors.append(_error("REVIEW_BINDING_INVALID", f"binds.export.{rel}", message))
+    return errors
+
+
+def review_problems(job_dir: Path) -> list[str]:
+    """Human-readable reasons `job_dir` is not production usable (empty = usable)."""
+    return [f"{e['code']}: {e['message']}" for e in review_errors(job_dir)]
 
 
 def production_usable(job_dir: Path) -> bool:
     """True only when the job passes, the bound human review passes, and nothing it covers changed since."""
-    return not review_problems(job_dir)
+    return not review_errors(job_dir)

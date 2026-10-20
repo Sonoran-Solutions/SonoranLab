@@ -8,7 +8,7 @@ from test_pipeline import process, raw_set, toy_profile
 
 from sonoranlab.artifacts import sha256_file
 from sonoranlab.cli import main
-from sonoranlab.review import production_usable, record_review, review_problems
+from sonoranlab.review import production_usable, record_review, review_errors, review_problems
 
 INTERVAL = {"started_at": "2026-10-19T10:00:00+00:00", "ended_at": "2026-10-19T10:05:00+00:00"}
 PASS = {"verdict": "pass", "reviewer": "Dylan", "cleanup_minutes": 5, **INTERVAL}
@@ -112,7 +112,7 @@ def test_report_only_job_dir_is_refused_for_missing_provenance(tmp_path):
     assert not (tmp_path / "review.json").exists() and not production_usable(tmp_path)
 
 
-@pytest.mark.parametrize("minutes", [None, -1, float("nan"), float("inf")])
+@pytest.mark.parametrize("minutes", [None, -1, float("nan"), float("inf"), float("-inf"), "5", "NaN", True])
 def test_passing_review_requires_non_negative_finite_cleanup(job, minutes):
     with pytest.raises(ValueError, match="cleanup_minutes"):
         record_review(job, **{**PASS, "cleanup_minutes": minutes})
@@ -213,3 +213,125 @@ def test_review_cli(job, capsys):
     capsys.readouterr()
     assert main(["review", "check", str(job)]) == 1
     assert target.name in capsys.readouterr().out
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "code"),
+    [
+        ("schema", None, "REVIEW_SCHEMA_INVALID"),
+        ("schema", "sonoranlab.review/99", "REVIEW_SCHEMA_INVALID"),
+        ("reviewer", "", "REVIEW_REVIEWER_INVALID"),
+        ("reviewer", " \t\n", "REVIEW_REVIEWER_INVALID"),
+        ("reviewer", None, "REVIEW_REVIEWER_INVALID"),
+        ("reviewer", 42, "REVIEW_REVIEWER_INVALID"),
+        ("reviewer", [], "REVIEW_REVIEWER_INVALID"),
+        ("verdict", None, "REVIEW_VERDICT_INVALID"),
+        ("verdict", "approved", "REVIEW_VERDICT_INVALID"),
+        ("verdict", [], "REVIEW_VERDICT_INVALID"),
+        ("verdict", "fail", "REVIEW_NOT_PASS"),
+        ("started_at", "yesterday", "REVIEW_TIMESTAMP_INVALID"),
+        ("started_at", "2026-10-19T10:00:00", "REVIEW_TIMESTAMP_INVALID"),
+        ("started_at", "2026-10-19X10:00:00Z", "REVIEW_TIMESTAMP_INVALID"),
+        ("started_at", None, "REVIEW_TIMESTAMP_INVALID"),
+        ("ended_at", "not-a-date", "REVIEW_TIMESTAMP_INVALID"),
+        ("ended_at", "2026-10-19T10:05:00", "REVIEW_TIMESTAMP_INVALID"),
+        ("ended_at", None, "REVIEW_TIMESTAMP_INVALID"),
+        ("ended_at", 42, "REVIEW_TIMESTAMP_INVALID"),
+        ("ended_at", "2026-10-19T09:59:59Z", "REVIEW_INTERVAL_INVALID"),
+        ("ended_at", "2026-10-19T10:05:00+01:00", "REVIEW_INTERVAL_INVALID"),
+        ("cleanup_minutes", None, "REVIEW_CLEANUP_INVALID"),
+        ("cleanup_minutes", "NaN", "REVIEW_CLEANUP_INVALID"),
+        ("cleanup_minutes", "inf", "REVIEW_CLEANUP_INVALID"),
+        ("cleanup_minutes", -1, "REVIEW_CLEANUP_INVALID"),
+        ("cleanup_minutes", "5", "REVIEW_CLEANUP_INVALID"),
+        ("cleanup_minutes", True, "REVIEW_CLEANUP_INVALID"),
+        ("cleanup_minutes", [], "REVIEW_CLEANUP_INVALID"),
+        ("cleanup_minutes", float("nan"), "REVIEW_UNREADABLE"),
+        ("cleanup_minutes", float("inf"), "REVIEW_UNREADABLE"),
+        ("cleanup_minutes", float("-inf"), "REVIEW_UNREADABLE"),
+    ],
+)
+def test_edited_review_metadata_is_rejected(job, field, value, code):
+    path = record_review(job, **PASS)
+    review = json.loads(path.read_text())
+    review[field] = value
+    path.write_text(json.dumps(review))
+    errors = review_errors(job)
+    assert errors[0]["code"] == code
+    assert errors[0]["field"] == ("review.json" if code == "REVIEW_UNREADABLE" else field)
+    assert not production_usable(job)
+
+
+@pytest.mark.parametrize("field", ["schema", "reviewer", "verdict", "started_at", "ended_at", "cleanup_minutes"])
+def test_missing_review_metadata_is_rejected(job, field):
+    path = record_review(job, **PASS)
+    review = json.loads(path.read_text())
+    del review[field]
+    path.write_text(json.dumps(review))
+    code = {
+        "schema": "REVIEW_SCHEMA_INVALID",
+        "reviewer": "REVIEW_REVIEWER_INVALID",
+        "verdict": "REVIEW_VERDICT_INVALID",
+        "started_at": "REVIEW_TIMESTAMP_INVALID",
+        "ended_at": "REVIEW_TIMESTAMP_INVALID",
+        "cleanup_minutes": "REVIEW_CLEANUP_INVALID",
+    }[field]
+    assert any(e["code"] == code and e["field"] == field for e in review_errors(job))
+    assert not production_usable(job)
+
+
+@pytest.mark.parametrize("minutes", [0, 0.0])
+def test_zero_cleanup_and_equal_timestamps_pass(job, minutes):
+    record_review(job, **{**PASS, "cleanup_minutes": minutes, "ended_at": INTERVAL["started_at"]})
+    assert review_errors(job) == []
+    assert production_usable(job)
+
+
+@pytest.mark.parametrize("target", ["export", "report.json", "manifest.json", "contact.png", "raw", "processed"])
+@pytest.mark.parametrize("remove", [False, True], ids=["changed", "missing"])
+def test_production_usable_rechecks_all_artifacts(job, target, remove):
+    record_review(job, **PASS)
+    assert production_usable(job)
+    path = job / target
+    if path.is_dir():
+        path = next(p for p in path.rglob("*") if p.is_file())
+    if remove:
+        path.unlink()
+    else:
+        path.chmod(0o644)
+        path.write_bytes(path.read_bytes() + b" ")
+    errors = review_errors(job)
+    assert errors and all(e["code"] == "REVIEW_BINDING_INVALID" for e in errors)
+    assert not production_usable(job)
+
+
+@pytest.mark.parametrize("remove", [False, True], ids=["changed", "missing"])
+def test_profile_binding_is_rechecked(job, remove):
+    manifest_path = job / "manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    profile = job / "profile.yaml"
+    shutil.copyfile(manifest["profile"]["path"], profile)
+    manifest["profile"]["path"] = str(profile)
+    manifest_path.write_text(json.dumps(manifest))
+    record_review(job, **PASS)
+    assert production_usable(job)
+    if remove:
+        profile.unlink()
+    else:
+        profile.write_text(profile.read_text() + "\n")
+    errors = review_errors(job)
+    assert errors[0]["code"] == "REVIEW_BINDING_INVALID" and "profile" in errors[0]["message"]
+    assert not production_usable(job)
+
+
+def test_review_cli_exposes_structured_errors(job, capsys):
+    path = record_review(job, **PASS)
+    review = json.loads(path.read_text())
+    review["reviewer"] = None
+    path.write_text(json.dumps(review))
+    assert main(["review", "check", str(job)]) == 1
+    assert json.loads(capsys.readouterr().out) == {
+        "code": "REVIEW_REVIEWER_INVALID",
+        "field": "reviewer",
+        "message": "reviewer must be a non-empty string",
+    }

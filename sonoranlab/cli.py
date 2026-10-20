@@ -734,11 +734,11 @@ def review_record_cmd(args: argparse.Namespace) -> int:
 
 
 def review_check_cmd(args: argparse.Namespace) -> int:
-    from sonoranlab.review import review_problems
+    from sonoranlab.review import review_errors
 
-    problems = review_problems(args.job)
-    for msg in problems:
-        print(msg)
+    problems = review_errors(args.job)
+    for error in problems:
+        print(json.dumps(error))
     return int(bool(problems))
 
 

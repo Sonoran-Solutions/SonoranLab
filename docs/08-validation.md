@@ -133,6 +133,15 @@ and parity with the Phase 1 `process.py` validator. With the private Phase 1 dat
 Track E sets: the 8 humanoid sets fail with exactly their bound reports' failures; relay_sentinel 1–4 pass under
 ADR-0008 F2 with the predicted hover warnings. Any change to a rule updates the fixture and says why.
 
+Production approval is separate: `sonoranlab review check JOB` rechecks schema 2 metadata and artifact hashes on every
+call, as does `production_usable`. Reviews require a named reviewer, `pass|fail`, timezone-aware ISO-8601 start/end
+timestamps in order, and finite non-negative numeric `cleanup_minutes` for a pass (zero is valid; booleans and numeric
+strings are rejected). Non-standard JSON constants (`NaN`, `Infinity`) are rejected. Check failures are JSON objects
+with `code`, `field`, and `message`: `REVIEW_SCHEMA_INVALID`, `REVIEW_REVIEWER_INVALID`, `REVIEW_VERDICT_INVALID`,
+`REVIEW_TIMESTAMP_INVALID`, `REVIEW_INTERVAL_INVALID`, `REVIEW_CLEANUP_INVALID`, `REVIEW_UNREADABLE`, `REVIEW_NOT_PASS`,
+or `REVIEW_BINDING_INVALID`. Bindings cover report, manifest, exports, contact sheet when present, all manifest outputs,
+raw inputs, and the manifest's profile file; missing or changed files prevent approval. Schema version stays 2.
+
 ## What the validator does not do
 
 - Judge whether the animation *reads*. That is the contact sheet + a human
