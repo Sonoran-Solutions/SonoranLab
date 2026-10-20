@@ -25,6 +25,7 @@ build-backend = "uv_build"
 
 [tool.uv.build-backend]
 module-root = ""
+source-include = ["sonoranlab/repair/lua/*.lua"]
 
 # torch/torchvision come from the CPU wheel index only (offline CPU runtime; pixeloe is their only user).
 [tool.uv.sources]
@@ -47,3 +48,4 @@ select = ["E", "F", "W", "I", "B", "UP", "SIM", "RUF"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = ["aseprite: real pinned Aseprite round trip inside bubblewrap (skips without runtime/containment)"]
