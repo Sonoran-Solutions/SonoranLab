@@ -9,8 +9,9 @@ from pathlib import Path
 
 import numpy as np
 import pytest
-from PIL import Image
-from test_broker import authorization
+import yaml
+from PIL import Image, PngImagePlugin
+from test_broker import authorization, launcher
 from test_interchange import GENERATE, MIRROR, ORDER, PALETTE, fixture, hashes  # noqa: F401
 
 from sonoranlab.artifacts import sha256_file
@@ -19,7 +20,7 @@ from sonoranlab.export.godot import export_godot
 from sonoranlab.profile import load_palette
 from sonoranlab.repair import workspace as ws
 from sonoranlab.repair.authorization import Denied, authorize, canonical, lease, persist
-from sonoranlab.repair.broker import Journal
+from sonoranlab.repair.broker import Broker, Journal, Snapshot
 from sonoranlab.repair.compare import changed_coordinates, load_rgba, read_json
 from sonoranlab.review import production_usable, record_review
 from sonoranlab.slice import slice_sheet
@@ -95,8 +96,7 @@ def saved(fixture, monkeypatch):  # noqa: F811
         {"kind": "anim", "direction": "east", "index": 0, "mask": {"pixels": [[7, 6]]}, "derive_mirror": True}
     ]
     authorize(repair, auth)
-    state = read_json(repair / "state.json")
-    persist(repair / "state.json", {**state, "state": "checkpointed", "session_state": "STOPPED", "iterations": 1})
+    checkpoint_saved(repair)
     monkeypatch.setattr(mod, "check_in_godot", godot_pass)
     monkeypatch.setattr(mod, "AsepriteConverter", ws.FakeConverter)
     return repair, parent, profile, repair.parent / "child"
@@ -114,6 +114,29 @@ def edit(repair, xy=(7, 6), colour=(*PALETTE[2], 255), **target):
     x, y = xy
     a[y, x] = colour
     Image.fromarray(a).save(path)
+
+
+def checkpoint_saved(repair):
+    """Record the same document/pixel bindings as the broker's checkpoint."""
+    frames = {}
+    for path in (repair / "workspace/fake-frames").glob("*.png"):
+        a = load_rgba(path)
+        Broker.pixel_hash(a)  # Broker snapshots canonicalize hidden RGB.
+        frames[path.stem] = a
+    accepted = repair / "session/accepted.json"
+    persist(accepted, Snapshot({"width": 16, "height": 16}, frames).packed())
+    state = read_json(repair / "state.json")
+    persist(
+        repair / "state.json",
+        {
+            **state,
+            "state": "checkpointed",
+            "session_state": "STOPPED",
+            "iterations": 1,
+            "accepted_sha256": sha256_file(accepted),
+            "document_sha256": sha256_file(repair / "workspace/doc.aseprite"),
+        },
+    )
 
 
 def test_noop_is_exact_and_new_review_is_required(saved):
@@ -168,6 +191,7 @@ def test_noop_is_exact_and_new_review_is_required(saved):
 def test_permitted_edit_and_exact_mirror_true_west_still(saved):
     repair, _, _, out = saved
     edit(repair)
+    checkpoint_saved(repair)
     result = mod.finalize(repair, out)
     assert result["ok"], result
     assert changed_coordinates(load_rgba(repair / "source/east_0.png"), load_rgba(out / "raw/east_0.png")) == [[7, 6]]
@@ -205,6 +229,7 @@ def test_export_gate_retains_failed_evidence(saved, damage, code):
         else:
             doc["meta"]["tags"]["still"] = [1, 7]
         path.write_text(json.dumps(doc))
+        checkpoint_saved(repair)
     elif damage == "missing_still":
         frame_path(repair, kind="still", direction="west").unlink()
     elif damage == "outside":
@@ -236,7 +261,7 @@ def test_export_gate_retains_failed_evidence(saved, damage, code):
         ("tainted", "tainted"),
         ("iterations", "iteration_limit"),
         ("unknown", "outcome_unknown"),
-        ("active", "invalid_state"),
+        ("active", "session_not_stopped"),
         ("mirror", "mirror_derivation_required"),
     ],
 )
@@ -407,6 +432,7 @@ def test_resolved_unknown_operation_summary_and_new_snapshot(saved):
     )
     journal.close()
     edit(repair)
+    checkpoint_saved(repair)
     result = mod.finalize(repair, out)
     assert result["ok"], result
     assert (repair / "workspace/export-0002/export.json").is_file()
@@ -446,3 +472,244 @@ def test_hidden_rgb_is_equivalent_and_iteration_cap_is_inclusive(saved):
     result = mod.finalize(repair, out)
     assert result["ok"], result
     assert not read_json(out / "repair-manifest.json")["changed"]
+
+
+def test_profile_swap_bound_to_parent_manifest(saved):
+    repair, _, profile, out = saved
+    data = yaml.safe_load(profile.path.read_text())
+    data["characters"]["hero"]["max_foot_slide_px"] = 99
+    replacement = profile.path.with_name("loose.yaml")
+    replacement.write_text(yaml.safe_dump(data))
+    doc = read_json(repair / "repair.json")
+    doc["profile"] = {"path": str(replacement), "sha256": sha256_file(replacement)}
+    persist(repair / "repair.json", doc)
+    with pytest.raises(Denied, match="profile_hash_mismatch"):
+        mod.finalize(repair, out)
+    assert not out.exists()
+
+
+def test_only_compared_files_are_ingested(saved, monkeypatch):
+    repair, _, _, out = saved
+    original = mod.compare
+
+    def race(repair, exported):
+        result = original(repair, exported)
+        path = exported / "mapped/north_0.png"
+        a = load_rgba(path)
+        a[6, 7] = (*PALETTE[2], 255)
+        Image.fromarray(a).save(path)
+        return result
+
+    monkeypatch.setattr(mod, "compare", race)
+    assert mod.finalize(repair, out)["ok"]
+    assert np.array_equal(load_rgba(out / "raw/north_0.png"), load_rgba(repair / "source/north_0.png"))
+
+
+@pytest.mark.parametrize("stage", ["compare", "validation", "godot"])
+@pytest.mark.parametrize(
+    "name,xy,code",
+    [
+        ("north_0.png", (7, 6), "unauthorized_pixels"),
+        ("still_west.png", (7, 6), "unauthorized_pixels"),
+        ("east_0.png", (8, 6), "unauthorized_pixels"),
+        ("east_0.png", (7, 6), "checkpoint_mismatch"),
+    ],
+)
+def test_changed_files_cannot_pass_final_gate(saved, monkeypatch, stage, name, xy, code):
+    repair, _, _, out = saved
+    attr = {"compare": "compare", "validation": "validate", "godot": "check_in_godot"}[stage]
+    original = getattr(mod, attr)
+
+    def race(*args, **kwargs):
+        result = original(*args, **kwargs)
+        if stage == "compare":
+            mapping = read_json(repair / "mapping.json")
+            n = next(n for n, e in mapping.items() if mod.source_name(e) == name)
+            path = args[1] / f"{n}.png"
+        else:
+            path = out / "raw" / name
+        path.chmod(0o644)
+        a = load_rgba(path)
+        x, y = xy
+        a[y, x] = (*PALETTE[2], 255)
+        Image.fromarray(a).save(path)
+        return result
+
+    monkeypatch.setattr(mod, attr, race)
+    result = mod.finalize(repair, out)
+    assert not result["ok"] and code in {e["code"] for e in result["errors"]}
+    assert not read_json(out / "report.json")["pass"]
+    assert not (out / "export").exists()
+
+
+@pytest.mark.parametrize("damage", ["document", "accepted", "missing_accepted", "pixels"])
+def test_checkpoint_bindings_are_required(saved, damage):
+    repair, _, _, out = saved
+    if damage == "pixels":
+        edit(repair)  # Even an authorized pixel must be accepted and checkpointed.
+        result = mod.finalize(repair, out)
+        assert not result["ok"] and result["error"] == "checkpoint_mismatch"
+        assert not (out / "export").exists()
+        return
+    path = repair / ("workspace/doc.aseprite" if damage == "document" else "session/accepted.json")
+    if damage == "missing_accepted":
+        path.unlink()
+    else:
+        path.write_bytes(path.read_bytes() + b" ")
+    with pytest.raises(Denied, match="document_hash_mismatch" if damage == "document" else "accepted_hash_mismatch"):
+        mod.finalize(repair, out)
+    assert not out.exists()
+
+
+@pytest.mark.parametrize("damage", ["none", "pixels", "document", "missing_prepare_hash"])
+def test_prepare_without_session_requires_original_document_and_noop(saved, damage):
+    repair, _, _, out = saved
+    state = read_json(repair / "state.json")
+    persist(
+        repair / "state.json",
+        {"state": "prepared", "iterations": 0, "authorization_sha256": state["authorization_sha256"]},
+    )
+    (repair / "session/accepted.json").unlink()
+    assert read_json(repair / "repair.json")["document_sha256"] == sha256_file(repair / "workspace/doc.aseprite")
+    if damage == "pixels":
+        edit(repair)
+    elif damage == "document":
+        path = repair / "workspace/doc.aseprite"
+        path.write_bytes(path.read_bytes() + b" ")
+    elif damage == "missing_prepare_hash":
+        doc = read_json(repair / "repair.json")
+        del doc["document_sha256"]
+        persist(repair / "repair.json", doc)
+    if damage in ("document", "missing_prepare_hash"):
+        with pytest.raises(Denied, match="document_hash_mismatch"):
+            mod.finalize(repair, out)
+        assert not out.exists()
+    else:
+        result = mod.finalize(repair, out)
+        assert result["ok"] == (damage == "none")
+        assert result["error"] == ("session_required" if damage == "pixels" else None)
+
+
+def test_checkpointed_active_session_with_free_lease_is_refused(saved):
+    repair, _, _, out = saved
+    state = read_json(repair / "state.json")
+    persist(repair / "state.json", {**state, "session_state": "ACTIVE"})
+    with pytest.raises(Denied, match="session_not_stopped"):
+        mod.finalize(repair, out)
+    assert not out.exists()
+
+
+def test_parent_exports_must_match_manifest_even_if_repair_hash_updated(saved):
+    repair, parent, _, out = saved
+    path = parent / "export/hero/hero.tres"
+    path.write_text("changed after prepare")
+    doc = read_json(repair / "repair.json")
+    doc["parent_hashes"]["export/hero/hero.tres"] = sha256_file(path)
+    persist(repair / "repair.json", doc)
+    with pytest.raises(Denied, match="parent_hash_mismatch"):
+        mod.finalize(repair, out)
+    assert not out.exists()
+
+
+def test_source_reverified_before_evidence(saved, monkeypatch):
+    repair, _, _, out = saved
+    original = mod.check_in_godot
+    before = load_rgba(repair / "source/north_0.png")
+
+    def race(*args, **kwargs):
+        result = original(*args, **kwargs)
+        path = repair / "source/north_0.png"
+        path.chmod(0o644)
+        a = load_rgba(path)
+        a[6, 7] = (*PALETTE[2], 255)
+        Image.fromarray(a).save(path)
+        return result
+
+    monkeypatch.setattr(mod, "check_in_godot", race)
+    result = mod.finalize(repair, out)
+    assert not result["ok"] and result["error"] == "source_hash_mismatch"
+    assert not (out / "export").exists()
+    assert (
+        read_json(out / "repair-manifest.json")["frames"]["north_0.png"]["before"]
+        == mod.hashlib.sha256(before.tobytes()).hexdigest()
+    )
+
+
+@pytest.mark.parametrize("chunk", ["gAMA", "iCCP", "sRGB", "cHRM"])
+def test_colour_chunks_refused_and_recorded_before_raw_ingest(saved, monkeypatch, chunk):
+    repair, _, _, out = saved
+    original = ws.FakeConverter.export
+
+    def with_colour_chunks(self, workspace, output):
+        original(self, workspace, output)
+        path = output / "1.png"
+        if chunk == "iCCP":
+            Image.fromarray(load_rgba(path)).save(path, icc_profile=b"ICC profile")
+            return
+        info = PngImagePlugin.PngInfo()
+        data = {
+            "gAMA": bytes.fromhex("0000b18f"),
+            "sRGB": b"\0",
+            "cHRM": bytes(32),
+        }[chunk]
+        info.add(chunk.encode(), data)
+        Image.fromarray(load_rgba(path)).save(path, pnginfo=info)
+
+    monkeypatch.setattr(ws.FakeConverter, "export", with_colour_chunks)
+    result = mod.finalize(repair, out)
+    assert not result["ok"] and result["error"] == "colour_chunks"
+    assert result["errors"][0]["files"]["1.png"][0]["type"] == chunk
+    assert not list((out / "raw").iterdir())
+    assert not (out / "export").exists()
+    rm = read_json(out / "repair-manifest.json")
+    assert rm["comparison"]["png_chunks"]["1.png"][0]["type"] == chunk
+
+
+def test_malformed_export_writes_failed_child(saved):
+    repair, _, _, out = saved
+    frame_path(repair).write_bytes(b"not a PNG")
+    result = mod.finalize(repair, out)
+    assert not result["ok"] and result["error"] == "export_failed"
+    assert not read_json(out / "report.json")["pass"]
+    assert (out / "repair-manifest.json").is_file() and not (out / "export").exists()
+
+
+def test_incorrect_mirror_cannot_pass_even_when_godot_checks_it(saved, monkeypatch):
+    repair, _, _, out = saved
+
+    def wrong_mirror(sheet, **kwargs):
+        sheet[ORDER.index("west") * 16 + 6, 16 + 7] = (*PALETTE[2], 255)
+        return godot_pass(sheet, **kwargs)
+
+    monkeypatch.setattr(mod, "check_in_godot", wrong_mirror)
+    result = mod.finalize(repair, out)
+    assert not result["ok"] and result["error"] == "mirror_mismatch"
+    assert not (out / "export").exists()
+
+
+def test_broker_checkpoint_then_stop_then_finalize(saved):
+    repair, _, _, out = saved
+    state = read_json(repair / "state.json")
+    persist(
+        repair / "state.json",
+        {"state": "prepared", "iterations": 0, "authorization_sha256": state["authorization_sha256"]},
+    )
+    broker = Broker(repair, launcher=launcher(), converter=ws.FakeConverter(), ready_timeout=0.5)
+    try:
+        assert broker.handle(
+            {
+                "action": "op",
+                "token": broker.token,
+                "op_id": "one",
+                "source_revision": broker.auth["source_revision"],
+                "target": {"kind": "anim", "direction": "east", "index": 0},
+                "op": "draw.pixels",
+                "args": {"color": broker.doc["palette"][2], "points": [{"x": 7, "y": 6}]},
+            }
+        )["ok"]
+        assert broker.handle({"action": "stop", "token": broker.token, "checkpoint": True})["ok"]
+    finally:
+        broker.close()
+    result = mod.finalize(repair, out)
+    assert result["ok"], result
+    assert read_json(out / "repair-manifest.json")["operations"]["had_session"]

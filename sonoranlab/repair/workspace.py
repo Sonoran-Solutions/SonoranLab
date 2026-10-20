@@ -202,6 +202,7 @@ def prepare(
             },
         )
         converter.build(workspace)
+        doc["document_sha256"] = sha256_file(workspace / "doc.aseprite")
         write_json(out, "repair.json", doc)
         verify_destination(out, destination, forbidden=forbidden)
         return {
