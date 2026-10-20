@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import base64
 import csv
 import hashlib
 import http.client
 import json
 import math
+import subprocess
 import time
 import urllib.error
 import urllib.parse
@@ -24,6 +26,58 @@ import yaml
 
 def graph_sha256(graph: dict) -> str:
     return hashlib.sha256(json.dumps(graph, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
+
+# (path, JSON body or None for GET, timeout_s) -> (HTTP status, body). Raises OSError when the server is unreachable.
+Transport = Callable[[str, "bytes | None", float], "tuple[int, bytes]"]
+
+# Runs inside the container (stdlib only): one HTTP request to its own ComfyUI, the result as one JSON line.
+_RELAY = r"""
+import base64, json, sys, urllib.error, urllib.request
+q = json.load(sys.stdin)
+data = None if q["body"] is None else base64.b64decode(q["body"])
+req = urllib.request.Request(q["url"], data=data, headers={"Content-Type": "application/json"})
+try:
+    with urllib.request.urlopen(req, timeout=q["timeout"]) as r:
+        code, raw = r.status, r.read()
+except urllib.error.HTTPError as e:
+    code, raw = e.code, e.read()
+except Exception as e:
+    print(json.dumps({"error": f"{type(e).__name__}: {e}"})); sys.exit(0)
+print(json.dumps({"status": code, "body": base64.b64encode(raw).decode()}))
+"""
+
+
+class PodmanExecTransport:
+    """Reach a ComfyUI started with `env/comfy.sh up --offline` (`--network=none`): its API exists only inside the
+    container, so each request is relayed by `podman exec -i <container> python -c <relay>` to 127.0.0.1:8188 there.
+    Use with `ComfyClient("http://127.0.0.1:8188", transport=PodmanExecTransport(), ...)`."""
+
+    def __init__(
+        self,
+        container: str = "sonoranlab-comfy",
+        *,
+        url: str = "http://127.0.0.1:8188",
+        podman: list[str] | None = None,
+    ) -> None:
+        self.container, self.url = container, url.rstrip("/")
+        self.podman = podman if podman is not None else ["podman"]
+
+    def __call__(self, path: str, data: bytes | None, timeout: float) -> tuple[int, bytes]:
+        query = {"url": self.url + path, "body": None if data is None else base64.b64encode(data).decode()}
+        query["timeout"] = timeout
+        argv = [*self.podman, "exec", "-i", self.container, "python", "-c", _RELAY]
+        try:  # podman exec itself costs ~0.3 s; give it room beyond the HTTP timeout
+            proc = subprocess.run(argv, input=json.dumps(query), capture_output=True, text=True, timeout=timeout + 15)
+        except subprocess.TimeoutExpired as exc:
+            raise OSError(f"podman exec relay timed out after {timeout + 15:.0f}s") from exc
+        try:
+            reply = json.loads(proc.stdout.strip().splitlines()[-1])
+        except (ValueError, IndexError) as exc:
+            raise OSError(f"podman exec relay failed (rc {proc.returncode}): {proc.stderr.strip()[:500]}") from exc
+        if "error" in reply:
+            raise OSError(f"in-container request failed: {reply['error']}")
+        return int(reply["status"]), base64.b64decode(reply["body"])
 
 
 @dataclass(frozen=True)
@@ -159,6 +213,7 @@ class ComfyClient:
         models_tsv: Path | None = None,
         sleep: Callable[[float], None] = time.sleep,
         clock: Callable[[], float] = time.monotonic,
+        transport: Transport | None = None,
     ) -> None:
         try:
             url = urllib.parse.urlsplit(base_url)
@@ -191,6 +246,19 @@ class ComfyClient:
         self._attempted: set[str] = set()
         self._observed: dict[str, dict] = {}
         self._http = urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirect())
+        self._transport: Transport = transport if transport is not None else self._urllib
+
+    def _urllib(self, path: str, data: bytes | None, timeout: float) -> tuple[int, bytes]:
+        req = urllib.request.Request(self.base_url + path, data=data, headers={"Content-Type": "application/json"})
+        try:
+            with self._http.open(req, timeout=timeout) as response:
+                return response.status, response.read()
+        except urllib.error.HTTPError as exc:
+            try:
+                with exc:
+                    return exc.code, exc.read()
+            except (OSError, http.client.HTTPException):
+                return exc.code, b""  # The HTTP status still establishes rejection/failure if its body was lost.
 
     def _request(
         self, path: str, *, stage: str, prompt_id: str, body: dict | None = None, deadline: float | None = None
@@ -204,33 +272,9 @@ class ComfyClient:
                 retryable=True,
                 prompt_id=prompt_id,
             )
-        req = urllib.request.Request(
-            self.base_url + path,
-            data=json.dumps(body).encode() if body is not None else None,
-            headers={"Content-Type": "application/json"},
-        )
+        data = json.dumps(body).encode() if body is not None else None
         try:
-            with self._http.open(req, timeout=timeout) as response:
-                raw = response.read()
-        except urllib.error.HTTPError as exc:
-            try:
-                with exc:
-                    raw = exc.read()
-            except (OSError, http.client.HTTPException):
-                raw = b""  # The HTTP status still establishes rejection/failure if its body was lost.
-            try:
-                detail = json.loads(raw)
-            except (ValueError, UnicodeError):
-                detail = {"body": raw.decode(errors="replace")[:2000]}
-            detail = detail if isinstance(detail, dict) else {"body": detail}
-            raise ComfyError(
-                "rejected" if stage == "submit" and exc.code == 400 else "http_error",
-                stage,
-                f"ComfyUI {path} returned HTTP {exc.code}; inspect detail and server logs",
-                retryable=exc.code >= 500,
-                prompt_id=prompt_id,
-                detail={**detail, "http_status": exc.code},
-            ) from exc
+            code, raw = self._transport(path, data, timeout)
         except (OSError, urllib.error.URLError, http.client.HTTPException) as exc:
             raise ComfyError(
                 "unreachable",
@@ -240,6 +284,20 @@ class ComfyClient:
                 prompt_id=prompt_id,
                 detail={"cause": str(exc)},
             ) from exc
+        if code >= 400:
+            try:
+                detail = json.loads(raw)
+            except (ValueError, UnicodeError):
+                detail = {"body": raw.decode(errors="replace")[:2000]}
+            detail = detail if isinstance(detail, dict) else {"body": detail}
+            raise ComfyError(
+                "rejected" if stage == "submit" and code == 400 else "http_error",
+                stage,
+                f"ComfyUI {path} returned HTTP {code}; inspect detail and server logs",
+                retryable=code >= 500,
+                prompt_id=prompt_id,
+                detail={**detail, "http_status": code},
+            )
         try:
             result = json.loads(raw) if raw else {}
             if not isinstance(result, dict):

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import sys
 import uuid
 from collections import deque
 from collections.abc import Iterator
@@ -12,6 +13,7 @@ from pathlib import Path
 import pytest
 
 from sonoranlab.comfy import ComfyClient, ComfyError, Workflow, graph_sha256
+from sonoranlab.comfy.client import PodmanExecTransport
 
 from .fake_comfy import Clock, FakeComfy
 
@@ -506,3 +508,34 @@ def test_execution_timing_excludes_collection(
     assert record.status == "success"
     assert 0 < record.timing["exec_s"] < 1
     assert record.timing["wall_s"] >= 3
+
+
+def test_podman_exec_transport_relays_through_container(
+    fake: FakeComfy, tmp_path: Path, workflow: Workflow, clock: Clock
+) -> None:
+    # A stand-in `podman` that drops `exec -i <name>` and runs the relay with this interpreter, as the container would.
+    podman = tmp_path / "podman"
+    podman.write_text(f'#!/bin/sh\n[ "$1" = exec ] && [ "$2" = -i ] || exit 99\nshift 4\nexec {sys.executable} "$@"\n')
+    podman.chmod(0o755)
+    (tmp_path / "out.png").write_bytes(b"png")
+    fake.outputs = output("out.png")
+    transport = PodmanExecTransport("sonoranlab-comfy", url=fake.url, podman=[str(podman)])
+    client = ComfyClient(
+        "http://127.0.0.1:8188", output_root=tmp_path, poll_s=0.01, sleep=clock.sleep, clock=clock, transport=transport
+    )
+    record = client.run(workflow, {"seed": 5}, timeout_s=30)
+    assert record.status == "success", record.error
+    assert [o.rel for o in record.outputs] == ["out.png"]
+    assert record.base_url == "http://127.0.0.1:8188"
+    with pytest.raises(OSError, match="relay"):
+        PodmanExecTransport(podman=["false"])("/queue", None, 1.0)
+
+
+def test_transport_http_status_maps_to_structured_errors(tmp_path: Path) -> None:
+    def transport(path: str, data: bytes | None, timeout: float) -> tuple[int, bytes]:
+        return 400, b'{"error": {"type": "prompt_outputs_failed_validation"}, "node_errors": {"7": "x"}}'
+
+    client = ComfyClient("http://127.0.0.1:8188", output_root=tmp_path, transport=transport)
+    with pytest.raises(ComfyError) as err:
+        client.submit({"7": {"class_type": "X", "inputs": {}}})
+    assert err.value.code == "rejected" and err.value.detail["http_status"] == 400

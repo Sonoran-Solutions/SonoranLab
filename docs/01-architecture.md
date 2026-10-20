@@ -133,3 +133,8 @@ must be nonempty; expected counts can be total or per node. Timings use monotoni
 seconds for submission, observed queue wait, execution and wall time;
 `timing.poll_errors` counts transient polling failures. Reattachment timings
 cover the current attachment, not the earlier process lifetime.
+
+Transport is pluggable: HTTP to the loopback port by default, or `PodmanExecTransport` for a container started with
+`env/comfy.sh up --offline` (`--network=none`), whose API exists only inside the container. Each request is then
+relayed by `podman exec -i sonoranlab-comfy python -c <relay>` to `127.0.0.1:8188` there; outputs still arrive in the
+host-mounted `$WORK/output`, so `output_root` is unchanged. This is the path the offline acceptance runs use.
