@@ -381,8 +381,7 @@ def test_unsafe_or_existing_output(saved, tmp_path, monkeypatch, capsys, destina
         area.mkdir()
         (area / marker).write_text("{}")
     (tmp_path / "link").symlink_to(tmp_path, target_is_directory=True)
-    root = tmp_path / "repair-root" if destination == "outside" else tmp_path
-    monkeypatch.setenv("SONORANLAB_REPAIR_ROOT", str(root))
+    monkeypatch.setenv("SONORANLAB_REPAIR_ROOT", str(tmp_path))
     out = {
         "repo": repo / "child",
         "checkout": checkout / "nested/child",
@@ -391,7 +390,7 @@ def test_unsafe_or_existing_output(saved, tmp_path, monkeypatch, capsys, destina
         "game": profile.export.godot_project / "child",
         "other_job": tmp_path / "other_job/nested/child",
         "other_repair": tmp_path / "other_repair/nested/child",
-        "outside": out,
+        "outside": tmp_path.parent / "child",
         "symlink": tmp_path / "link/child",
         "existing": out,
         "existing_file": out,

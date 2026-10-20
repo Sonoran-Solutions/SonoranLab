@@ -46,7 +46,14 @@ from sonoranlab.repair.compare import (
     read_json,
     source_name,
 )
-from sonoranlab.repair.confine import check_destination, create_destination, git_root, repair_root, verify_destination
+from sonoranlab.repair.confine import (
+    admit_repair,
+    check_destination,
+    create_destination,
+    git_root,
+    repair_root,
+    verify_destination,
+)
 from sonoranlab.repair.runtime import AsepriteConverter, no_symlinks
 from sonoranlab.slice import pack_sheet, slice_sheet
 from sonoranlab.validate import read_frames, read_stills, validate
@@ -273,6 +280,7 @@ def _measurements(parent: dict, child: dict) -> dict:
 def finalize(repair: Path, out: Path, *, converter: object | None = None) -> dict:
     """Return a JSON result; preflight refusals raise Refused before creating the child."""
     started = time.perf_counter()
+    repair = admit_repair(repair)
     repair = no_symlinks(repair)
     # Refuse destinations before even creating a lease; reverify inputs under the lease below.
     doc = read_json(repair / "repair.json")

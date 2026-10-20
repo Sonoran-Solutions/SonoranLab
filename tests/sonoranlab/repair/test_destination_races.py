@@ -20,6 +20,10 @@ from sonoranlab.review import production_usable, record_review
 def test_ancestor_swap_before_open(saved, tmp_path, monkeypatch, command):  # noqa: F811
     repair, parent, profile, _ = saved
     staging = tmp_path / "staging"
+    staging.mkdir(parents=True, exist_ok=True)
+    if repair.exists():
+        shutil.move(repair, staging / "repair")
+        repair = staging / "repair"
     hop = staging / "hop"
     hop.mkdir(parents=True)
     out = hop / "new"
