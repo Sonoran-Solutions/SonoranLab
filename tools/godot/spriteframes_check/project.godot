@@ -1,0 +1,19 @@
+; Disposable Godot 4 fixture project for the SonoranLab SpriteFrames export check (DYL-85).
+; Copy it somewhere, export into the copy, then run check_spriteframes.gd / render_animation.gd on it.
+; The default texture filter is the consuming project's job (docs/09): nearest, set here.
+config_version=5
+
+[application]
+config/name="SonoranLab SpriteFrames check"
+config/features=PackedStringArray("4.7")
+
+[display]
+window/size/viewport_width=160
+window/size/viewport_height=96
+window/size/no_focus=true
+window/vsync/vsync_mode=0
+
+[rendering]
+textures/canvas_textures/default_texture_filter=0
+renderer/rendering_method="gl_compatibility"
+renderer/rendering_method.mobile="gl_compatibility"

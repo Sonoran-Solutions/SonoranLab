@@ -10,9 +10,18 @@ Example: `profiles/twos-are-up.yaml`. The real Twos Are Up values (ADR-0007) ext
 - `palette.source` + `sha256` instead of an inline hex list (the art is private, this repo is public);
 - 8 directions with `generate` and `mirror_animations`;
 - per-clip registration, and `foot_y: cell_minus_4`;
-- the game's clip names (idle, run, attack, cast, death, channel).
+- the game's clip names (idle, run, attack, cast, death, channel);
+- `validator:` holds the default limits (two gates, two warnings) with a `label` saying where they come from. For Twos
+  Are Up that is the calibrated `all` row of the DYL-71 addendum. No threshold may be unset;
+- `characters:` holds per-character numbers (never art): `cell`, `anchor_mode`, the four validator limits, optional
+  partial `animations` overrides (e.g. samurai `run: {frames: 7}`) and an optional `locomotion` clip (default `run`;
+  relay_sentinel uses `idle`). Each row cites its calibration source in the profile.
 
-Phase 2 (DYL-79) folds these into the schema.
+The schema is `sonoranlab/profile.py` (DYL-79): unknown keys are errors, and relative paths resolve against the
+profile's directory (`template: ../templates/poses/run`). `Profile.character(name)` resolves the cell, foot row
+(`cell_minus_N`), anchor column (`cell_half`), limits and merged clips. A character without a row gets the `validator`
+defaults and is marked `uses_defaults` (with a per_character canvas it needs an explicit cell). The docs/07 example
+below predates this: the inline `palette.hex` list and `anchor.max_*_px` are not part of the schema.
 
 ```yaml
 id: twos-are-up
@@ -92,7 +101,10 @@ autonomy:
 
 ## Validation of the profile itself
 
-`sonoranlab profile check profiles/twos-are-up.yaml` verifies: every palette
-entry is a valid hex; `foot_y` is inside `foot_zone`; every animation's
-template exists and has the right direction/frame count; export paths exist.
-The MCP server refuses to start on a profile that fails this.
+`sonoranlab profile check profiles/twos-are-up.yaml` verifies the schema (types, ranges, unknown keys, hex
+colours, directions: every row generated or mirrored from a generated one), that the foot row and anchor column of
+every cell lie inside the cell's padding and `foot_zone`, and that every animation template exists, covers the
+generated directions and has a frame set for the clip's (and each character override's) frame count. With path
+checks on (the default; `--no-path-check` skips them) it also checks the palette file (exists, `sha256`, `colours`,
+`bg_key` absent) and the export project, `sprites_dir` and manifest. It prints one line per problem, naming the field
+and the bad value, and exits 2 if there is any. The MCP server refuses to start on a profile that fails this.

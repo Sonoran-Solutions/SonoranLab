@@ -42,23 +42,29 @@ character refs ─┼─► [generate_character] ─► candidates/*.png ─► 
                 │
 pose templates ─┼─► [animate: track C or E] ─► raw/frames/*.png   (HD, e.g. 512–768px)
                 │
-                └─► [pixelize]  per frame: outline-expand → k-centroid ÷N
-                    [palette]   snap to profile HEX list; count off-palette before snap
-                    [alpha]     threshold; kill fringe; matte residue against bg
-                    [register]  find foot line / rig anchor; normalize canvas; align
+                └─► `sonoranlab process` (sonoranlab/pipeline.py), one cell at a time:
+                    [alpha]     key/alpha extract (bg_key, key_tol); magenta despill (2 HD px)
+                    [pixelize]  PixelOE k-centroid ÷N, N = raw edge / cell (outline thickness 0)
+                    [alpha]     block-mean alpha ≥ threshold
+                    [palette]   snap to the profile palette; count off-palette before snap
+                    [alpha]     drop key-coloured fringe on the silhouette border
+                    [palette]   cap colours per cell (least used merged)
+                    [register]  one shift per direction: foot line / bbox bottom / rig anchor
                     [validate]  rules → report.json (pass/fail + numbers)
                     [contact]   8× sheet with badges for review
-                    [export]    SpriteFrames .tres + sheet.png → Godot project
+                    [export]    PASS only: game-layout sheet + SpriteFrames .tres → job/export/
 ```
 
-Every stage writes to `artifacts/<project>/<character>/<anim>/<job>/`:
+Every run writes one job dir (`--out`; must be new or empty, never overwritten):
 
 ```
-raw/            untouched model output (never modified)
-processed/      output of each stage, one subfolder per stage
+raw/            byte copies of the inputs (read-only); the chain reads only these
+processed/      01_alpha 02_pixelize 03_palette 04_clean 05_registered (one PNG per frame)
 report.json     validator output
 contact.png     review image
-manifest.json   inputs, seeds, workflow hash, model hashes, timings
+manifest.json   profile + input + output hashes, every parameter, tool versions, timings,
+                git commit, upstream selection.json / manifest.json (seed, set)
+export/         only on a validator PASS (docs/09); copying into the game is a human step
 ```
 
 `manifest.json` makes any artifact reproducible and lets the orchestrator
