@@ -14,9 +14,15 @@ import time
 from pathlib import Path
 
 from sonoranlab.profile import load_profile
-from sonoranlab.repair.authorization import Denied, canonical, require, safe_tree
+from sonoranlab.repair.authorization import Denied, canonical, require
 from sonoranlab.repair.compare import read_json
-from sonoranlab.repair.confine import agent_root, check_destination, git_root
+from sonoranlab.repair.confine import (
+    agent_root,
+    create_destination,
+    git_root,
+    open_destination,
+    verify_destination,
+)
 from sonoranlab.repair.operations import request_depth
 from sonoranlab.repair.runtime import no_symlinks
 from sonoranlab.repair.session import request
@@ -71,6 +77,23 @@ def image_result(response: dict, inbox: int, name: str) -> dict:
     }
 
 
+def _safe_mailbox(directory: int) -> None:
+    """Apply safe_tree's ownership/type/link checks without traversing pathnames."""
+    require(os.fstat(directory).st_uid == os.getuid(), "unsafe_path")
+    for name in os.listdir(directory):
+        info = os.stat(name, dir_fd=directory, follow_symlinks=False)
+        require(info.st_uid == os.getuid(), "unsafe_path")
+        require(stat.S_ISREG(info.st_mode) or stat.S_ISDIR(info.st_mode), "unsafe_path")
+        if stat.S_ISDIR(info.st_mode):
+            child = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=directory)
+            try:
+                _safe_mailbox(child)
+            finally:
+                os.close(child)
+        else:
+            require(info.st_nlink == 1, "unsafe_path")
+
+
 def relay(repair: Path, agent_dir: Path) -> dict:
     repair = no_symlinks(repair)
     doc = read_json(repair / "repair.json")
@@ -81,40 +104,48 @@ def relay(repair: Path, agent_dir: Path) -> dict:
     names = ("outbox", "processing", "inbox")
     marker = ".sonoranlab-mailbox"
     reuse = agent_dir.exists() or agent_dir.is_symlink()
-    # Confine first (pure checks, nothing created), then inspect an existing mailbox.
-    agent_dir = check_destination(
-        agent_dir,
-        root=agent_root(),
-        forbidden=(repair, parent, profile.export.godot_project, *((palette_checkout,) if palette_checkout else ())),
-        must_not_exist=not reuse,
-    )
+    root = agent_root()
+    forbidden = (repair, parent, profile.export.godot_project, *((palette_checkout,) if palette_checkout else ()))
     if reuse:
-        safe_tree(agent_dir)
-        # The worker keeps its task files here too; the queues and the marker must exist and be ours.
-        require(agent_dir.is_dir() and all((agent_dir / name).is_dir() for name in names), "invalid_mailbox")
-        info = (agent_dir / marker).lstat() if (agent_dir / marker).exists() else None
-        require(info is not None and stat.S_ISREG(info.st_mode) and info.st_size <= MAX_FILE, "invalid_mailbox")
-        try:
-            identity = read_json(agent_dir / marker)
-        except ValueError as e:
-            raise Denied("invalid_mailbox") from e
-        require(identity == {"repair_id": doc["repair_id"]}, "invalid_mailbox")
-    if not reuse:
-        agent_dir.parent.mkdir(parents=True, exist_ok=True)
-        agent_dir.mkdir(mode=0o700)
-    directories = [os.open(agent_dir, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)]
+        agent_dir, directory = open_destination(agent_dir, root=root, forbidden=forbidden)
+    else:
+        agent_dir, directory = create_destination(
+            agent_dir,
+            root=root,
+            kind="mailbox",
+            id=doc["repair_id"],
+            forbidden=forbidden,
+        )
+    directories = [directory]
     try:
+        if reuse:
+            _safe_mailbox(directory)
+            # Task files may coexist with the queues, but the identity must be ours.
+            try:
+                fd = os.open(marker, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
+                with os.fdopen(fd, "rb") as stream:
+                    info = os.fstat(stream.fileno())
+                    require(stat.S_ISREG(info.st_mode) and info.st_size <= MAX_FILE, "invalid_mailbox")
+                    identity = json.loads(stream.read(MAX_FILE + 1))
+                require(identity == {"repair_id": doc["repair_id"]}, "invalid_mailbox")
+            except (OSError, ValueError) as e:
+                raise Denied("invalid_mailbox") from e
         for name in names:
             if not reuse:
-                os.mkdir(name, mode=0o700, dir_fd=directories[0])
-            directories.append(os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=directories[0]))
+                os.mkdir(name, mode=0o700, dir_fd=directory)
+            try:
+                directories.append(os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=directory))
+            except OSError as e:
+                raise Denied("invalid_mailbox") from e
         if not reuse:
-            write_new(directories[0], marker, canonical({"repair_id": doc["repair_id"]}) + b"\n")
+            write_new(directory, marker, canonical({"repair_id": doc["repair_id"]}) + b"\n")
         _, outbox, processing, inbox = directories
+        verify_destination(agent_dir, directory, forbidden=forbidden)
         while True:
             state = read_json(repair / "state.json")
             if state.get("session_state") == "STOPPED":
                 return {"ok": True, "stopped": True}
+            verify_destination(agent_dir, directory, forbidden=forbidden)
             status = request(repair, {"action": "status"})
             if status.get("session_state") == "STOPPED":
                 return {"ok": True, "stopped": True}
@@ -153,9 +184,14 @@ def relay(repair: Path, agent_dir: Path) -> dict:
                     require(isinstance(payload, dict), "invalid_request")
                     payload.pop("token", None)
                     require(payload.get("action") in ("op", "read", "status"), "action_not_relayable")
-                    response = request(repair, payload)
                 except (Denied, ValueError, TypeError, RecursionError) as e:
                     response = {"ok": False, "error": getattr(e, "code", "invalid_request")}
+                else:
+                    verify_destination(agent_dir, directory, forbidden=forbidden)
+                    try:
+                        response = request(repair, payload)
+                    except (Denied, ValueError, TypeError, RecursionError) as e:
+                        response = {"ok": False, "error": getattr(e, "code", "invalid_request")}
                 finally:
                     if fd is not None:
                         os.close(fd)
@@ -173,5 +209,5 @@ def relay(repair: Path, agent_dir: Path) -> dict:
             raise Denied("unsafe_path") from e
         raise
     finally:
-        for directory in directories:
-            os.close(directory)
+        for opened in directories:
+            os.close(opened)
