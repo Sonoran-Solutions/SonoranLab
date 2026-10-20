@@ -21,7 +21,7 @@ from sonoranlab.repair.compare import (
     read_json,
     source_name,
 )
-from sonoranlab.repair.confine import check_destination, git_root, repair_root
+from sonoranlab.repair.confine import check_destination, create_destination, git_root, repair_root, verify_destination
 from sonoranlab.repair.runtime import AsepriteConverter, no_symlinks, seed_home
 
 SCHEMA = "sonoranlab.repair/1"
@@ -107,11 +107,9 @@ def prepare(
     no_symlinks(profile.path)
     no_symlinks(profile.palette.source)
     palette_checkout = git_root(profile.palette.source)
-    out = check_destination(
-        out,
-        root=repair_root(),
-        forbidden=(parent, profile.export.godot_project, *((palette_checkout,) if palette_checkout else ())),
-    )
+    root = repair_root()
+    forbidden = (parent, profile.export.godot_project, *((palette_checkout,) if palette_checkout else ()))
+    out = check_destination(out, root=root, forbidden=forbidden)
     spec = profile.character(character)
     if anim not in spec.animations:
         raise ValueError(f"unknown animation: {anim}")
@@ -158,39 +156,45 @@ def prepare(
     converter = converter or AsepriteConverter()
     doc["runtime"] = converter.record()
     doc["metadata"] = expected_metadata(doc)
-    out.parent.mkdir(parents=True, exist_ok=True)
+    out, destination = create_destination(out, root=root, kind="repair", id=doc["repair_id"], forbidden=forbidden)
     try:
-        os.mkdir(out)  # Atomic reservation, including refusal of an existing empty directory.
-    except FileExistsError as e:
-        raise Refused(f"destination_exists: {out}: exists; repair directories are never reused") from e
-    (out / "raw").mkdir()
-    doc["source"] = ingest_raw(out, sources)
-    (out / "raw").rename(out / "source")
-    doc["source_png_chunks"] = {name: png_chunks(out / "source" / name) for name in sources}
-    workspace = out / "workspace"
-    workspace.mkdir()
-    (workspace / "input").mkdir()
-    for name in sources:
-        shutil.copyfile(out / "source" / name, workspace / "input" / name)
-    seed_home(out / "session/home")
-    write_json(out, "mapping.json", mapping)
-    write_json(
-        workspace,
-        "plan.json",
-        {
-            "width": spec.cell[0],
-            "height": spec.cell[1],
-            "palette": palette,
-            "frames": [
-                {"png": f"/work/input/{source_name(e)}", "duration_ms": e["duration_ms"]} for e in mapping.values()
-            ],
-            "tags": doc["metadata"]["tags"],
-            "metadata": doc["metadata"],
-        },
-    )
-    converter.build(workspace)
-    write_json(out, "repair.json", doc)
-    return {"ok": True, "repair": str(out), "repair_id": doc["repair_id"], "state": "prepared", "frames": len(mapping)}
+        (out / "raw").mkdir()
+        doc["source"] = ingest_raw(out, sources)
+        (out / "raw").rename(out / "source")
+        doc["source_png_chunks"] = {name: png_chunks(out / "source" / name) for name in sources}
+        workspace = out / "workspace"
+        workspace.mkdir()
+        (workspace / "input").mkdir()
+        for name in sources:
+            shutil.copyfile(out / "source" / name, workspace / "input" / name)
+        seed_home(out / "session/home")
+        write_json(out, "mapping.json", mapping)
+        write_json(
+            workspace,
+            "plan.json",
+            {
+                "width": spec.cell[0],
+                "height": spec.cell[1],
+                "palette": palette,
+                "frames": [
+                    {"png": f"/work/input/{source_name(e)}", "duration_ms": e["duration_ms"]} for e in mapping.values()
+                ],
+                "tags": doc["metadata"]["tags"],
+                "metadata": doc["metadata"],
+            },
+        )
+        converter.build(workspace)
+        write_json(out, "repair.json", doc)
+        verify_destination(out, destination, forbidden=forbidden)
+        return {
+            "ok": True,
+            "repair": str(out),
+            "repair_id": doc["repair_id"],
+            "state": "prepared",
+            "frames": len(mapping),
+        }
+    finally:
+        os.close(destination)
 
 
 def inspect(repair: Path) -> dict:

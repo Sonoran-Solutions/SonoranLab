@@ -115,7 +115,20 @@ def test_forbidden_overlap(tmp_path, relation, refuse):
     refuse("forbidden_path", lambda: check_destination(path, root=tmp_path, forbidden=[area]))
 
 
-@pytest.mark.parametrize("marker", ["manifest.json", "review.json", "report.json", "repair.json"])
+@pytest.mark.parametrize(
+    "marker",
+    [
+        "manifest.json",
+        "review.json",
+        "report.json",
+        "repair.json",
+        ".sonoranlab-staging",
+        "mapping.json",
+        "state.json",
+        "repair-manifest.json",
+        "authorization.json",
+    ],
+)
 @pytest.mark.parametrize("at_root", [False, True])
 def test_nested_job_or_repair(tmp_path, marker, at_root, refuse):
     job = tmp_path if at_root else tmp_path / "older-job"
@@ -169,3 +182,73 @@ def test_empty_git_dir_is_not_a_checkout(tmp_path):
     assert git_root(tmp_path / "stray" / "x") is None
     (tmp_path / "stray" / ".git" / "HEAD").write_text("ref: refs/heads/main\n")
     assert git_root(tmp_path / "stray" / "x") == tmp_path / "stray"
+
+
+@pytest.mark.parametrize("variable", ["GIT_DIR", "GIT_WORK_TREE"])
+def test_git_environment_areas(tmp_path, monkeypatch, variable, refuse):
+    area = tmp_path / "environment-area"
+    area.mkdir()
+    alias = tmp_path / "alias"
+    alias.symlink_to(area, target_is_directory=True)
+    monkeypatch.setenv(variable, str(alias))
+    refuse("git_worktree", lambda: check_destination(area / "new", root=tmp_path))
+
+
+def test_real_git_environment_checkout_and_bare_repo(tmp_path, monkeypatch, refuse):
+    import shutil
+    import subprocess
+
+    if not shutil.which("git"):
+        pytest.skip("git unavailable")
+    bare = tmp_path / "external.git"
+    subprocess.run(["git", "init", "--bare", str(bare)], check=True, capture_output=True)
+    refuse("git_worktree", lambda: check_destination(bare / "new", root=tmp_path))
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    monkeypatch.setenv("GIT_DIR", str(bare))
+    monkeypatch.setenv("GIT_WORK_TREE", str(checkout))
+    refuse("git_worktree", lambda: check_destination(checkout / "new", root=tmp_path))
+
+
+def test_git_command_uses_nearest_directory_and_inherited_env(tmp_path, monkeypatch, refuse):
+    import subprocess
+
+    from sonoranlab.repair import confine
+
+    commands = []
+
+    def git(args, **kwargs):
+        commands.append((args, kwargs))
+        return subprocess.CompletedProcess(args, 0, "true\nfalse\n/worktree\n/git-dir\n", "")
+
+    monkeypatch.setattr(confine.subprocess, "run", git)
+    refuse("git_worktree", lambda: check_destination(tmp_path / "missing/new", root=tmp_path))
+    assert commands[0][0] == [
+        "git",
+        "-C",
+        str(tmp_path),
+        "rev-parse",
+        "--is-inside-work-tree",
+        "--is-inside-git-dir",
+        "--show-toplevel",
+        "--absolute-git-dir",
+    ]
+    assert commands[0][1]["timeout"] == 5 and "env" not in commands[0][1]
+
+
+@pytest.mark.parametrize("failure", ["missing", "timeout"])
+def test_git_unavailable_falls_back_to_positive_markers(tmp_path, monkeypatch, failure):
+    import subprocess
+
+    from sonoranlab.repair import confine
+
+    def unavailable(*args, **kwargs):
+        if failure == "missing":
+            raise FileNotFoundError("no git")
+        raise subprocess.TimeoutExpired("git", 5)
+
+    monkeypatch.setattr(confine.subprocess, "run", unavailable)
+    assert check_destination(tmp_path / "safe", root=tmp_path) == tmp_path / "safe"
+    (tmp_path / ".git").write_text("gitdir: /elsewhere")
+    with pytest.raises(Refused, match="git_worktree"):
+        check_destination(tmp_path / "unsafe", root=tmp_path)
