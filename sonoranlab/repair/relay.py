@@ -11,11 +11,12 @@ import re
 import secrets
 import stat
 import time
-from contextlib import suppress
 from pathlib import Path
 
-from sonoranlab.repair.authorization import Denied, canonical, require
+from sonoranlab.profile import load_profile
+from sonoranlab.repair.authorization import Denied, canonical, require, safe_tree
 from sonoranlab.repair.compare import read_json
+from sonoranlab.repair.confine import agent_root, check_destination, git_root
 from sonoranlab.repair.operations import request_depth
 from sonoranlab.repair.runtime import no_symlinks
 from sonoranlab.repair.session import request
@@ -71,19 +72,44 @@ def image_result(response: dict, inbox: int, name: str) -> dict:
 
 
 def relay(repair: Path, agent_dir: Path) -> dict:
-    repair, agent_dir = no_symlinks(repair), no_symlinks(agent_dir)
-    parent = no_symlinks(Path(read_json(repair / "repair.json")["parent_job"]))
-    repo = Path(__file__).resolve().parents[2]
-    for protected in (repair, parent, repo):
-        require(not agent_dir.is_relative_to(protected) and not protected.is_relative_to(agent_dir), "unsafe_agent_dir")
-    agent_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+    repair = no_symlinks(repair)
+    doc = read_json(repair / "repair.json")
+    parent = no_symlinks(Path(doc["parent_job"]))
+    profile = load_profile(no_symlinks(Path(doc["profile"]["path"])))
+    palette_checkout = git_root(no_symlinks(profile.palette.source))
+    agent_dir = Path(agent_dir).expanduser()
+    names = ("outbox", "processing", "inbox")
+    marker = ".sonoranlab-mailbox"
+    reuse = agent_dir.exists() or agent_dir.is_symlink()
+    # Confine first (pure checks, nothing created), then inspect an existing mailbox.
+    agent_dir = check_destination(
+        agent_dir,
+        root=agent_root(),
+        forbidden=(repair, parent, profile.export.godot_project, *((palette_checkout,) if palette_checkout else ())),
+        must_not_exist=not reuse,
+    )
+    if reuse:
+        safe_tree(agent_dir)
+        # The worker keeps its task files here too; the queues and the marker must exist and be ours.
+        require(agent_dir.is_dir() and all((agent_dir / name).is_dir() for name in names), "invalid_mailbox")
+        info = (agent_dir / marker).lstat() if (agent_dir / marker).exists() else None
+        require(info is not None and stat.S_ISREG(info.st_mode) and info.st_size <= MAX_FILE, "invalid_mailbox")
+        try:
+            identity = read_json(agent_dir / marker)
+        except ValueError as e:
+            raise Denied("invalid_mailbox") from e
+        require(identity == {"repair_id": doc["repair_id"]}, "invalid_mailbox")
+    if not reuse:
+        agent_dir.parent.mkdir(parents=True, exist_ok=True)
+        agent_dir.mkdir(mode=0o700)
     directories = [os.open(agent_dir, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)]
     try:
-        for name in ("outbox", "processing", "inbox"):
-            no_symlinks(agent_dir / name)
-            with suppress(FileExistsError):
+        for name in names:
+            if not reuse:
                 os.mkdir(name, mode=0o700, dir_fd=directories[0])
             directories.append(os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=directories[0]))
+        if not reuse:
+            write_new(directories[0], marker, canonical({"repair_id": doc["repair_id"]}) + b"\n")
         _, outbox, processing, inbox = directories
         while True:
             state = read_json(repair / "state.json")

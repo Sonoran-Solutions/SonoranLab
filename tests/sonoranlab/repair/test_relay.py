@@ -2,14 +2,17 @@
 
 import io
 import json
+import os
 import threading
 import time
 from pathlib import Path
 
 import pytest
 from test_broker import authorization, calls, op, start
+from test_confine import snapshot
 from test_interchange import fixture, prepare  # noqa: F401
 
+from sonoranlab import artifacts
 from sonoranlab.cli import main
 from sonoranlab.repair import Refused, session
 from sonoranlab.repair import relay as module
@@ -17,7 +20,9 @@ from sonoranlab.repair.authorization import Denied, authorize, canonical
 
 
 @pytest.fixture
-def repair(fixture):  # noqa: F811
+def repair(fixture, tmp_path, monkeypatch):  # noqa: F811
+    monkeypatch.setenv("SONORANLAB_AGENT_ROOT", str(tmp_path))
+    monkeypatch.setenv("SONORANLAB_REPAIR_ROOT", str(tmp_path))
     path = prepare(fixture)
     authorize(path, authorization(path))
     return path
@@ -88,6 +93,12 @@ def submit(agent, name, payload):
     temp.rename(agent / "outbox" / (name + ".json"))
 
 
+def create_mailbox(repair, agent, monkeypatch):
+    with monkeypatch.context() as patch:
+        patch.setattr(module, "request", lambda *args: {"session_state": "STOPPED"})
+        assert module.relay(repair, agent) == {"ok": True, "stopped": True}
+
+
 def test_relay_ops_reads_token_privacy_bad_names_and_stop(repair, tmp_path, monkeypatch):
     b = start(repair)
     agent = tmp_path / "worker"
@@ -142,7 +153,7 @@ def test_relay_ops_reads_token_privacy_bad_names_and_stop(repair, tmp_path, monk
 def test_relay_refuses_overwrite_before_dispatch(repair, tmp_path, monkeypatch, suffix):
     b = start(repair)
     agent = tmp_path / "worker"
-    (agent / "inbox").mkdir(parents=True)
+    create_mailbox(repair, agent, monkeypatch)
     previous = agent / f"inbox/edit.{suffix}"
     previous.write_text("keep me")
     thread, errors, _, _ = run_relay(repair, agent, b, monkeypatch)
@@ -165,11 +176,11 @@ def test_relay_refuses_symlinks(repair, tmp_path, monkeypatch, where):
     if where == "root":
         agent.symlink_to(outside, target_is_directory=True)
     else:
-        agent.mkdir()
+        create_mailbox(repair, agent, monkeypatch)
         if where == "outbox":
+            (agent / "outbox").rmdir()
             (agent / "outbox").symlink_to(outside, target_is_directory=True)
         else:
-            (agent / "outbox").mkdir()
             target = outside / "request.json"
             target.write_text('{"action":"status"}')
             (agent / "outbox/request.json").symlink_to(target)
@@ -182,18 +193,110 @@ def test_relay_refuses_symlinks(repair, tmp_path, monkeypatch, where):
         b.close()
 
 
-@pytest.mark.parametrize("where", ["repair", "parent", "repo", "ancestor"])
-def test_relay_requires_external_agent_dir(repair, where):
+@pytest.mark.parametrize(
+    "where",
+    [
+        "game",
+        "game_checkout",
+        "palette_checkout",
+        "repo",
+        "repair",
+        "parent",
+        "ancestor",
+        "outside_root",
+        "symlink_component",
+        "unmarked",
+        "other_repair",
+        "invalid_marker",
+        "marker_symlink",
+        "outbox_symlink",
+        "inbox_file",
+        "missing_directory",
+    ],
+)
+def test_relay_refusals_create_nothing_and_never_contact_broker(repair, tmp_path, monkeypatch, where):
     doc = json.loads((repair / "repair.json").read_text())
+    game = tmp_path / "game"
+    repo = tmp_path / "sonoranlab"
+    repo.mkdir()
+    monkeypatch.setattr(artifacts, "_REPO", repo)
     path = {
+        "game": game / "nested/worker",
+        "game_checkout": game / "nested/worker",
+        "palette_checkout": tmp_path / "palette-source/nested/worker",
+        "repo": repo / "nested/worker",
         "repair": repair / "worker",
         "parent": Path(doc["parent_job"]) / "worker",
-        "repo": Path(module.__file__).resolve().parents[2] / "worker",
         "ancestor": repair.parent,
-    }[where]
-    with pytest.raises(Denied, match="unsafe_agent_dir"):
+        "outside_root": tmp_path / "elsewhere/nested/worker",
+        "symlink_component": tmp_path / "link/nested/worker",
+    }.get(where, tmp_path / "worker")
+    if where in ("game_checkout", "palette_checkout"):
+        checkout = game if where == "game_checkout" else tmp_path / "palette-source"
+        (checkout / ".git").mkdir(parents=True)
+        (checkout / ".git/HEAD").write_text("ref: refs/heads/main\n")
+        if where == "palette_checkout":
+            profile = Path(doc["profile"]["path"])
+            (checkout / "palette.png").write_bytes((tmp_path / "palette.png").read_bytes())
+            profile.write_text(profile.read_text().replace("source: palette.png", "source: palette-source/palette.png"))
+    elif where == "outside_root":
+        monkeypatch.setenv("SONORANLAB_AGENT_ROOT", str(tmp_path / "agents"))
+    elif where == "symlink_component":
+        (tmp_path / "link").symlink_to(game, target_is_directory=True)
+    elif where == "unmarked":
+        path.mkdir()
+    elif where in (
+        "other_repair",
+        "invalid_marker",
+        "marker_symlink",
+        "outbox_symlink",
+        "inbox_file",
+        "missing_directory",
+    ):
+        create_mailbox(repair, path, monkeypatch)
+        marker = path / ".sonoranlab-mailbox"
+        if where == "other_repair":
+            marker.write_text(json.dumps({"repair_id": "another-repair"}))
+        elif where == "invalid_marker":
+            marker.write_text("not json")
+        elif where == "marker_symlink":
+            marker.unlink()
+            marker.symlink_to(repair / "repair.json")
+        elif where == "outbox_symlink":
+            (path / "outbox").rmdir()
+            (path / "outbox").symlink_to(game, target_is_directory=True)
+        elif where == "inbox_file":
+            (path / "inbox").rmdir()
+            (path / "inbox").write_text("keep me")
+        elif where == "missing_directory":
+            (path / "processing").rmdir()
+    monkeypatch.setattr(module, "request", lambda *args: pytest.fail("broker must not be contacted"))
+    before = snapshot(tmp_path)
+    with pytest.raises(Refused):
         module.relay(repair, path)
-    assert not (path / "outbox").exists()
+    assert snapshot(tmp_path) == before
+
+
+def test_relay_reuses_its_mailbox_for_the_same_repair(repair, tmp_path, monkeypatch):
+    agent = tmp_path / "worker"
+    create_mailbox(repair, agent, monkeypatch)
+    (agent / "TASK.md").write_text("iteration 2 task")  # the worker's own files live beside the queues
+    (agent / "reference").mkdir()
+    marker = agent / ".sonoranlab-mailbox"
+    repair_id = json.loads((repair / "repair.json").read_text())["repair_id"]
+    assert json.loads(marker.read_text()) == {"repair_id": repair_id}
+    assert marker.stat().st_mode & 0o777 == 0o600
+    forwarded = []
+
+    def status(path, payload):
+        forwarded.append((path, payload))
+        return {"session_state": "STOPPED"}
+
+    monkeypatch.setattr(module, "request", status)
+    before = snapshot(agent)
+    assert module.relay(repair, agent) == {"ok": True, "stopped": True}
+    assert forwarded == [(repair, {"action": "status"})]
+    assert snapshot(agent) == before
 
 
 def test_relay_cli(repair, tmp_path, monkeypatch, capsys):
@@ -201,3 +304,17 @@ def test_relay_cli(repair, tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(module, "relay", lambda r, a: {"ok": r == repair and a == agent, "stopped": True})
     assert main(["repair", "relay", str(repair), "--agent-dir", str(agent)]) == 0
     assert json.loads(capsys.readouterr().out) == {"ok": True, "stopped": True}
+
+
+def test_reuse_allows_worker_files_but_needs_marker(repair, tmp_path, monkeypatch):
+    """Iteration 2 reuses the mailbox that also holds the worker's task files; only the queues + marker are required."""
+    from sonoranlab.repair.relay import relay as run_relay
+
+    agent = Path(os.environ["SONORANLAB_AGENT_ROOT"]) / "worker"
+    agent.mkdir(parents=True)
+    for name in ("outbox", "processing", "inbox"):
+        (agent / name).mkdir()
+    (agent / "TASK.md").write_text("task")
+    with pytest.raises(Denied, match="invalid_mailbox"):
+        run_relay(repair, agent)  # no marker: not a mailbox this relay created
+    assert not (agent / ".sonoranlab-mailbox").exists()
