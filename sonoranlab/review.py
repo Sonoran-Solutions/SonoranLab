@@ -8,25 +8,44 @@ from __future__ import annotations
 
 import json
 import math
+import re
+import stat
 from datetime import datetime
 from pathlib import Path
 from typing import Literal
 
-from sonoranlab.artifacts import sha256_file, verify_raw, write_json
+from sonoranlab.artifacts import require_regular_file, sha256_file, verify_raw, write_json
 
 SCHEMA = "sonoranlab.review/2"
+_MAX_JSON_BYTES = 16 * 1024 * 1024
+_TIMESTAMP = re.compile(
+    r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}"
+    r"(?:\.[0-9]{1,6})?(?:Z|[+-](?:[01][0-9]|2[0-3]):[0-5][0-9])"
+)
 
 
 def _reject_constant(value: str) -> None:
     raise ValueError(f"non-standard JSON constant {value}")
 
 
+def _unique_object(pairs: list[tuple[str, object]]) -> dict:
+    obj: dict = {}
+    for key, value in pairs:
+        if key in obj:
+            raise ValueError(f"duplicate JSON key {key!r}")
+        obj[key] = value
+    return obj
+
+
 def _load(path: Path) -> object:
-    if path.is_symlink():
-        raise ValueError(f"{path.name} is a symlink")
     try:
-        return json.loads(path.read_text(), parse_constant=_reject_constant)
-    except (OSError, ValueError) as e:
+        require_regular_file(path)
+        with path.open("rb") as f:
+            data = f.read(_MAX_JSON_BYTES + 1)
+        if len(data) > _MAX_JSON_BYTES:
+            raise ValueError(f"JSON exceeds {_MAX_JSON_BYTES} bytes")
+        return json.loads(data, parse_constant=_reject_constant, object_pairs_hook=_unique_object)
+    except (OSError, ValueError, RecursionError) as e:
         raise ValueError(f"{path.name}: unreadable ({e})") from None
 
 
@@ -45,9 +64,11 @@ def _metadata_errors(review: dict) -> list[dict[str, str]]:
     if verdict not in ("pass", "fail"):
         errors.append(_error("REVIEW_VERDICT_INVALID", "verdict", "verdict must be pass|fail"))
     minutes = review.get("cleanup_minutes")
-    if (verdict == "pass" or minutes is not None) and (
-        type(minutes) not in (int, float) or minutes < 0 or (isinstance(minutes, float) and not math.isfinite(minutes))
-    ):
+    try:
+        valid_minutes = type(minutes) in (int, float) and minutes >= 0 and math.isfinite(float(minutes))
+    except OverflowError:
+        valid_minutes = False
+    if (verdict == "pass" or minutes is not None) and not valid_minutes:
         errors.append(
             _error("REVIEW_CLEANUP_INVALID", "cleanup_minutes", "cleanup_minutes must be a finite, non-negative number")
         )
@@ -55,7 +76,7 @@ def _metadata_errors(review: dict) -> list[dict[str, str]]:
     for field in ("started_at", "ended_at"):
         try:
             value = review.get(field)
-            if not isinstance(value, str) or "T" not in value.upper():
+            if not isinstance(value, str) or not _TIMESTAMP.fullmatch(value):
                 raise ValueError
             timestamp = datetime.fromisoformat(value)
             if timestamp.utcoffset() is None:
@@ -65,6 +86,19 @@ def _metadata_errors(review: dict) -> list[dict[str, str]]:
             errors.append(_error("REVIEW_TIMESTAMP_INVALID", field, f"{field} must be ISO-8601 with a timezone"))
     if len(times) == 2 and times["ended_at"] < times["started_at"]:
         errors.append(_error("REVIEW_INTERVAL_INVALID", "ended_at", "ended_at precedes started_at"))
+    for field in ("notes", "carried_from"):
+        if field in review and not isinstance(review[field], str):
+            errors.append(_error("REVIEW_METADATA_INVALID", field, f"{field} must be a string"))
+    if "supersedes" in review:
+        old = review["supersedes"]
+        if not isinstance(old, dict) or any(
+            not isinstance(old.get(k), str) for k in ("path", "sha256", "verdict", "reviewer", "started_at", "ended_at")
+        ):
+            errors.append(
+                _error(
+                    "REVIEW_METADATA_INVALID", "supersedes", "supersedes must contain string path/hash/review metadata"
+                )
+            )
     return errors
 
 
@@ -77,10 +111,20 @@ def _report_passes(job_dir: Path) -> bool:
 
 
 def _export_files(job: Path) -> dict[str, str]:
-    """{relpath: sha256} for every non-directory under export/; a symlink gets "" so it never matches a hash."""
+    """Hash every export file; refuse symlinks and special files, including the export root."""
     root = job / "export"
-    files = [p for p in root.rglob("*") if not p.is_dir()] if root.is_dir() else []
-    return {p.relative_to(job).as_posix(): "" if p.is_symlink() else sha256_file(p) for p in sorted(files)}
+    pending = [root]
+    files = {}
+    while pending:
+        p = pending.pop()
+        mode = p.lstat().st_mode
+        if stat.S_ISDIR(mode):
+            pending.extend(p.iterdir())
+        elif stat.S_ISREG(mode) and p != root:
+            files[p.relative_to(job).as_posix()] = sha256_file(p)
+        else:
+            raise ValueError(f"{p}: export entry must be a regular file or directory")
+    return files
 
 
 def _provenance(job: Path) -> tuple[dict | None, list[str]]:
@@ -126,7 +170,7 @@ def _provenance(job: Path) -> tuple[dict | None, list[str]]:
         elif sha256_file(p) != profile.get("sha256"):
             problems.append(f"profile {p}: sha256 differs from manifest")
     try:
-        problems += verify_raw(job)
+        problems += verify_raw(job, inputs=manifest["inputs"])
     except (OSError, ValueError, KeyError, TypeError) as e:
         problems.append(f"raw verification failed: {e}")
     contact = job / "contact.png"
@@ -134,7 +178,7 @@ def _provenance(job: Path) -> tuple[dict | None, list[str]]:
         "report_sha256": sha256_file(job / "report.json"),
         "manifest_sha256": sha256_file(job / "manifest.json"),
         "export": export,
-        "contact_sha256": sha256_file(contact) if contact.is_file() and not contact.is_symlink() else None,
+        "contact_sha256": sha256_file(contact) if contact.exists() or contact.is_symlink() else None,
         "job": str(job.resolve()),
     }
     return binds, problems
@@ -157,7 +201,10 @@ def record_review(
     `supersedes` names an earlier review file this one replaces (the caller moves it aside; nothing is deleted here).
     """
     job_dir = Path(job_dir)
-    binds, problems = _provenance(job_dir)
+    try:
+        binds, problems = _provenance(job_dir)
+    except (OSError, ValueError, KeyError, TypeError, RecursionError) as e:
+        raise ValueError(f"{job_dir}: cannot bind a review: {e}") from None
     if problems:
         raise ValueError(f"{job_dir}: cannot bind a review: " + "; ".join(problems))
     doc: dict = {
@@ -170,11 +217,11 @@ def record_review(
         "notes": notes,
         "binds": binds,
     }
-    if errors := _metadata_errors(doc):
-        raise ValueError("; ".join(f"{e['code']}: {e['message']}" for e in errors))
     if carried_from is not None:
         doc["carried_from"] = carried_from
     if supersedes is not None:
+        if not isinstance(supersedes, (str, Path)):
+            raise ValueError("supersedes must be a file path")
         supersedes = Path(supersedes)
         old = _load(supersedes) if supersedes.is_file() else None
         if not isinstance(old, dict):
@@ -184,8 +231,10 @@ def record_review(
             "sha256": sha256_file(supersedes),
             **{k: old.get(k) for k in ("verdict", "reviewer", "started_at", "ended_at")},
         }
+    if errors := _metadata_errors(doc):
+        raise ValueError("; ".join(f"{e['code']}: {e['message']}" for e in errors))
     try:
-        return write_json(job_dir, "review.json", doc)
+        return write_json(job_dir, "review.json", doc, max_bytes=_MAX_JSON_BYTES)
     except FileExistsError as e:
         raise ValueError(f"{job_dir / 'review.json'} exists; reviews cannot be overwritten") from e
 
@@ -198,7 +247,7 @@ def review_errors(job_dir: Path, *, review_path: Path | None = None) -> list[dic
     job = Path(job_dir)
     try:
         binds, problems = _provenance(job)
-    except (OSError, ValueError, KeyError, TypeError) as e:
+    except (OSError, ValueError, KeyError, TypeError, RecursionError) as e:
         binds, problems = None, [f"artifact verification failed: {e}"]
     errors = [_error("REVIEW_BINDING_INVALID", "binds", p) for p in problems]
     try:

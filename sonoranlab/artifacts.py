@@ -10,6 +10,7 @@ import json
 import platform
 import re
 import shutil
+import stat
 import subprocess
 from datetime import UTC, datetime
 from importlib import metadata
@@ -23,7 +24,15 @@ _STAGE = re.compile(r"^[0-9]{2}_[a-z_]+$")
 _REPO = Path(__file__).resolve().parent.parent
 
 
+def require_regular_file(path: Path) -> None:
+    """Refuse special files and symlinks (including directory symlinks) before opening."""
+    path = Path(path).absolute()
+    if not stat.S_ISREG(path.lstat().st_mode) or any(p.is_symlink() for p in path.parents):
+        raise ValueError(f"{path}: not a regular file or has a symlink in its path")
+
+
 def sha256_file(path: Path) -> str:
+    require_regular_file(path)
     h = hashlib.sha256()
     with open(path, "rb") as f:
         while chunk := f.read(1 << 20):
@@ -97,11 +106,14 @@ def write_stage(job: Path, stage: str, frames: dict[str, list[np.ndarray]]) -> d
     return hashes
 
 
-def write_json(job: Path, name: str, obj: object) -> Path:
-    """Write `job/<name>` (sorted keys, indent 1, trailing newline); refuses to overwrite."""
+def write_json(job: Path, name: str, obj: object, *, max_bytes: int | None = None) -> Path:
+    """Write strict JSON (sorted keys, indent 1, newline); validate size/values before exclusively creating the file."""
     p = Path(job) / _flat_name(name)
-    with open(p, "x") as f:
-        f.write(json.dumps(obj, sort_keys=True, indent=1) + "\n")
+    data = (json.dumps(obj, sort_keys=True, indent=1, allow_nan=False) + "\n").encode("utf-8")
+    if max_bytes is not None and len(data) > max_bytes:
+        raise ValueError(f"{p}: JSON exceeds {max_bytes} bytes")
+    with open(p, "xb") as f:
+        f.write(data)
     return p
 
 
@@ -160,14 +172,14 @@ def build_manifest(
     }
 
 
-def verify_raw(job: Path) -> list[str]:
-    """Recompute `raw/` hashes against `manifest.json` inputs; returns mismatch descriptions (empty = unchanged)."""
+def verify_raw(job: Path, *, inputs: dict[str, str] | None = None) -> list[str]:
+    """Recompute raw hashes against manifest inputs (optionally already loaded); return mismatch descriptions."""
     job = Path(job)
-    expected = json.loads((job / "manifest.json").read_text())["inputs"]
+    expected = inputs if inputs is not None else json.loads((job / "manifest.json").read_text())["inputs"]
     raw = job / "raw"
     problems = []
     for name, want in sorted(expected.items()):
-        p = raw / name
+        p = raw / _flat_name(name)
         if not p.is_file():
             problems.append(f"raw/{name}: missing")
         elif (got := sha256_file(p)) != want:

@@ -134,13 +134,21 @@ Track E sets: the 8 humanoid sets fail with exactly their bound reports' failure
 ADR-0008 F2 with the predicted hover warnings. Any change to a rule updates the fixture and says why.
 
 Production approval is separate: `sonoranlab review check JOB` rechecks schema 2 metadata and artifact hashes on every
-call, as does `production_usable`. Reviews require a named reviewer, `pass|fail`, timezone-aware ISO-8601 start/end
-timestamps in order, and finite non-negative numeric `cleanup_minutes` for a pass (zero is valid; booleans and numeric
-strings are rejected). Non-standard JSON constants (`NaN`, `Infinity`) are rejected. Check failures are JSON objects
+call, as does `production_usable`. Reviews require a named reviewer, `pass|fail`, start/end timestamps in order with
+the strict shape `YYYY-MM-DDTHH:MM:SS[.ffffff](Z|±HH:MM)` (1–6 fractional digits, offset hours ≤ 23 and minutes ≤ 59),
+and finite non-negative numeric `cleanup_minutes` for a pass (zero is valid; booleans, numeric strings and integers
+that overflow float conversion are rejected). Review, manifest and report JSON reads are limited to 16 MiB; excessive
+nesting, duplicate object keys and non-standard constants (`NaN`, `Infinity`) are refusals. Optional `notes` and
+`carried_from` must be strings; `supersedes` must contain string path, hash and prior review metadata. The writer
+checks the complete document using the reader's metadata rules and size limit, and serializes with `allow_nan=False`
+before creating a file. Check failures are JSON objects
 with `code`, `field`, and `message`: `REVIEW_SCHEMA_INVALID`, `REVIEW_REVIEWER_INVALID`, `REVIEW_VERDICT_INVALID`,
-`REVIEW_TIMESTAMP_INVALID`, `REVIEW_INTERVAL_INVALID`, `REVIEW_CLEANUP_INVALID`, `REVIEW_UNREADABLE`, `REVIEW_NOT_PASS`,
+`REVIEW_TIMESTAMP_INVALID`, `REVIEW_INTERVAL_INVALID`, `REVIEW_CLEANUP_INVALID`, `REVIEW_METADATA_INVALID`,
+`REVIEW_UNREADABLE`, `REVIEW_NOT_PASS`,
 or `REVIEW_BINDING_INVALID`. Bindings cover report, manifest, exports, contact sheet when present, all manifest outputs,
-raw inputs, and the manifest's profile file; missing or changed files prevent approval. Schema version stays 2.
+raw inputs, and the manifest's profile file; missing or changed files prevent approval. Every entry under `export/`,
+including its root, is checked without following directory symlinks. Symlinks and special files in exports or hashed
+paths are refused; JSON reads and hashing check `lstat` before opening a regular file. Schema version stays 2.
 
 ## What the validator does not do
 
