@@ -88,10 +88,19 @@ validator with no failures: north s1 (0.75), north-east s2 (0.50), east s4 (0.75
 foot offset (core), south-east s1/s2 thin shield-edge drift. Not yet reviewed at 1× and not Godot-checked; it is a
 second technical pass, not part of the gate. `~/sonoranlab-work/phase3/2026-10-20/validate/sweep-oathguard-grey-default-2/`.
 
+## 5. Track C live check (DYL-100)
+
+One posed first frame through the same adapter contract: `sonoranlab generate --exec sonoranlab-comfy` with a Track C
+request (samurai east still as image2, Track D bake skeleton `f7/g736/pose/east/000.png` as image1, 1024 conditioning,
+560 output, grey, seed 1), guarded at `--need-gib 60`, nothing paused. Status ok: exec 164.8 s, peak drawn 48.5 GiB
+(min MemAvailable 25.9 GiB), 1 RGB + 1 RGBA output, queue drained. Visual check (orchestrator): the run pose is
+followed, katana present, identity held. `prep.start_image_from_rgba` turns it into a 560² grey Track E start image.
+It was not needed for either humanoid pass, so no clip was generated from it.
+
 ## Limitations
 
 - One new character, one run; the pass rate across characters is not established. Pyromancer is an easier humanoid
   than samurai (small wand, no long blade) and runs under the looser default limits the owner approved.
 - Samurai's chosen east clip sits exactly at its 16 px drift limit.
-- Track C has no live run in Phase 3; it was not needed for either pass.
+- Track C has one live frame (§5), no animated use; held poses beyond that are Phase 6.
 - Review time is an upper bound from timestamps, not a stopwatch reading.
