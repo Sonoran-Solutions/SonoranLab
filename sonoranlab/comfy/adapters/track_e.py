@@ -147,6 +147,28 @@ def alpha_fringe_stats(
     }
 
 
+def persist_submission(out: Path, client: Any, workflow: Any, values: dict[str, Any], wf_path: Path) -> dict:
+    """Mint the prompt UUID and fsync out/submission.json BEFORE the client posts it, so a SIGKILL after ComfyUI
+    accepted the prompt still leaves the id needed to reattach or cancel that exact job (guard.pending_submissions)."""
+    from sonoranlab.comfy.client import graph_sha256
+
+    submission = {
+        "schema": "sonoranlab.submission/1",
+        "prompt_id": str(uuid.uuid4()),
+        "client_id": getattr(client, "client_id", None),
+        "base_url": getattr(client, "base_url", None),
+        "workflow_source": str(getattr(workflow, "source", wf_path)),
+        "workflow_patched_sha256": graph_sha256(workflow.patch(values)) if hasattr(workflow, "patch") else None,
+        "state": "submitting",
+        "written_at": datetime.now(UTC).isoformat(),
+    }
+    with open(out / "submission.json", "x") as f:
+        f.write(json.dumps(submission, indent=2) + "\n")
+        f.flush()
+        os.fsync(f.fileno())
+    return submission
+
+
 class _Plan:
     def __init__(self, **kw: Any) -> None:
         self.__dict__.update(kw)
@@ -286,27 +308,11 @@ class TrackE:
         length = values["length"]
         res.params = dict(values)
         try:
-            from sonoranlab.comfy.client import graph_sha256
-
             workflow = self._wf(request, plan)
-            prompt_id = str(uuid.uuid4())
-            res.prompt_id = prompt_id
-            res.workflow_source = str(getattr(workflow, "source", plan.wf_path))
-            res.workflow_patched_sha256 = graph_sha256(workflow.patch(values)) if hasattr(workflow, "patch") else None
-            submission = {
-                "schema": "sonoranlab.submission/1",
-                "prompt_id": prompt_id,
-                "client_id": getattr(self.client, "client_id", None),
-                "base_url": getattr(self.client, "base_url", None),
-                "workflow_source": res.workflow_source,
-                "workflow_patched_sha256": res.workflow_patched_sha256,
-                "state": "submitting",
-                "written_at": datetime.now(UTC).isoformat(),
-            }
-            with open(out / "submission.json", "x") as f:
-                f.write(json.dumps(submission, indent=2) + "\n")
-                f.flush()
-                os.fsync(f.fileno())  # persist the recovery ID before ComfyUI can accept it
+            sub = persist_submission(out, self.client, workflow, values, plan.wf_path)
+            res.prompt_id, res.workflow_source = sub["prompt_id"], sub["workflow_source"]
+            res.workflow_patched_sha256 = sub["workflow_patched_sha256"]
+            prompt_id = sub["prompt_id"]
             record = self.client.run(
                 workflow, values, timeout_s=self.timeout_s, expect={"90": length, "92": length}, prompt_id=prompt_id
             )
