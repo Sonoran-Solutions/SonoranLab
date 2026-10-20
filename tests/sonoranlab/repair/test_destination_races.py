@@ -1,4 +1,4 @@
-"""Deterministic ancestor swaps at reservation and publication boundaries."""
+"""Detect persistent swaps at selected checks; transient interference is not isolated."""
 
 import json
 import os
@@ -13,6 +13,7 @@ from test_interchange import fixture  # noqa: F401
 from sonoranlab.repair import Refused, confine
 from sonoranlab.repair import relay as relaymod
 from sonoranlab.repair import workspace as ws
+from sonoranlab.review import production_usable, record_review
 
 
 @pytest.mark.parametrize("command", ["prepare", "finalize", "relay", "reuse"])
@@ -103,7 +104,7 @@ def test_verify_detects_changed_destination(tmp_path, change):
 
 
 @pytest.mark.parametrize("command", ["prepare", "finalize"])
-def test_final_gate_refuses_moved_directory(saved, tmp_path, monkeypatch, command):  # noqa: F811
+def test_final_check_detects_persistently_moved_directory(saved, tmp_path, monkeypatch, command):  # noqa: F811
     repair, parent, profile, _ = saved
     out = tmp_path / "new"
     original = ws.write_json
@@ -151,10 +152,35 @@ def test_relay_verifies_again_before_forwarding(saved, tmp_path, monkeypatch):  
 
     monkeypatch.setattr(relaymod, "request", request)
     monkeypatch.setattr(relaymod, "rename_new", swap_after_claim)
-    with pytest.raises(Refused, match="race_detected"):
-        relaymod.relay(repair, out)
+    assert relaymod.relay(repair, out) == {"ok": False, "error": "race_detected"}
     assert calls == [{"action": "status"}]  # Initial contact preceded the swap; no worker request followed it.
     assert not list((tmp_path / "game").iterdir())
+
+
+def test_relay_refuses_approved_job_as_queue_before_contact(saved, tmp_path, monkeypatch):  # noqa: F811
+    repair, parent, _, _ = saved
+    mailbox = tmp_path / "mailbox"
+    monkeypatch.setenv("SONORANLAB_AGENT_ROOT", str(tmp_path))
+    monkeypatch.setattr(relaymod, "request", lambda *args: {"session_state": "STOPPED"})
+    assert relaymod.relay(repair, mailbox)["ok"]
+    (mailbox / "inbox").rmdir()
+    shutil.copytree(parent, mailbox / "inbox")
+    (mailbox / "inbox/review.json").unlink()
+    record_review(
+        mailbox / "inbox",
+        verdict="pass",
+        reviewer="queue regression",
+        cleanup_minutes=0,
+        started_at="2026-10-20T12:00:00+00:00",
+        ended_at="2026-10-20T12:00:00+00:00",
+    )
+    assert production_usable(mailbox / "inbox")
+    (mailbox / "outbox/query.json").write_text('{"action":"status"}')
+    monkeypatch.setattr(relaymod, "request", lambda *args: pytest.fail("broker must not be contacted"))
+    before = snapshot(mailbox)
+    assert relaymod.relay(repair, mailbox) == {"ok": False, "error": "unsafe_mailbox"}
+    assert snapshot(mailbox) == before
+    assert production_usable(mailbox / "inbox")
 
 
 def test_swap_after_parent_fd_open_marks_only_pinned_directory(tmp_path, monkeypatch):
