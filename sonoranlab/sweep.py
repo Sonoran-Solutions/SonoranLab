@@ -233,7 +233,16 @@ def rank(scores: Sequence[Score]) -> list[Score]:
     )
 
 
-def assemble_and_validate(choice: dict[str, Candidate], *, profile: Path, character: str, anim: str, out: Path) -> dict:
+def assemble_and_validate(
+    choice: dict[str, Candidate],
+    *,
+    profile: Path,
+    character: str,
+    anim: str,
+    out: Path,
+    godot_check: bool = False,
+    stills: Path | None = None,
+) -> dict:
     """Copy selected frames into a final raw set and validate once; only this verdict grants technical_pass."""
     if not choice or any(d != c.direction for d, c in choice.items()):
         raise ValueError("choice must contain candidates keyed by their direction")
@@ -244,7 +253,9 @@ def assemble_and_validate(choice: dict[str, Candidate], *, profile: Path, charac
     for d, candidate in choice.items():
         for p in _write_candidate(candidate, out / "selected" / d):
             shutil.copyfile(p, raw / p.name)
-    return pipeline.run(raw, profile=profile, character=character, anim=anim, out=out / "job")
+    return pipeline.run(
+        raw, profile=profile, character=character, anim=anim, out=out / "job", godot_check=godot_check, stills=stills
+    )
 
 
 def write_sweep(scores: Sequence[Score], *, directions: Sequence[str], final_verdict: dict, out: Path) -> Path:
@@ -285,6 +296,8 @@ def run_sweep(
     carrier: Path,
     out: Path,
     windows: str = "default",
+    godot_check: bool = False,
+    stills: Path | None = None,
 ) -> dict:
     """Rank all attempt/windows per direction, assemble the best (including failing fallbacks), write sweep.json."""
     prof = load_profile(profile)
@@ -321,7 +334,15 @@ def run_sweep(
     choice = {}
     for score in rank(scores):
         choice.setdefault(score.candidate.direction, score.candidate)
-    verdict = assemble_and_validate(choice, profile=profile, character=character, anim=anim, out=out / "final")
+    verdict = assemble_and_validate(
+        choice,
+        profile=profile,
+        character=character,
+        anim=anim,
+        out=out / "final",
+        godot_check=godot_check,
+        stills=stills,
+    )
     path = write_sweep(scores, directions=prof.directions.generate, final_verdict=verdict, out=out)
     return json.loads(path.read_text())
 

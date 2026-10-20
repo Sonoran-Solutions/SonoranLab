@@ -142,6 +142,7 @@ def build_parser() -> argparse.ArgumentParser:
     sr.add_argument("--carrier", type=Path, required=True, help="HD <direction>_<i>.png frames for other directions")
     sr.add_argument("--out", type=Path, required=True)
     sr.add_argument("--windows", choices=("default", "steady"), default="default")
+    sr.add_argument("--stills", type=Path, help="dir with cell-size still_<direction>.png for final sheet column 0")
     sr.set_defaults(func=sweep_rank_cmd)
     sp = sw.add_parser("plan", help="write Track E requests without running generation")
     sp.add_argument("--character", required=True)
@@ -160,6 +161,27 @@ def build_parser() -> argparse.ArgumentParser:
     sg.add_argument("--repo", type=Path, default=Path(__file__).resolve().parent.parent)
     sg.add_argument("--exec", dest="exec_container", metavar="CONTAINER")
     sg.set_defaults(func=sweep_run_cmd)
+
+    an = verbs.add_parser(
+        "animate", help="reference stills -> Track E generation -> sweep -> validated export (exit 0/1/2, 3 guard)"
+    )
+    an.add_argument("--profile", type=Path, required=True)
+    an.add_argument("--character", required=True)
+    an.add_argument(
+        "--reference",
+        type=Path,
+        required=True,
+        help="dir with cell-size still_<direction>.png with alpha for every row",
+    )
+    an.add_argument("--anim", default="run")
+    an.add_argument("--track", default="E", help="E only for now")
+    an.add_argument("--seeds", type=_seeds, default=(1,), help="comma-separated, e.g. 1,2")
+    an.add_argument("--out", type=Path, required=True, help="new directory; never overwritten")
+    an.add_argument("--exec", dest="exec_container", metavar="CONTAINER", help="e.g. sonoranlab-comfy")
+    an.add_argument("--need-gib", type=float, default=40)
+    an.add_argument("--windows", choices=("default", "steady"), default="default")
+    an.add_argument("--godot-check", action="store_true", help="import + check the export in Godot (needs godot)")
+    an.set_defaults(func=animate_cmd)
 
     rv = verbs.add_parser("review", help="record human production review").add_subparsers(dest="action", required=True)
     rr = rv.add_parser("record", help="exclusively write review.json in a technically passing job")
@@ -607,6 +629,7 @@ def sweep_rank_cmd(args: argparse.Namespace) -> int:
             carrier=args.carrier,
             out=args.out,
             windows=args.windows,
+            stills=args.stills,
         )
     except (OSError, ValueError, KeyError, TypeError, PipelineError) as e:
         print(f"sweep rank: {e}", file=sys.stderr)
@@ -644,6 +667,48 @@ def sweep_run_cmd(args: argparse.Namespace) -> int:
         return 2
     print(json.dumps(result, indent=2))
     return result["stop_exit"] or int(any(r["exit"] != 0 for r in result["requests"]))
+
+
+def _seeds(text: str) -> tuple[int, ...]:
+    try:
+        return tuple(int(x) for x in text.split(","))
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"{text!r}: expected comma-separated integers") from None
+
+
+def animate_cmd(args: argparse.Namespace) -> int:
+    from sonoranlab.animate import animate
+
+    res = animate(
+        profile=args.profile,
+        character=args.character,
+        reference_dir=args.reference,
+        anim=args.anim,
+        track=args.track,
+        seeds=args.seeds,
+        out=args.out,
+        exec_container=args.exec_container,
+        need_gib=args.need_gib,
+        windows=args.windows,
+        godot_check=args.godot_check,
+        repo=Path(__file__).resolve().parents[1],
+    )
+    if res["outcome"] == "usage":
+        print(f"animate: {res['error']}", file=sys.stderr)
+        return 2
+    t, c = res["timing"], res["counts"]
+    stages = " ".join(f"{k}={v}s" for k, v in t.items() if v is not None)
+    print(f"{res['outcome'].upper()} {args.character} {args.anim}: {stages}")
+    if c:
+        print(f"generations: {c['ok']}/{c['attempts']} ok ({c['failed']} failed, {c['not_run']} not run)")
+    if res["error"]:
+        print(f"error: {res['error']}", file=sys.stderr)
+    for m in (res["verdict"] or {}).get("failures", [])[:8]:
+        print(f"  - {m}", file=sys.stderr)
+    if res["export"]:
+        print(f"export: {Path(next(iter(res['export'].values()))).parent}")
+    print(f"animate.json: {args.out / 'animate.json'}")
+    return res["exit"]
 
 
 def review_record_cmd(args: argparse.Namespace) -> int:
