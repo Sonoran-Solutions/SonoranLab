@@ -70,6 +70,24 @@ Phase 2, the `sonoranlab` Python package (`uv sync`, `uv run sonoranlab --help`)
 is in progress. Read [docs/02-research-findings.md](docs/02-research-findings.md)
 before changing a model or tool choice.
 
+## How to run
+
+One command takes raw HD frames (`<direction>_<i>.png`, edge = cell × an integer
+scale) to a validated job dir and, only if the validator passes, a Godot export:
+
+```
+uv run sonoranlab process RAW_DIR --profile profiles/twos-are-up.yaml \
+  --character relay_sentinel --anim idle --out JOB_DIR [--stills DIR] [--godot-check]
+```
+
+Exit 0 = PASS and exported, 1 = validator FAIL (report and contact sheet written,
+no export), 2 = usage/config/input error. `--sheet` takes one raw sheet in the
+game layout instead of a frame dir. Column-0 stills are validated and preserved
+at scale 1; HD sheets need transparent column 0. Populated column 0 and `--stills`
+cannot be combined. Every parameter comes from the profile; the job
+dir layout is in [docs/01](docs/01-architecture.md), the export in
+[docs/09](docs/09-godot-export.md). Nothing runs on the network, ComfyUI or a GPU.
+
 ## Hardware this is designed for
 
 - **Primary:** AMD Ryzen AI Max+ 395 "Strix Halo" (Radeon 8060S, large unified

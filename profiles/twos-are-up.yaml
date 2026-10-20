@@ -30,6 +30,15 @@ anchor:
   anchor_x: cell_half     # quad is centred horizontally
   registration: per_clip  # the game pivots each clip once (contact frames on foot_y); frames keep their bob
 
+processing:               # the per-frame chain of `sonoranlab process` (DYL-86); values and their reasons are
+  version: processing-v1  # benchmark/characters/2026-10-18-processing-v1.yaml (the Phase 1 sweep's frozen config)
+  downscaler: k_centroid  # PixelOE k-centroid, pixeloe==1.0.0 torch backend on CPU
+  thickness: 0            # PixelOE outline expansion; 0 round-trips shipped pixel art exactly (DYL-77)
+  despill_px: 2           # magenta key spill removed within 2 HD px of the matte edge; interior untouched
+  key_tol: 48             # chroma-key RGB distance to bg_key for frames without alpha
+  # Not here: the colour cap is palette.max_colors_per_cell, the alpha threshold is alpha.threshold, and the pixelize
+  # scale is inferred per input as raw frame edge / cell (must be an exact integer; Phase 1 track E raw = cell x 3).
+
 alpha:
   threshold: 128
   bg_key: "#ff00ff"       # generation background; asserted absent from the palette by benchmark/tools/extract_refs.py
@@ -57,9 +66,10 @@ animations:               # names, frame counts and fps as the game's characters
   # generates; the game's characters.json stays the source for the rest, e.g. cleric death 8)
 
 validator:                # defaults for any character without a row below; no threshold is ever unset
-  label: calibrated `all` row (DYL-71, benchmark/characters/2026-10-18.yaml thresholds_addendum.all)
+  label: calibrated `all` row (DYL-71, 2026-10-18.yaml thresholds_addendum.all); bbox drift 25 from ADR-0008 H4
   max_foot_slide_px: 30   # gates: generated clips may not move more than the shipped art
-  max_bbox_drift_px: 16
+  max_bbox_drift_px: 25   # ADR-0008 H4: was 16 (one clip), which failed 4 of 13 shipped runs; 25 = observed max of the
+                          # 13 shipped runs, benchmark/results/2026-10-19-phase2/validator-study.md
   opaque_area_cv_warn: 0.13       # warnings
   loop_closure_ratio_warn: 1.29
 
@@ -86,10 +96,13 @@ characters:
     cell: 136
     anchor_mode: bbox_bottom
     locomotion: idle
-    max_foot_slide_px: 15
+    max_foot_slide_px: 15         # kept for the record; not computed or gated for bbox_bottom (ADR-0008 F2)
     max_bbox_drift_px: 10
     opaque_area_cv_warn: 0.10     # observed 0.01, raised to the docs/08 floor by the confirmed rule
     loop_closure_ratio_warn: 1.29
+    # ADR-0008 F2: no foot_slide for bbox_bottom; hover warnings per direction instead (validator-study.md, shipped idle)
+    hover_x_drift_warn_px: 3      # core centre x range > shipped max 3
+    hover_min_bob_px: 1.5         # centroid y range < half the shipped minimum 3.11
 
 references:
   style_refs: [samurai, oathguard, relay_sentinel]   # benchmark refs, see benchmark/characters/2026-10-18.yaml
