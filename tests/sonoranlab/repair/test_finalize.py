@@ -14,6 +14,7 @@ from PIL import Image, PngImagePlugin
 from test_broker import authorization, launcher
 from test_interchange import GENERATE, MIRROR, ORDER, PALETTE, fixture, hashes  # noqa: F401
 
+from sonoranlab import artifacts
 from sonoranlab.artifacts import sha256_file
 from sonoranlab.cli import main
 from sonoranlab.export.godot import export_godot
@@ -22,7 +23,7 @@ from sonoranlab.repair import workspace as ws
 from sonoranlab.repair.authorization import Denied, authorize, canonical, lease, persist
 from sonoranlab.repair.broker import Broker, Journal, Snapshot
 from sonoranlab.repair.compare import changed_coordinates, load_rgba, read_json
-from sonoranlab.review import production_usable, record_review
+from sonoranlab.review import production_usable, record_review, review_errors
 from sonoranlab.slice import slice_sheet
 from sonoranlab.validate import read_frames, read_stills, validate
 
@@ -210,6 +211,45 @@ def test_permitted_edit_and_exact_mirror_true_west_still(saved):
     assert sidecar["provenance"]["report_sha256"] == sha256_file(out / "report.json")
 
 
+@pytest.mark.parametrize("damage", ["modify", "delete", "replace", "copy_job"])
+def test_child_review_binds_lineage_and_location(saved, damage):
+    repair, parent, _, out = saved
+    assert mod.finalize(repair, out)["ok"]
+    manifest = read_json(out / "manifest.json")
+    assert manifest["repair"] == {
+        "manifest": "repair-manifest.json",
+        "repair_id": read_json(repair / "repair.json")["repair_id"],
+        "parent_job": str(parent),
+    }
+    assert "repair-manifest.json" not in manifest["outputs"]
+    sidecar = out / "repair-manifest.json"
+    assert read_json(sidecar)["child_manifest_sha256"] == sha256_file(out / "manifest.json")
+    record_review(
+        out,
+        verdict="pass",
+        reviewer="child human",
+        cleanup_minutes=0,
+        started_at="2026-10-20T12:00:00+00:00",
+        ended_at="2026-10-20T12:00:00+00:00",
+    )
+    assert production_usable(out)
+    assert read_json(out / "review.json")["binds"]["repair_manifest_sha256"] == sha256_file(sidecar)
+    if damage == "modify":
+        doc = read_json(sidecar)
+        doc["parent_job"] = "different parent"
+        sidecar.write_text(json.dumps(doc))
+    elif damage == "delete":
+        sidecar.unlink()
+    elif damage == "replace":
+        sidecar.unlink()
+        sidecar.write_text("{}\n")
+    else:
+        out = shutil.copytree(out, out.with_name("copied-child"))
+    assert not production_usable(out)
+    field = "binds.job" if damage == "copy_job" else "binds.repair_manifest_sha256"
+    assert any(e["code"] == "REVIEW_BINDING_INVALID" and e["field"] == field for e in review_errors(out))
+
+
 @pytest.mark.parametrize(
     "damage,code",
     [
@@ -312,19 +352,59 @@ def test_preflight_refuses_before_export_or_child(saved, monkeypatch, damage, co
     assert not out.exists()
 
 
-@pytest.mark.parametrize("destination", ["parent", "repair", "game", "existing"])
-def test_unsafe_or_existing_output(saved, destination):
+@pytest.mark.parametrize(
+    "destination,code",
+    [
+        ("repo", "repository_path"),
+        ("checkout", "git_worktree"),
+        ("parent", "forbidden_path"),
+        ("repair", "forbidden_path"),
+        ("game", "forbidden_path"),
+        ("other_job", "nested_workspace"),
+        ("other_repair", "nested_workspace"),
+        ("outside", "outside_root"),
+        ("symlink", "symlink_path"),
+        ("existing", "destination_exists"),
+        ("existing_file", "destination_exists"),
+    ],
+)
+def test_unsafe_or_existing_output(saved, tmp_path, monkeypatch, capsys, destination, code):
     repair, parent, profile, out = saved
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    monkeypatch.setattr(artifacts, "_REPO", repo)
+    checkout = tmp_path / "game-checkout"
+    (checkout / ".git").mkdir(parents=True)
+    (checkout / ".git/HEAD").write_text("ref: refs/heads/main\n")
+    for name, marker in (("other_job", "manifest.json"), ("other_repair", "repair.json")):
+        area = tmp_path / name
+        area.mkdir()
+        (area / marker).write_text("{}")
+    (tmp_path / "link").symlink_to(tmp_path, target_is_directory=True)
+    root = tmp_path / "repair-root" if destination == "outside" else tmp_path
+    monkeypatch.setenv("SONORANLAB_REPAIR_ROOT", str(root))
     out = {
+        "repo": repo / "child",
+        "checkout": checkout / "nested/child",
         "parent": parent / "child",
         "repair": repair / "child",
         "game": profile.export.godot_project / "child",
+        "other_job": tmp_path / "other_job/nested/child",
+        "other_repair": tmp_path / "other_repair/nested/child",
+        "outside": out,
+        "symlink": tmp_path / "link/child",
         "existing": out,
+        "existing_file": out,
     }[destination]
     if destination == "existing":
         out.mkdir()
-    with pytest.raises(Denied, match="output_exists" if destination == "existing" else "unsafe_output"):
-        mod.finalize(repair, out)
+    elif destination == "existing_file":
+        out.write_text("keep")
+    before = set(tmp_path.rglob("*")), hashes(tmp_path)
+    monkeypatch.setattr(mod, "lease", lambda *a: pytest.fail("destination check must precede lease creation"))
+    assert main(["repair", "finalize", str(repair), "--out", str(out)]) == 1
+    assert json.loads(capsys.readouterr().out)["message"].startswith(f"{code}:")
+    assert (set(tmp_path.rglob("*")), hashes(tmp_path)) == before
 
 
 def test_lease_is_held_until_finalize_returns(saved):
@@ -358,7 +438,8 @@ def test_cli_refusal_is_json_exit_one(saved, capsys):
     repair, _, _, out = saved
     out.mkdir()
     assert main(["repair", "finalize", str(repair), "--out", str(out)]) == 1
-    assert json.loads(capsys.readouterr().out)["error"] == "output_exists"
+    result = json.loads(capsys.readouterr().out)
+    assert result["error"] == "refused" and result["message"].startswith("destination_exists:")
     with pytest.raises(SystemExit) as exc:
         main(["repair", "finalize", str(repair)])
     assert exc.value.code == 2

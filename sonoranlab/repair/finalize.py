@@ -33,6 +33,7 @@ from sonoranlab.repair.compare import (
     read_json,
     source_name,
 )
+from sonoranlab.repair.confine import check_destination, git_root, repair_root
 from sonoranlab.repair.runtime import AsepriteConverter, no_symlinks
 from sonoranlab.slice import pack_sheet, slice_sheet
 from sonoranlab.validate import read_frames, read_stills, validate
@@ -108,7 +109,7 @@ def _sources(repair: Path, doc: dict) -> dict[str, np.ndarray]:
     return result
 
 
-def _verify(repair: Path, out: Path) -> tuple:
+def _verify(repair: Path) -> tuple:
     doc = read_json(repair / "repair.json")
     require(doc.get("schema") == "sonoranlab.repair/1", "invalid_repair")
     parent = no_symlinks(Path(doc["parent_job"]))
@@ -118,11 +119,6 @@ def _verify(repair: Path, out: Path) -> tuple:
         "profile_hash_mismatch",
     )
     profile = load_profile(profile_path)
-    require(
-        not any(out.is_relative_to(p) for p in (parent, repair, profile.export.godot_project.resolve())),
-        "unsafe_output",
-    )
-    require(not out.exists(), "output_exists")
     safe_tree(repair / "source")
     safe_tree(repair / "workspace")
     require((repair / "workspace/doc.aseprite").is_file(), "workspace_mismatch")
@@ -262,11 +258,26 @@ def _measurements(parent: dict, child: dict) -> dict:
 
 
 def finalize(repair: Path, out: Path, *, converter: object | None = None) -> dict:
-    """Return a JSON result; preflight refusals raise Denied before creating the child."""
+    """Return a JSON result; preflight refusals raise Refused before creating the child."""
     started = time.perf_counter()
-    repair, out = no_symlinks(repair), no_symlinks(out)
+    repair = no_symlinks(repair)
+    # Refuse destinations before even creating a lease; reverify inputs under the lease below.
+    doc = read_json(repair / "repair.json")
+    profile = load_profile(no_symlinks(Path(doc["profile"]["path"])))
+    palette_checkout = git_root(profile.palette.source)
+    out = check_destination(
+        out,
+        root=repair_root(),
+        forbidden=(
+            Path(doc["parent_job"]),
+            repair,
+            profile.export.godot_project,
+            *((palette_checkout,) if palette_checkout else ()),
+        ),
+    )
     with lease(repair):  # held through publication: no writer can start during validation
-        doc, profile, auth, masks, operations, parent_report, accepted_hashes, document_sha256 = _verify(repair, out)
+        require(not out.exists() and not out.is_symlink(), "output_exists")  # re-check under the lease
+        doc, profile, auth, masks, operations, parent_report, accepted_hashes, document_sha256 = _verify(repair)
         mapping = expected_mapping(doc)
         source_cells = _sources(repair, doc)
         expected_pixels = (
@@ -537,6 +548,11 @@ def finalize(repair: Path, out: Path, *, converter: object | None = None) -> dic
         )
         manifest["result"] = {"pass": not errors, "exported": export is not None, "exit": 1 if errors else 0}
         manifest["godot_check"] = gc
+        manifest["repair"] = {
+            "manifest": "repair-manifest.json",
+            "repair_id": doc["repair_id"],
+            "parent_job": doc["parent_job"],
+        }
         artifacts.write_json(job, "manifest.json", manifest)
         changed = [name for name, v in frame_hashes.items() if v["changed"]]
         repair_manifest = {
