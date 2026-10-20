@@ -167,6 +167,17 @@ def test_refuses_inside_the_game_and_never_overwrites(tmp_path):
     export(make_sheet(), tmp_path / "pre")
 
 
+def test_refuses_inside_any_forbidden_dir(tmp_path):
+    a, b = tmp_path / "a", tmp_path / "b"
+    a.mkdir()
+    (b / "assets").mkdir(parents=True)
+    for out in (a, b, b / "assets", b / "assets" / "toy"):
+        with pytest.raises(ValueError, match="shipped game"):
+            export(make_sheet(), out, forbid_under=[a, b])
+    assert not (a / "toy").exists() and not (b / "toy").exists()
+    export(make_sheet(), tmp_path / "ok", forbid_under=[a, b])  # a sibling is fine
+
+
 def test_custom_anim_name(tmp_path):
     paths = export(make_sheet(), tmp_path, anim_name="{direction}/{animation}")
     assert '&"north/run"' in Path(paths["tres"]).read_text()

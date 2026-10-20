@@ -35,8 +35,13 @@ clip cell and every non-empty column-0 still. All report digests must match a sh
 be exact horizontal flips of their sources. Stills also pass the profile's cell rules. `--rows` and `--cell` must
 match the profile; clip start must be ≥ 1, and unused columns must be transparent. Old reports without digests
 are refused (exit 2, no files written). Re-run validation to obtain a bound report.
-`--forbid-under` defaults to the profile's `export.godot_project`. Sidecar `provenance.validator` records
-`pass`, `report_sha256`, `character`, `animation`, and `frames_bound` (matched clip and still digest count).
+The report is also bound to the profile that validated it: its `provenance.profile.sha256` (written by both
+`sonoranlab process` and `sonoranlab validate`) must equal the sha256 of `--profile`, and the `--clip` playback
+metadata (frames, fps, loop, loop_from) must equal the profile's own animation of that name. Reports without profile
+provenance, from a different profile, or with an altered clip are refused (exit 2, no files written).
+The profile's `export.godot_project` is always protected; `--forbid-under` adds further directories (it never replaces
+the game), and an `--out` inside any of them is refused. Sidecar `provenance.validator` records `pass`,
+`report_sha256`, `profile_sha256`, `character`, `animation`, and `frames_bound` (matched clip and still digest count).
 
 ## Sheet (the game's convention, verified in `assets/pixel/v0/characters/`)
 

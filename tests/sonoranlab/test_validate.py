@@ -433,7 +433,12 @@ def test_cli_validate_stills(profile, tmp_path, capsys, case, exit_code):
 def bound_export(profile, tmp_path):
     clips = load("clean")
     stills = {"west": clips["south"][0]}
-    report = {**validate(clips, stills=stills, mirror={"west": "east"}, **KW), "character": "hero", "animation": "idle"}
+    report = {
+        **validate(clips, stills=stills, mirror={"west": "east"}, **KW),
+        "character": "hero",
+        "animation": "idle",
+        "provenance": {"profile": {"path": str(profile), "sha256": sha256_file(profile)}},
+    }
     assert report["pass"]
     sheet = pack_sheet(clips, (24, 24), ["west", "south", "east"], 4, mirror={"west": "east"}, stills=stills)
     png, rep = tmp_path / "sheet.png", tmp_path / "report.json"
@@ -461,7 +466,7 @@ def bound_export(profile, tmp_path):
     return argv, sheet, report, png, rep
 
 
-def test_cli_export_bound_asset(bound_export, tmp_path, capsys):
+def test_cli_export_bound_asset(bound_export, profile, tmp_path, capsys):
     argv, _, report, _, rep = bound_export
     prov = tmp_path / "prov.json"
     prov.write_text(json.dumps({"job": "cli", "validator": {"pass": False}}))
@@ -475,6 +480,7 @@ def test_cli_export_bound_asset(bound_export, tmp_path, capsys):
             "character": "hero",
             "animation": "idle",
             "frames_bound": len(report["digests"]),
+            "profile_sha256": sha256_file(profile),
         },
     }
     assert main(argv) == 2
@@ -544,6 +550,75 @@ def test_cli_export_requires_passing_report(bound_export, tmp_path, capsys, repo
     assert main(argv) == 2
     assert "export needs a passing validator report" in capsys.readouterr().err
     assert not (tmp_path / "out").exists()
+
+
+def test_cli_export_refuses_other_profile(bound_export, profile, tmp_path, capsys):
+    """A report validated with another profile (here: a different warning limit) is not the same evidence."""
+    argv, *_ = bound_export
+    other = tmp_path / "other.yaml"
+    doc = yaml.safe_load(profile.read_text())
+    doc["validator"]["opaque_area_cv_warn"] = 0.5
+    doc["characters"]["hero"]["opaque_area_cv_warn"] = 0.5
+    other.write_text(yaml.safe_dump(doc, sort_keys=False))
+    assert sha256_file(other) != sha256_file(profile)
+    argv[argv.index("--profile") + 1] = str(other)
+    assert main(argv) == 2
+    assert "report was validated with a different profile" in capsys.readouterr().err
+    assert not (tmp_path / "out").exists()
+
+
+@pytest.mark.parametrize("provenance", [{}, {"profile": {}}, None])
+def test_cli_export_refuses_report_without_profile_provenance(bound_export, tmp_path, capsys, provenance):
+    argv, _, report, _, rep = bound_export
+    if provenance is None:
+        report.pop("provenance")
+    else:
+        report["provenance"] = provenance
+    rep.write_text(json.dumps(report))
+    assert main(argv) == 2
+    assert "report has no profile provenance" in capsys.readouterr().err
+    assert not (tmp_path / "out").exists()
+
+
+@pytest.mark.parametrize(
+    "clip, message",
+    [
+        ("idle:1:4:60:loop", "--clip fps 60 does not match the profile's idle fps 5;"),
+        ("idle:1:4:5:once", "--clip loop False does not match the profile's idle loop True"),
+        ("idle:1:4:5:loop:2", "--clip loop_from 2 does not match the profile's idle loop_from None"),
+        ("idle:1:3:5:loop", "--clip frames 3 does not match the profile's idle frames 4"),
+    ],
+)
+def test_cli_export_refuses_altered_playback(bound_export, tmp_path, capsys, clip, message):
+    argv, *_ = bound_export
+    argv[argv.index("--clip") + 1] = clip
+    assert main(argv) == 2
+    assert message in capsys.readouterr().err
+    assert not (tmp_path / "out").exists()
+
+
+def test_cli_export_refuses_clip_that_is_not_a_profile_animation(bound_export, tmp_path, capsys):
+    argv, _, report, _, rep = bound_export
+    argv[argv.index("--clip") + 1] = "cast:1:4:5:loop"
+    report["animation"] = "cast"
+    rep.write_text(json.dumps(report))
+    assert main(argv) == 2
+    assert "--clip 'cast' is not a clip of hero (idle)" in capsys.readouterr().err
+    assert not (tmp_path / "out").exists()
+
+
+@pytest.mark.parametrize("inside", ["game", "extra"])
+def test_cli_export_forbids_game_and_extra_dirs_together(bound_export, tmp_path, capsys, inside):
+    """`--forbid-under` adds to the profile's game directory; it never replaces it."""
+    argv, *_ = bound_export
+    extra = tmp_path / "extra"
+    extra.mkdir()
+    game = str(Path(argv[argv.index("--profile") + 1]).parent / "game")
+    argv[-1] = str(tmp_path / inside / "out")
+    assert main([*argv, "--forbid-under", str(extra)]) == 2
+    assert f"inside the shipped game {tmp_path / inside}" in capsys.readouterr().err
+    assert not (tmp_path / "game/out").exists() and not (tmp_path / "extra/out").exists()
+    assert not Path(game, "out").exists() and not (tmp_path / "out").exists()
 
 
 def test_cli_export_requires_profile(bound_export):
