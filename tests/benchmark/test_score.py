@@ -167,11 +167,31 @@ def test_review_binding(root: Path) -> None:
     bound = with_review({"usable": "yes", "cleanup_minutes": 5, "artifact_sha256": "a" * 64})
     assert bound["review_binding"] == "bound" and bound["usable"] == "yes" and bound["cleanup_minutes"] == 5
     unbound = with_review({"usable": "yes"})
-    assert unbound["review_binding"] == "unbound" and unbound["human_usable"] == "yes" and unbound["usable"] == "yes"
+    assert unbound["review_binding"] == "unbound" and unbound["human_usable"] == "yes"
+    assert unbound["usable"] == ""    # a verdict not bound to this artifact's hash is not a verdict on it
     stale = with_review({"usable": "yes", "cleanup_minutes": 5, "artifact_sha256": "b" * 64})
     assert stale["review_binding"] == "stale" and stale["human_usable"] == "yes" and stale["cleanup_minutes"] == 5
     assert "review was of a different artifact" in stale["notes"]
     assert stale["usable"] == ""      # a verdict on another artifact is not a verdict on this one
+
+
+@pytest.mark.parametrize("entry", [
+    {"usable": "yes"},                                  # unbound: no artifact hash
+    {"usable": "yes", "artifact_sha256": ""},           # unbound: empty hash
+    {"usable": "yes", "artifact_sha256": "b" * 64},     # stale: hash of another artifact
+])
+@pytest.mark.parametrize("bind_report", [True, False])
+def test_unbound_or_stale_review_never_makes_usable_yes(root: Path, entry: dict, bind_report: bool) -> None:
+    """Regression (Phase 1 senior review): with validator_pass yes, only a review bound to this sheet's hash may
+    complete usable=yes. A report not bound to selection.json has no sheet hash, so any hash in the review is stale."""
+    j = f"{DATE}/E/relay_sentinel/2/north"
+    manifest(root, j)
+    sdir = root / "E/relay_sentinel/2/set"
+    sha = selection(sdir, [att(j, 60)])
+    report(sdir / "processed/report.json", True, sha if bind_report else "0" * 64, sheet="a" * 64)
+    (r,) = score(root, {"sets": {"E/relay_sentinel/2": entry}})
+    assert r["human_usable"] == "yes" and r["review_binding"] in ("unbound", "stale")
+    assert r["usable"] != "yes"
 
 
 def test_cli_writes_the_columns(root: Path, tmp_path: Path) -> None:
