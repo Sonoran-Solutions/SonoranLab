@@ -696,7 +696,7 @@ def test_tainted_restart_still_refused(repair):
 
 @pytest.mark.parametrize("fault,ok", [("snapshot_drop", True), ("snapshot_drop_twice", False)])
 def test_unknown_snapshot_retried_as_read(repair, fault, ok):
-    b = start(repair, fault, timeout=0.1)
+    b = start(repair, fault, timeout=1.0)  # a dropped reply waits the full timeout; 0.1 s flaked on CI runners
     try:
         result = b.handle(op(b))
         assert result["ok"] == ok, result
