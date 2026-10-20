@@ -113,18 +113,22 @@ def _sha(path: Path) -> str:
         return hashlib.file_digest(f, "sha256").hexdigest()
 
 
-def alpha_fringe_stats(frames: list[Path], background: str, tol: float = FRINGE_TOL) -> dict[str, Any]:
-    """Recorded facts per RGBA frame, not gates: semi-transparent pixels (0<a<255), opaque edge pixels (4-adjacent to
-    a transparent one) within `tol` of the background colour ("grey fringe"), and frames with no alpha at all."""
+def alpha_fringe_stats(
+    frames: list[Path], background: str, tol: float = FRINGE_TOL, threshold: int = 128
+) -> dict[str, Any]:
+    """Recorded facts per RGBA frame, not gates: semi-transparent pixels (0<a<255); the silhouette edge the pipeline
+    keeps (a >= `threshold`, the profile's alpha.threshold, 4-adjacent to a < threshold); edge pixels within `tol` of
+    the background colour ("grey fringe": background bleeding into what becomes the outline); empty frames.
+    BiRefNet's alpha is soft, so the edge is taken at the threshold, not at a == 255 next to a == 0."""
     bg = np.array(parse_hex(background), np.float32)
     rows = []
     for f in frames:
         with Image.open(f) as im:
             px = np.asarray(im.convert("RGBA"))
         alpha = px[..., 3]
-        clear = np.pad(alpha == 0, 1)  # outside the frame is not "transparent"
+        clear = np.pad(alpha < threshold, 1)  # outside the frame is not "transparent"
         near_clear = clear[:-2, 1:-1] | clear[2:, 1:-1] | clear[1:-1, :-2] | clear[1:-1, 2:]
-        edge = (alpha == 255) & near_clear
+        edge = (alpha >= threshold) & near_clear
         close = np.linalg.norm(px[..., :3].astype(np.float32) - bg, axis=-1) <= tol
         rows.append(
             {
@@ -139,6 +143,7 @@ def alpha_fringe_stats(frames: list[Path], background: str, tol: float = FRINGE_
     return {
         "background": background,
         "tolerance": tol,
+        "threshold": threshold,
         "frames": rows,
         "totals": {k: sum(r[k] for r in rows) for k in keys},
         "empty_frames": [r["frame"] for r in rows if r["empty"]],

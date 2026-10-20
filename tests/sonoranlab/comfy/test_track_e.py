@@ -288,10 +288,22 @@ def test_alpha_fringe_counts(tmp_path: Path) -> None:
     st = alpha_fringe_stats([tmp_path / "f0.png", tmp_path / "f1.png"], "#808080")
     f0, f1 = st["frames"]
     assert f0["semi_transparent"] == 2
-    assert f0["edge"] == 28  # ring of an 8x8 block
+    assert f0["edge"] == 29  # ring of an 8x8 block + the a=128 island at (0, 0), which survives the 128 threshold
     assert f0["grey_fringe"] == 9  # 8 in the left column (the corner pixels included) + the top pixel
     assert f0["empty"] is False and f1["empty"] is True and f1["edge"] == 0
     assert st["empty_frames"] == ["f1.png"] and st["totals"]["grey_fringe"] == 9
+
+
+def test_alpha_fringe_on_soft_alpha_edge(tmp_path: Path) -> None:
+    # BiRefNet edges are soft: no a=255 pixel touches a=0, but the a>=128 ring is what the pipeline keeps.
+    a = np.zeros((10, 10, 4), np.uint8)
+    a[1:9, 1:9] = (128, 128, 128, 40)  # faint outer halo, dropped by the threshold
+    a[2:8, 2:8] = (126, 130, 129, 200)  # kept ring: background-coloured -> fringe
+    a[3:7, 3:7] = (200, 30, 30, 255)
+    Image.fromarray(a).save(tmp_path / "f.png")
+    f = alpha_fringe_stats([tmp_path / "f.png"], "#808080")["frames"][0]
+    assert f["edge"] == 20 and f["grey_fringe"] == 20
+    assert alpha_fringe_stats([tmp_path / "f.png"], "#808080", threshold=255)["frames"][0]["grey_fringe"] == 0
 
 
 def test_guarded_argv() -> None:
