@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import shutil
 import subprocess
 import tempfile
 import time
+from contextlib import ExitStack
 from io import BytesIO
 from pathlib import Path
 
@@ -33,7 +35,7 @@ from sonoranlab.repair.compare import (
     read_json,
     source_name,
 )
-from sonoranlab.repair.confine import check_destination, git_root, repair_root
+from sonoranlab.repair.confine import check_destination, create_destination, git_root, repair_root, verify_destination
 from sonoranlab.repair.runtime import AsepriteConverter, no_symlinks
 from sonoranlab.slice import pack_sheet, slice_sheet
 from sonoranlab.validate import read_frames, read_stills, validate
@@ -265,17 +267,15 @@ def finalize(repair: Path, out: Path, *, converter: object | None = None) -> dic
     doc = read_json(repair / "repair.json")
     profile = load_profile(no_symlinks(Path(doc["profile"]["path"])))
     palette_checkout = git_root(profile.palette.source)
-    out = check_destination(
-        out,
-        root=repair_root(),
-        forbidden=(
-            Path(doc["parent_job"]),
-            repair,
-            profile.export.godot_project,
-            *((palette_checkout,) if palette_checkout else ()),
-        ),
+    root = repair_root()
+    forbidden = (
+        Path(doc["parent_job"]),
+        repair,
+        profile.export.godot_project,
+        *((palette_checkout,) if palette_checkout else ()),
     )
-    with lease(repair):  # held through publication: no writer can start during validation
+    out = check_destination(out, root=root, forbidden=forbidden)
+    with lease(repair), ExitStack() as cleanup:  # held through publication
         require(not out.exists() and not out.is_symlink(), "output_exists")  # re-check under the lease
         doc, profile, auth, masks, operations, parent_report, accepted_hashes, document_sha256 = _verify(repair)
         mapping = expected_mapping(doc)
@@ -322,8 +322,11 @@ def finalize(repair: Path, out: Path, *, converter: object | None = None) -> dic
                 }
             )
         exported_at = time.perf_counter()
-        out.mkdir()  # atomic reservation, also refuses a racing creator
-        job = artifacts.create_job(out)
+        out, destination = create_destination(out, root=root, kind="child", id=doc["repair_id"], forbidden=forbidden)
+        cleanup.callback(os.close, destination)
+        job = out
+        (job / "raw").mkdir()
+        (job / "processed").mkdir()
         # Numbered PNGs were compared; mapped/ is only a disposable convenience copy.
         inputs = artifacts.ingest_raw(
             job,
@@ -476,7 +479,7 @@ def finalize(repair: Path, out: Path, *, converter: object | None = None) -> dic
         if errors:
             export = None
             if (job / "export").exists():
-                shutil.rmtree(job / "export")
+                shutil.rmtree("export", dir_fd=destination)
             rep["pass"] = False
             rep["failures"] = [*rep["failures"], *(e["code"] for e in errors)]
         rep["repair_errors"] = errors
@@ -585,6 +588,7 @@ def finalize(repair: Path, out: Path, *, converter: object | None = None) -> dic
             "human_review": "pending",
         }
         artifacts.write_json(job, "repair-manifest.json", repair_manifest)
+        verify_destination(out, destination, forbidden=forbidden)
         return {
             "ok": not errors,
             "pass": not errors,
