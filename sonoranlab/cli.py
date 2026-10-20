@@ -206,7 +206,7 @@ def build_parser() -> argparse.ArgumentParser:
         rp.exit(2)
 
     def repair_cmd(args: argparse.Namespace) -> int:
-        from sonoranlab.repair.cli import run
+        from sonoranlab.repair.commands import run
 
         return run(args)
 
@@ -223,7 +223,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     p.parse_known_args = repair_parse_known
     repair_actions = rp.add_subparsers(dest="repair_action", required=True)
-    for action in ("prepare", "export", "diff", "inspect", "abort"):
+    for action in ("prepare", "export", "diff", "inspect", "abort", "authorize", "op", "read", "session"):
         command = repair_actions.add_parser(action)
         command.error = repair_error
         command.set_defaults(func=repair_cmd)
@@ -233,8 +233,20 @@ def build_parser() -> argparse.ArgumentParser:
             command.add_argument("--character", required=True)
             command.add_argument("--anim", required=True)
             command.add_argument("--out", type=Path, required=True)
+        elif action == "session":
+            sessions = command.add_subparsers(dest="session_action", required=True)
+            for operation in ("start", "stop", "status", "checkpoint"):
+                sub = sessions.add_parser(operation)
+                sub.error = repair_error
+                sub.add_argument("repair", type=Path)
+                if operation == "start":
+                    sub.add_argument("--detach", action="store_true")
+                elif operation == "stop":
+                    sub.add_argument("--checkpoint", action="store_true")
         else:
             command.add_argument("repair", type=Path)
+            if action in ("authorize", "op", "read"):
+                command.add_argument("--spec", type=Path, required=True)
     return p
 
 
