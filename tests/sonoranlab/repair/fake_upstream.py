@@ -235,7 +235,7 @@ def main() -> None:
             elif fault == "snap":
                 frames[n][0, 0] = rgba(meta["palette"][2])
             elif fault == "delay":
-                time.sleep(0.15)
+                time.sleep(1.5)  # strictly longer than the 1 s test timeout
             elif fault == "eof_after":
                 sys.exit(0)
             elif fault == "malformed":
