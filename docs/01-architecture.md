@@ -138,3 +138,34 @@ Transport is pluggable: HTTP to the loopback port by default, or `PodmanExecTran
 `env/comfy.sh up --offline` (`--network=none`), whose API exists only inside the container. Each request is then
 relayed by `podman exec -i sonoranlab-comfy python -c <relay>` to `127.0.0.1:8188` there; outputs still arrive in the
 host-mounted `$WORK/output`, so `output_root` is unchanged. This is the path the offline acceptance runs use.
+
+## Optional editor companion (Phase 3.5)
+
+Pilot, not part of the core: the deterministic pipeline imports no editor code and works without it (ADR-0009,
+status proposed). SonoranLab stays the authority; Aseprite is reachable only through a broker.
+
+```
+ SonoranLab (host)                      bwrap sandbox (--unshare-all, private netns, lo only)
+ +------------------------+  stdio MCP  +---------------------------------------------+
+ | broker: allowlist,     |<----------->| upstream `serve` (no --allowLua, no headless)|
+ | lease, mask/diff check,|             |     |  127.0.0.1 bridge (sandbox-only)       |
+ | restore, finalize      |             |     v                                        |
+ +-----------^------------+             | Aseprite + extension --- Xephyr display     |
+             |                          |                                              |
+  editor worker / critic                |  writable: workspace/ (+ private HOME, tmp)  |
+  (broker tools only, no                +---------------------------------------------+
+  upstream MCP, no shell)                 read-only: /usr, /etc, Aseprite, node, build
+```
+
+Repair job layout (`<repair>/`, reserved atomically by `repair prepare`):
+
+| path | content |
+|---|---|
+| `repair.json` | ids, parent job and profile hashes, tool versions (created exclusively) |
+| `source/` | byte-exact copies of the approved frames and stills, mode 0444, sha256 recorded |
+| `mapping.json` | Aseprite frame number to (kind still\|anim, direction, index) |
+| `workspace/` | `doc.aseprite` and `export/<frame>.png`; the only writable bind in the sandbox |
+| `authorization.json` | allowed ops, per-frame masks, mirror derivations, max iterations; written before a session, hash-bound |
+| `session/` | `lease.lock`, lease token, op log, private HOME |
+| `export/` | finalize output used to build the child job |
+| child job | normal `artifacts/` layout plus `repair-manifest.json`; needs its own review, the parent's approval does not transfer |
