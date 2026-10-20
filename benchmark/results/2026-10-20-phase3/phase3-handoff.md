@@ -2,7 +2,7 @@
 
 **Revision 2026-10-20 (after the senior review of #26–#32):** the three P1 findings and the P2 are fixed in the PRs
 where they lived (#28, #29, #30, #31); see `phase3-gate.md` §6. Existing owner approvals are re-bound to their exact
-artifacts. The corrected pyromancer export (stills in column 0) awaits one owner 1× confirmation. A hosted
+artifacts. The corrected pyromancer export (stills in column 0) is owner-confirmed at 1× and bound. A hosted
 combined-stack check runs on a disposable `[DO NOT MERGE]` integration PR.
 
 **Recommendation: GO for Phase 4**, conditional on the owner reviewing and merging the PR stack below. All seven Phase 3
@@ -13,7 +13,7 @@ exit criteria are met on the evidence in `phase3-gate.md`. **Nothing is merged; 
 | # | criterion | evidence | status |
 |---|---|---|---|
 | 1 | Track E and the useful Track C fallback run through the common adapter interface | `generate(request) -> RawResult` (#28); Track E: 29 live clips, 29/29 first pass; Track C: 1 live posed frame (gate §5) | met |
-| 2 | one command generates, processes, validates and exports a game-native run cycle for an approved character | `sonoranlab animate` on pyromancer: exit 0, 5 generated directions + mirrored west, 6 frames at 10 fps, cell 144, palette-locked, export only on PASS (gate §3). Revision: the sheet now carries all 8 approved stills in column 0, verified pixel-exact (gate §6) | met; corrected export awaits owner 1× confirmation |
+| 2 | one command generates, processes, validates and exports a game-native run cycle for an approved character | `sonoranlab animate` on pyromancer: exit 0, 5 generated directions + mirrored west, 6 frames at 10 fps, cell 144, palette-locked, export only on PASS (gate §3). Revision: the sheet now carries all 8 approved stills in column 0, verified pixel-exact (gate §6) | met; corrected export owner-confirmed at 1× (bound review) |
 | 3 | at least one humanoid full run set passes the existing validator | samurai all-grey set, limits 30 / 16 unchanged, 0 failures, owner 1× pass (gate §2); oathguard also passes 20 / 8 (technical only, §4) | met |
 | 4 | raw outputs, failed seeds, provenance and timing preserved | immutable attempt dirs with request/run/result JSON; `sweep.json` keeps every rejected candidate with reasons; `animate.json` per-stage timing | met |
 | 5 | Godot import and playback pass, with a 1× human review | Godot 4.7.2 import + SpriteFrames check pass on samurai and pyromancer (both exports); owner 1× pass on both reviewed artifacts, now hash-bound (`review.json` schema 2) | met |

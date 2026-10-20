@@ -116,11 +116,11 @@ the exact artifacts they were given on; the original files are kept as `review.v
 |---|---|---|---|---|
 | samurai `validate/samurai-grey-final-godot` | 153f4e093274ff66 | 6581b870a3ef43d9 | b7053fa1c0a67459 | 36d7352b75ab821c (23c79de13b24694c) |
 | pyromancer reviewed `gate-105/job/sweep/final/job` | 7a7f953fecec64ab | c8e641a9991098a5 | 98bf0f45cdde888c | 0bbd9645bccc1b44 (d5bc1ff9209f7f6a) |
-| pyromancer corrected `gate-105/export-v2` | 871a6653f9afedf2 | 4c20b6563dc5dfed | 98bf0f45cdde888c | **none yet** |
+| pyromancer corrected `gate-105/export-v2` | 871a6653f9afedf2 | 4c20b6563dc5dfed | 98bf0f45cdde888c | dd1f09665c3b4b82 (new; owner 1× confirmation) |
 
 (sha256 prefixes.) The corrected pyromancer export differs from the reviewed one only in column 0, which now holds the
-owner's own shipped stills; it is **not production-usable until the owner gives it a 1× confirmation**, which will be
-recorded as its own bound review. The samurai export also has an empty column 0 (it was produced before `animate`
+owner's own shipped stills. The owner confirmed it at 1× ("the corrected pyromancer sheet (export-v2, stills in column 0)
+is approved"); that is recorded as its own bound review, and `sonoranlab review check` passes on it. The samurai export also has an empty column 0 (it was produced before `animate`
 existed); it remains the validator evidence for the humanoid gate, not a game-ready sheet.
 
 ## Disclosures kept from the gate
