@@ -19,6 +19,7 @@ from sonoranlab.repair.authorization import Denied, canonical, require
 from sonoranlab.repair.compare import read_json
 from sonoranlab.repair.confine import (
     _MARKERS,
+    admit_repair,
     agent_root,
     create_destination,
     git_root,
@@ -127,6 +128,7 @@ def _verify_queue(mailbox: int, name: str, queue: int) -> None:
 
 
 def relay(repair: Path, agent_dir: Path) -> dict:
+    repair = admit_repair(repair)
     repair = no_symlinks(repair)
     doc = read_json(repair / "repair.json")
     parent = no_symlinks(Path(doc["parent_job"]))

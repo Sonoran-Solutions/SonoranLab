@@ -10,6 +10,7 @@ from sonoranlab.repair import EditorUnavailable, Refused
 from sonoranlab.repair import workspace as ws
 from sonoranlab.repair.authorization import authorize, lease
 from sonoranlab.repair.compare import diff, read_json
+from sonoranlab.repair.confine import admit_repair
 
 
 def run(args: argparse.Namespace) -> int:
@@ -18,12 +19,15 @@ def run(args: argparse.Namespace) -> int:
         if action == "prepare":
             result = ws.prepare(args.parent_job, args.profile, args.character, args.anim, args.out)
         elif action == "authorize":
+            args.repair = admit_repair(args.repair)
             result = authorize(args.repair, read_json(args.spec))
         elif action in ("session", "op", "read"):
             from sonoranlab.repair.session import detach, request, serve
 
             if action == "session":
                 operation = args.session_action
+                if operation in ("start", "stop", "checkpoint"):
+                    args.repair = admit_repair(args.repair)
                 if operation == "start":
                     result = detach(args.repair) if args.detach else serve(args.repair)
                 else:
@@ -34,16 +38,24 @@ def run(args: argparse.Namespace) -> int:
             else:
                 result = request(args.repair, {**read_json(args.spec), "action": action})
         elif action == "relay":
+            args.repair = admit_repair(args.repair)
             from sonoranlab.repair.relay import relay
 
             result = relay(args.repair, args.agent_dir)
         elif action == "abort":
+            args.repair = admit_repair(args.repair)
             from sonoranlab.repair.session import abort
 
             result = abort(args.repair)
         elif action == "export":
+            args.repair = admit_repair(args.repair)
             with lease(args.repair):
                 result = ws.export(args.repair)
+        elif action == "finalize":
+            args.repair = admit_repair(args.repair)
+            from sonoranlab.repair.finalize import finalize
+
+            result = finalize(args.repair, args.out)
         elif action == "diff":
             result = diff(args.repair)
         else:

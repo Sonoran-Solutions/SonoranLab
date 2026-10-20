@@ -18,6 +18,7 @@ import numpy as np
 from sonoranlab.artifacts import sha256_file
 from sonoranlab.repair import Refused
 from sonoranlab.repair.compare import expected_mapping, read_json
+from sonoranlab.repair.confine import admit_repair
 from sonoranlab.repair.runtime import no_symlinks
 
 OPERATIONS = {"draw.pixels", "draw.grid", "draw.clear", "draw.blit", "cel.move"}
@@ -80,6 +81,7 @@ def persist(path: Path, value: dict) -> None:
 
 @contextmanager
 def lease(repair: Path) -> Iterator[None]:
+    repair = admit_repair(repair)
     session = no_symlinks(repair / "session")
     session.mkdir(mode=0o700, exist_ok=True)
     require(session.stat().st_uid == os.getuid(), "unsafe_path")
@@ -200,6 +202,7 @@ def validate(spec: dict, doc: dict, mapping: dict) -> dict[str, np.ndarray]:
 
 
 def authorize(repair: Path, spec: dict) -> dict:
+    repair = admit_repair(repair)
     repair = no_symlinks(repair)
     with lease(repair):
         doc = read_json(repair / "repair.json")

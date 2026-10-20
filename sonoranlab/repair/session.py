@@ -21,6 +21,7 @@ from sonoranlab.repair import EditorUnavailable
 from sonoranlab.repair.authorization import Denied, canonical, lease, open_private, persist, require, safe_tree
 from sonoranlab.repair.broker import Broker
 from sonoranlab.repair.compare import read_json
+from sonoranlab.repair.confine import admit_repair
 from sonoranlab.repair.mcp_client import MCPClient
 from sonoranlab.repair.operations import request_depth
 from sonoranlab.repair.runtime import AsepriteConverter, bwrap_argv, locate, no_symlinks
@@ -158,6 +159,7 @@ def serve(
     ready_timeout: float = 90,
 ) -> dict:
     path = socket_path(repair)
+    repair = admit_repair(repair)
     broker = Broker(repair, launcher=launcher, converter=converter, ready_timeout=ready_timeout)
     sock = None
     old_handlers = {}
@@ -232,6 +234,7 @@ def request(repair: Path, payload: dict) -> dict:
 def detach(repair: Path) -> dict:
     repair = no_symlinks(repair)
     socket_path(repair)
+    repair = admit_repair(repair)
     with lease(repair):
         pass  # Fail immediately for a second writer; the daemon acquires its own lifetime lease.
     ident = read_json(repair / "repair.json")["repair_id"]
@@ -264,6 +267,7 @@ def detach(repair: Path) -> dict:
 
 def abort(repair: Path) -> dict:
     """Abort with the same writer lease; retain authorization/checkpoint provenance."""
+    repair = admit_repair(repair)
     repair = no_symlinks(repair)
     with lease(repair):
         doc = read_json(repair / "repair.json")

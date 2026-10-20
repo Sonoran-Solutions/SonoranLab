@@ -607,7 +607,14 @@ def test_detach_second_writer_refused_before_systemd(repair, monkeypatch):
 
     b = start(repair)
     try:
-        monkeypatch.setattr(subprocess, "run", lambda *a, **kw: pytest.fail("must not launch a second daemon"))
+        real_run = subprocess.run
+        monkeypatch.setattr(
+            subprocess,
+            "run",
+            lambda *a, **kw: (
+                pytest.fail("must not launch a second daemon") if a and a[0][0] == "systemd-run" else real_run(*a, **kw)
+            ),
+        )
         with pytest.raises(Denied, match="lease_held"):
             detach(repair)
     finally:
@@ -628,10 +635,13 @@ def test_detach_command_shape(repair, monkeypatch):
     from sonoranlab.repair.session import detach
 
     invoked = []
+    real_run = subprocess.run
 
     def run(argv, **kwargs):
-        invoked.append(argv)
-        return SimpleNamespace(returncode=0)
+        if argv and argv[0] == "systemd-run":
+            invoked.append(argv)
+            return SimpleNamespace(returncode=0)
+        return real_run(argv, **kwargs)
 
     monkeypatch.setattr(subprocess, "run", run)
     assert detach(repair)["state"] == "starting"
