@@ -186,7 +186,7 @@ def test_relay_refuses_symlinks(repair, tmp_path, monkeypatch, where):
             (agent / "outbox/request.json").symlink_to(target)
     monkeypatch.setattr(module, "request", lambda _, payload: b.handle({**payload, "token": b.token}))
     try:
-        with pytest.raises((Refused, Denied), match=r"symlink|unsafe_path"):
+        with pytest.raises((Refused, Denied), match=r"symlink|unsafe_path|invalid_mailbox"):
             module.relay(repair, agent)
         assert not list(outside.glob("*.png"))
     finally:
@@ -297,6 +297,79 @@ def test_relay_reuses_its_mailbox_for_the_same_repair(repair, tmp_path, monkeypa
     assert module.relay(repair, agent) == {"ok": True, "stopped": True}
     assert forwarded == [(repair, {"action": "status"})]
     assert snapshot(agent) == before
+
+
+@pytest.mark.parametrize("queue", ["outbox", "processing", "inbox"])
+@pytest.mark.parametrize(
+    "marker",
+    [
+        "manifest.json",
+        "review.json",
+        "report.json",
+        "repair.json",
+        "mapping.json",
+        "state.json",
+        "authorization.json",
+        "repair-manifest.json",
+        ".sonoranlab-staging",
+        "marker_symlink",
+        "raw+processed",
+    ],
+)
+def test_relay_refuses_job_layout_in_queue_before_contact(repair, tmp_path, monkeypatch, queue, marker):
+    agent = tmp_path / "worker"
+    create_mailbox(repair, agent, monkeypatch)
+    if marker == "raw+processed":
+        for child in ("raw", "processed"):
+            (agent / queue / child).mkdir()
+    elif marker == "marker_symlink":
+        (agent / queue / "review.json").symlink_to(tmp_path / "missing")
+    else:
+        (agent / queue / marker).write_text("{}")
+    monkeypatch.setattr(module, "request", lambda *args: pytest.fail("broker must not be contacted"))
+    before = snapshot(agent)
+    assert module.relay(repair, agent) == {"ok": False, "error": "unsafe_mailbox"}
+    assert snapshot(agent) == before
+
+
+@pytest.mark.parametrize("queue", ["outbox", "processing", "inbox"])
+@pytest.mark.parametrize("change", ["move", "replace", "symlink", "marker", "raw+processed"])
+def test_relay_stops_before_publishing_after_queue_changes(repair, tmp_path, monkeypatch, queue, change):
+    agent = tmp_path / "worker"
+    create_mailbox(repair, agent, monkeypatch)
+    (repair / "state.json").write_text('{"session_state":"ACTIVE"}')
+    submit(agent, "first", {"action": "status"})
+    submit(agent, "second", {"action": "status"})
+    moved = tmp_path / "game" / queue
+    forwarded = []
+    after = None
+
+    def request(path, payload):
+        nonlocal after
+        forwarded.append(payload)
+        if len(forwarded) == 2:  # Initial status poll, then the first worker request.
+            if change == "marker":
+                (agent / queue / "review.json").write_text("{}")
+            elif change == "raw+processed":
+                for child in ("raw", "processed"):
+                    (agent / queue / child).mkdir()
+            else:
+                (agent / queue).rename(moved)
+                if change == "replace":
+                    (agent / queue).mkdir()
+                elif change == "symlink":
+                    (agent / queue).symlink_to(moved, target_is_directory=True)
+            (repair / "state.json").write_text('{"session_state":"STOPPED"}')
+            after = snapshot(tmp_path)
+            return {"ok": True, "session_state": "STOPPED"}
+        return {"session_state": "ACTIVE"}
+
+    monkeypatch.setattr(module, "request", request)
+    error = "unsafe_mailbox" if change in ("marker", "raw+processed") else "race_detected"
+    assert module.relay(repair, agent) == {"ok": False, "error": error}
+    assert forwarded == [{"action": "status"}, {"action": "status"}]
+    # The relay must not write or clean up after detection.
+    assert snapshot(tmp_path) == after
 
 
 def test_relay_cli(repair, tmp_path, monkeypatch, capsys):

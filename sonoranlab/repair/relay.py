@@ -14,9 +14,11 @@ import time
 from pathlib import Path
 
 from sonoranlab.profile import load_profile
+from sonoranlab.repair import Refused
 from sonoranlab.repair.authorization import Denied, canonical, require
 from sonoranlab.repair.compare import read_json
 from sonoranlab.repair.confine import (
+    _MARKERS,
     agent_root,
     create_destination,
     git_root,
@@ -94,6 +96,33 @@ def _safe_mailbox(directory: int) -> None:
             require(info.st_nlink == 1, "unsafe_path")
 
 
+def _verify_queue(mailbox: int, name: str, queue: int) -> None:
+    """Check the pinned queue's identity and reject job/repair layouts."""
+    try:
+        opened = os.fstat(queue)
+        current = os.stat(name, dir_fd=mailbox, follow_symlinks=False)
+        require(
+            stat.S_ISDIR(current.st_mode)
+            and stat.S_ISDIR(opened.st_mode)
+            and (opened.st_dev, opened.st_ino) == (current.st_dev, current.st_ino),
+            "race_detected",
+        )
+        entries = set(os.listdir(queue))
+        require(not entries.intersection(_MARKERS), "unsafe_mailbox")
+        require(
+            not (
+                {"raw", "processed"} <= entries
+                and all(
+                    stat.S_ISDIR(os.stat(child, dir_fd=queue, follow_symlinks=False).st_mode)
+                    for child in ("raw", "processed")
+                )
+            ),
+            "unsafe_mailbox",
+        )
+    except OSError as e:
+        raise Denied("race_detected") from e
+
+
 def relay(repair: Path, agent_dir: Path) -> dict:
     repair = no_symlinks(repair)
     doc = read_json(repair / "repair.json")
@@ -117,9 +146,17 @@ def relay(repair: Path, agent_dir: Path) -> dict:
             forbidden=forbidden,
         )
     directories = [directory]
+
+    def verify_queues() -> None:
+        try:
+            verify_destination(agent_dir, directory, forbidden=forbidden)
+        except Refused as e:
+            raise Denied("race_detected") from e
+        for name, queue in zip(names, directories[1:], strict=False):
+            _verify_queue(directory, name, queue)
+
     try:
         if reuse:
-            _safe_mailbox(directory)
             # Task files may coexist with the queues, but the identity must be ours.
             try:
                 fd = os.open(marker, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
@@ -137,16 +174,19 @@ def relay(repair: Path, agent_dir: Path) -> dict:
                 directories.append(os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=directory))
             except OSError as e:
                 raise Denied("invalid_mailbox") from e
+            verify_queues()
+        if reuse:
+            _safe_mailbox(directory)
         if not reuse:
             write_new(directory, marker, canonical({"repair_id": doc["repair_id"]}) + b"\n")
         _, outbox, processing, inbox = directories
-        verify_destination(agent_dir, directory, forbidden=forbidden)
         while True:
+            verify_queues()
             state = read_json(repair / "state.json")
             if state.get("session_state") == "STOPPED":
                 return {"ok": True, "stopped": True}
-            verify_destination(agent_dir, directory, forbidden=forbidden)
             status = request(repair, {"action": "status"})
+            verify_queues()
             if status.get("session_state") == "STOPPED":
                 return {"ok": True, "stopped": True}
             for name in sorted(os.listdir(outbox)):
@@ -165,6 +205,7 @@ def relay(repair: Path, agent_dir: Path) -> dict:
                     else:
                         raise Denied("relay_output_exists")
                 try:
+                    verify_queues()
                     rename_new(outbox, name, processing)
                 except FileNotFoundError:
                     continue
@@ -187,7 +228,7 @@ def relay(repair: Path, agent_dir: Path) -> dict:
                 except (Denied, ValueError, TypeError, RecursionError) as e:
                     response = {"ok": False, "error": getattr(e, "code", "invalid_request")}
                 else:
-                    verify_destination(agent_dir, directory, forbidden=forbidden)
+                    verify_queues()
                     try:
                         response = request(repair, payload)
                     except (Denied, ValueError, TypeError, RecursionError) as e:
@@ -196,15 +237,20 @@ def relay(repair: Path, agent_dir: Path) -> dict:
                     if fd is not None:
                         os.close(fd)
                 try:
+                    verify_queues()
                     response = image_result(response, inbox, name)
+                    verify_queues()
                     write_new(inbox, name, canonical(response) + b"\n")
                 except FileExistsError as e:
                     raise Denied("relay_output_exists") from e
+                verify_queues()
                 os.unlink(name, dir_fd=processing)
             time.sleep(0.1)
+    except Denied as e:
+        if e.code in ("race_detected", "unsafe_mailbox"):
+            return {"ok": False, "error": e.code}
+        raise
     except OSError as e:
-        if read_json(repair / "state.json").get("session_state") == "STOPPED":
-            return {"ok": True, "stopped": True}
         if e.errno == errno.ELOOP:
             raise Denied("unsafe_path") from e
         raise
