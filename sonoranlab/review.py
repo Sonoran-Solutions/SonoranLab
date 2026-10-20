@@ -65,7 +65,7 @@ def _metadata_errors(review: dict) -> list[dict[str, str]]:
     if review.get("schema") != SCHEMA:
         errors.append(_error("REVIEW_SCHEMA_INVALID", "schema", f"review.json must use schema {SCHEMA}"))
     reviewer = review.get("reviewer")
-    if not isinstance(reviewer, str) or not reviewer.strip():
+    if not isinstance(reviewer, str) or not any(ch.isprintable() and not ch.isspace() for ch in reviewer):
         errors.append(_error("REVIEW_REVIEWER_INVALID", "reviewer", "reviewer must be a non-empty string"))
     verdict = review.get("verdict")
     if verdict not in ("pass", "fail"):

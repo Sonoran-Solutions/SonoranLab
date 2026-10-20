@@ -548,3 +548,9 @@ def test_shared_hasher_and_writer_stay_permissive_for_the_pipeline(tmp_path):
     assert pipeline_sha256(tmp_path / "alias" / "a.png") == pipeline_sha256(real / "a.png")
     out = pipeline_write_json(tmp_path, "sweep.json", {"worst_ratio": float("inf")})
     assert _json.loads(out.read_text())["worst_ratio"] == float("inf")
+
+
+@pytest.mark.parametrize("name", ["\u200b", "\u200b \u2060", "\t\n"])
+def test_invisible_reviewer_is_refused(job, name):
+    with pytest.raises(ValueError, match="REVIEW_REVIEWER_INVALID"):
+        record_review(job, **{**PASS, "reviewer": name})
