@@ -1,7 +1,9 @@
 # ADR-0009 — Aseprite targeted-repair pilot (optional editor companion)
 
-**Status:** proposed (owner decision pending at DYL-111). Nothing here is adopted. Phase 3.5 builds and measures the
-pilot; the owner records ADOPT, DEFER, REJECT or HOLD at DYL-111. Environment evidence:
+**Status:** accepted — **ADOPT, narrow and optional** (owner, 2026-10-20, at DYL-111, after the senior review). The pinned editor
+stays an optional, contained companion. Adopted capability: `draw.pixels`, `draw.grid`, `draw.clear` and bounded `draw.blit`
+on authorized frames, through the broker by the contained editor worker. Not adopted: `cel.move`, transforms, rigging and
+animation creation. SonoranLab remains authoritative for validation, export, lineage and approval. Environment evidence:
 [`benchmark/results/2026-10-20-phase3.5/dyl106-environment.md`](../../benchmark/results/2026-10-20-phase3.5/dyl106-environment.md).
 
 ## Context
@@ -196,4 +198,6 @@ Evidence: [`dyl110-trials.md`](../../benchmark/results/2026-10-20-phase3.5/dyl11
   final verification is best-effort detection. Upgrade: mount-namespace isolation for prepare/finalize.
 - Proposed scope if adopted: optional contained editor; supported operations `draw.pixels`, `draw.grid`, `draw.clear`, bounded
   `draw.blit` on authorized frames; `cel.move`, transforms, rigging and animation creation are not adopted.
-- Disposition: **pending the owner's formal ADOPT / DEFER / REJECT / HOLD** (status stays proposed until then).
+- Disposition: **ADOPT (narrow, optional)**, owner decision 2026-10-20. The owner chose to keep the user-scope diivi
+  aseprite-mcp and PixelLab MCP available to ordinary agents (not removed or disabled). Phase 4: **GO**, with the editor optional
+  and not a dependency of the core MCP server (scoped repair handoff only, DYL-118).

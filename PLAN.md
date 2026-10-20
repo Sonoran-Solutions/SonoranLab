@@ -132,14 +132,14 @@ the result back through the existing validator, exporter and human review. Pilot
 [`docs/decisions/ADR-0009-aseprite-repair-pilot.md`](docs/decisions/ADR-0009-aseprite-repair-pilot.md).
 
 Tasks (Linear)
-- [ ] DYL-106: ADR-0009, pinned environment and containment smoke (`benchmark/results/2026-10-20-phase3.5/`).
-- [ ] DYL-107: immutable repair workspaces and a lossless Aseprite round trip (`sonoranlab repair prepare|export|diff`).
-- [ ] DYL-108: single-writer editor sessions and bounded, verified pixel-edit transactions (authorization, broker).
-- [ ] DYL-109: finalize repaired frames into a new validated child job with a fresh bound review; review-metadata hardening (core, kept whatever the disposition).
-- [ ] DYL-110: three measured trials (round trip, targeted repair, small animation repair), at most 2 repair iterations each.
-- [ ] DYL-111: gate: evidence package and owner disposition.
+- [x] DYL-106: ADR-0009, pinned environment and containment smoke (`benchmark/results/2026-10-20-phase3.5/`).
+- [x] DYL-107: immutable repair workspaces and a lossless Aseprite round trip (`sonoranlab repair prepare|export|diff`).
+- [x] DYL-108: single-writer editor sessions and bounded, verified pixel-edit transactions (authorization, broker).
+- [x] DYL-109: finalize repaired frames into a new validated child job with a fresh bound review; review-metadata hardening (core, kept whatever the disposition).
+- [x] DYL-110: three measured trials (round trip, targeted repair, small animation repair), at most 2 repair iterations each.
+- [x] DYL-111: gate: evidence package and owner disposition.
 
-Exit criterion
+Exit criterion (met 2026-10-20: owner disposition **ADOPT, narrow and optional**; Phase 4 GO)
 - An owner disposition (ADOPT, DEFER, REJECT or HOLD) recorded at DYL-111. Phase 4 waits for that disposition, not for
   an Aseprite success. The deterministic pipeline must work without Aseprite.
 

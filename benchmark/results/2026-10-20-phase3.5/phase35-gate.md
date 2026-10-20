@@ -1,5 +1,13 @@
 # Phase 3.5 gate (DYL-111): senior-review package
 
+## Owner decision (2026-10-20) — final
+
+- **Disposition: ADOPT, narrow and optional** (agreeing with the senior review and the coordinator).
+- **Merges approved** in order #36 → #35 → #37 → #38, then #34. #39 is closed without merging.
+- **MCPs:** the user-scope diivi aseprite-mcp and PixelLab MCP stay available to ordinary agents (not removed or disabled).
+- **Phase 4: GO.** The editor stays optional, not a dependency of the core MCP server.
+
+
 ## Revision 3 (2026-10-20, after the senior re-review) — supersedes the heads in revision 2
 
 **Senior re-review of revision 2:** REVISE with one new P1. All earlier findings are confirmed fixed, and #36 is approved.
