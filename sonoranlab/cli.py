@@ -110,6 +110,12 @@ def build_parser() -> argparse.ArgumentParser:
     pr.add_argument("--anchors", type=Path, help="per-frame rig anchors (refused until the validator gates rig)")
     pr.add_argument("--godot-check", action="store_true", help="import + check the export in Godot (needs godot)")
     pr.set_defaults(func=process_cmd)
+
+    gn = verbs.add_parser("generate", help="run one generation request (Track E: a Wan clip) against ComfyUI")
+    gn.add_argument("--request", type=Path, required=True, help="GenerateRequest JSON (sonoranlab.comfy.adapters.base)")
+    gn.add_argument("--base-url", default="http://127.0.0.1:8189")
+    gn.add_argument("--timeout", type=float, default=1800, help="seconds to wait for the ComfyUI prompt")
+    gn.set_defaults(func=generate_cmd)
     return p
 
 
@@ -466,6 +472,27 @@ def process_cmd(args: argparse.Namespace) -> int:
         n = gc["result"].get("animations_checked")
         print(f"godot:   {gc['godot']}: import + SpriteFrames check passed ({n} animations)")
     return 0
+
+
+def generate_cmd(args: argparse.Namespace) -> int:
+    """Exit 0 ok, 1 generation failed (result.json says why), 2 bad request/config. The comfy client loads lazily."""
+    from sonoranlab.comfy.adapters import track_e
+    from sonoranlab.comfy.adapters.base import GenerateRequest
+
+    try:
+        req = GenerateRequest.from_json(json.loads(args.request.read_text()))
+        if req.track != "E":
+            raise ValueError(f"track {req.track!r} has no adapter yet")
+        work = track_e.default_work()
+        adapter = track_e.TrackE(
+            track_e.make_client(args.base_url, work / "output"), work_root=work, timeout_s=args.timeout
+        )
+        res = adapter.generate(req)
+    except (OSError, ValueError, TypeError, KeyError) as e:  # ValueError covers bad JSON; TypeError/KeyError bad fields
+        print(f"generate: {e!r}" if isinstance(e, (KeyError, TypeError)) else f"generate: {e}", file=sys.stderr)
+        return 2
+    print(json.dumps(res.to_json(), indent=2))
+    return 0 if res.status == "ok" else 1
 
 
 def main(argv: list[str] | None = None) -> int:
