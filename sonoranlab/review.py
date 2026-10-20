@@ -14,7 +14,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Literal
 
-from sonoranlab.artifacts import require_regular_file, sha256_file, verify_raw, write_json
+from sonoranlab.artifacts import require_regular_file, verify_raw, write_json
+from sonoranlab.artifacts import sha256_file as _sha256_file
 
 SCHEMA = "sonoranlab.review/2"
 _MAX_JSON_BYTES = 16 * 1024 * 1024
@@ -22,6 +23,12 @@ _TIMESTAMP = re.compile(
     r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}"
     r"(?:\.[0-9]{1,6})?(?:Z|[+-](?:[01][0-9]|2[0-3]):[0-5][0-9])"
 )
+
+
+def sha256_file(path: Path) -> str:
+    """Hash only a regular file (no symlink, FIFO or device); review-local, the pipeline hasher stays permissive."""
+    require_regular_file(path)
+    return _sha256_file(path)
 
 
 def _reject_constant(value: str) -> None:
@@ -154,8 +161,8 @@ def _provenance(job: Path) -> tuple[dict | None, list[str]]:
         p = job / rel
         if Path(rel).is_absolute() or ".." in Path(rel).parts:
             problems.append(f"{rel}: output path must be relative to the job")
-        elif p.is_symlink() or not p.is_file():
-            problems.append(f"{rel}: missing or not a regular file")
+        elif p.is_symlink() or not p.is_file() or any(q.is_symlink() for q in p.parents if q.is_relative_to(job)):
+            problems.append(f"{rel}: missing, not a regular file, or under a symlinked directory")
         elif sha256_file(p) != outputs[rel]:
             problems.append(f"{rel}: sha256 differs from manifest")
     if set(export) != set(listed_export):
@@ -234,7 +241,7 @@ def record_review(
     if errors := _metadata_errors(doc):
         raise ValueError("; ".join(f"{e['code']}: {e['message']}" for e in errors))
     try:
-        return write_json(job_dir, "review.json", doc, max_bytes=_MAX_JSON_BYTES)
+        return write_json(job_dir, "review.json", doc, max_bytes=_MAX_JSON_BYTES, strict=True)
     except FileExistsError as e:
         raise ValueError(f"{job_dir / 'review.json'} exists; reviews cannot be overwritten") from e
 

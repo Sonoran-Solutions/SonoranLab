@@ -532,3 +532,19 @@ def test_overflowing_integer_cleanup_is_a_structured_refusal(job):
     path.write_text(json.dumps(doc))
     assert any(e["code"] == "REVIEW_CLEANUP_INVALID" for e in review_errors(job))
     assert not production_usable(job)
+
+
+def test_shared_hasher_and_writer_stay_permissive_for_the_pipeline(tmp_path):
+    """Review strictness must not leak into the pipeline: symlinked ancestors and inf scores are legitimate there."""
+    import json as _json
+
+    from sonoranlab.artifacts import sha256_file as pipeline_sha256
+    from sonoranlab.artifacts import write_json as pipeline_write_json
+
+    real = tmp_path / "real"
+    real.mkdir()
+    (real / "a.png").write_bytes(b"x")
+    (tmp_path / "alias").symlink_to(real)
+    assert pipeline_sha256(tmp_path / "alias" / "a.png") == pipeline_sha256(real / "a.png")
+    out = pipeline_write_json(tmp_path, "sweep.json", {"worst_ratio": float("inf")})
+    assert _json.loads(out.read_text())["worst_ratio"] == float("inf")
