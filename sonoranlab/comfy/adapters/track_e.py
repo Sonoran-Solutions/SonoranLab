@@ -91,9 +91,14 @@ def load_workflow(path: Path) -> Any:
     return Workflow.load(path)
 
 
-def make_client(base_url: str, output_root: Path) -> ClientLike:
-    from sonoranlab.comfy.client import ComfyClient
+def make_client(base_url: str, output_root: Path, *, exec_container: str | None = None) -> ClientLike:
+    """HTTP to `base_url`, or with `exec_container` the in-container API of the `--network=none` (offline) container."""
+    from sonoranlab.comfy.client import ComfyClient, PodmanExecTransport
 
+    if exec_container:
+        return ComfyClient(
+            "http://127.0.0.1:8188", output_root=output_root, transport=PodmanExecTransport(exec_container)
+        )
     return ComfyClient(base_url, output_root=output_root)
 
 

@@ -311,8 +311,8 @@ def cli_env(env, monkeypatch):
     monkeypatch.setattr(track_e, "load_workflow", lambda p: object())
     made = {}
 
-    def make(base_url, output_root):
-        made.update(base_url=base_url, output_root=output_root)
+    def make(base_url, output_root, exec_container=None):
+        made.update(base_url=base_url, output_root=output_root, exec_container=exec_container)
         return FakeClient(output_root, status=made.get("status", "success"))
 
     monkeypatch.setattr(track_e, "make_client", make)
@@ -331,7 +331,7 @@ def test_cli_exit_codes(cli_env, capsys) -> None:
     assert cli.main(["generate", "--request", str(write_req(env)), "--base-url", "http://127.0.0.1:1"]) == 0
     printed = json.loads(capsys.readouterr().out)
     assert printed["status"] == "ok" and len(printed["frames"]) == 33
-    assert env.made == {"base_url": "http://127.0.0.1:1", "output_root": env.work / "output"}
+    assert env.made == {"base_url": "http://127.0.0.1:1", "output_root": env.work / "output", "exec_container": None}
 
     env.made["status"] = "timeout"
     assert cli.main(["generate", "--request", str(write_req(env, out_dir=env.tmp / "o2"))]) == 1
@@ -346,3 +346,28 @@ def test_cli_exit_codes(cli_env, capsys) -> None:
     bad.write_text('{"track": "E"}')
     assert cli.main(["generate", "--request", str(bad)]) == 2
     assert not (env.tmp / "o3").exists() and not (env.tmp / "o4").exists()
+
+
+def test_make_client_exec_uses_in_container_api(tmp_path: Path) -> None:
+    from sonoranlab.comfy.client import PodmanExecTransport
+
+    c = track_e.make_client("http://127.0.0.1:8189", tmp_path, exec_container="sonoranlab-comfy")
+    assert c.base_url == "http://127.0.0.1:8188"
+    assert isinstance(c._transport, PodmanExecTransport) and c._transport.container == "sonoranlab-comfy"
+    assert track_e.make_client("http://127.0.0.1:8189", tmp_path).base_url == "http://127.0.0.1:8189"
+
+
+def test_term_becomes_keyboard_interrupt_and_handlers_restore() -> None:
+    import os
+    import signal
+
+    from sonoranlab.cli import _cancel_on_term
+
+    before = signal.getsignal(signal.SIGTERM)
+
+    def body() -> None:
+        os.kill(os.getpid(), signal.SIGTERM)
+
+    with pytest.raises(KeyboardInterrupt):
+        _cancel_on_term(body)
+    assert signal.getsignal(signal.SIGTERM) == before

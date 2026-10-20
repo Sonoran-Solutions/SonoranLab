@@ -9,13 +9,18 @@ import argparse
 import dataclasses
 import hashlib
 import json
+import signal
 import sys
+from collections.abc import Callable
 from pathlib import Path
+from typing import TypeVar
 
 import numpy as np
 
 from sonoranlab.profile import ProfileError, check_profile, load_palette, load_profile, sha256_file
 from sonoranlab.validate import frame_digest, read_frames, read_stills, validate
+
+T = TypeVar("T")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -115,6 +120,12 @@ def build_parser() -> argparse.ArgumentParser:
     gn.add_argument("--request", type=Path, required=True, help="GenerateRequest JSON (sonoranlab.comfy.adapters.base)")
     gn.add_argument("--base-url", default="http://127.0.0.1:8189")
     gn.add_argument("--timeout", type=float, default=1800, help="seconds to wait for the ComfyUI prompt")
+    gn.add_argument(
+        "--exec",
+        dest="exec_container",
+        metavar="CONTAINER",
+        help="reach ComfyUI through `podman exec` (the `env/comfy.sh up --offline` container, e.g. sonoranlab-comfy)",
+    )
     gn.set_defaults(func=generate_cmd)
     return p
 
@@ -474,6 +485,21 @@ def process_cmd(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cancel_on_term(fn: Callable[[], T]) -> T:
+    """env/runwindow.py forwards TERM/HUP to its child. Python's default for those exits without unwinding, which would
+    leave our prompt queued or running; as KeyboardInterrupt the client cancels it (prompt-scoped) and records why."""
+
+    def interrupt(signum: int, _frame: object) -> None:
+        raise KeyboardInterrupt(f"signal {signum}")
+
+    old = {s: signal.signal(s, interrupt) for s in (signal.SIGTERM, signal.SIGHUP)}
+    try:
+        return fn()
+    finally:
+        for s, h in old.items():
+            signal.signal(s, h)
+
+
 def generate_cmd(args: argparse.Namespace) -> int:
     """Exit 0 ok, 1 generation failed (result.json says why), 2 bad request/config. The comfy client loads lazily."""
     from sonoranlab.comfy.adapters import track_e
@@ -484,10 +510,9 @@ def generate_cmd(args: argparse.Namespace) -> int:
         if req.track != "E":
             raise ValueError(f"track {req.track!r} has no adapter yet")
         work = track_e.default_work()
-        adapter = track_e.TrackE(
-            track_e.make_client(args.base_url, work / "output"), work_root=work, timeout_s=args.timeout
-        )
-        res = adapter.generate(req)
+        client = track_e.make_client(args.base_url, work / "output", exec_container=args.exec_container)
+        adapter = track_e.TrackE(client, work_root=work, timeout_s=args.timeout)
+        res = _cancel_on_term(lambda: adapter.generate(req))
     except (OSError, ValueError, TypeError, KeyError) as e:  # ValueError covers bad JSON; TypeError/KeyError bad fields
         print(f"generate: {e!r}" if isinstance(e, (KeyError, TypeError)) else f"generate: {e}", file=sys.stderr)
         return 2
