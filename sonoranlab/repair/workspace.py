@@ -21,6 +21,7 @@ from sonoranlab.repair.compare import (
     read_json,
     source_name,
 )
+from sonoranlab.repair.confine import check_destination, git_root, repair_root
 from sonoranlab.repair.runtime import AsepriteConverter, no_symlinks, seed_home
 
 SCHEMA = "sonoranlab.repair/1"
@@ -101,14 +102,16 @@ def prepare(
     converter: AsepriteConverter | FakeConverter | None = None,
 ) -> dict:
     """Reserve a new repair, copy byte-exact immutable sources, and build only from disposable workspace copies."""
-    parent, out = no_symlinks(parent_job), no_symlinks(out)
+    parent = no_symlinks(parent_job)
     profile = profile if isinstance(profile, Profile) else load_profile(no_symlinks(profile))
     no_symlinks(profile.path)
     no_symlinks(profile.palette.source)
-    if out.is_relative_to(parent) or out.is_relative_to(profile.export.godot_project.resolve()):
-        raise Refused("repair out is inside the parent job or Godot project")
-    if out.exists():
-        raise Refused(f"{out}: exists; repair directories are never reused")
+    palette_checkout = git_root(profile.palette.source)
+    out = check_destination(
+        out,
+        root=repair_root(),
+        forbidden=(parent, profile.export.godot_project, *((palette_checkout,) if palette_checkout else ())),
+    )
     spec = profile.character(character)
     if anim not in spec.animations:
         raise ValueError(f"unknown animation: {anim}")
@@ -155,10 +158,11 @@ def prepare(
     converter = converter or AsepriteConverter()
     doc["runtime"] = converter.record()
     doc["metadata"] = expected_metadata(doc)
+    out.parent.mkdir(parents=True, exist_ok=True)
     try:
         os.mkdir(out)  # Atomic reservation, including refusal of an existing empty directory.
     except FileExistsError as e:
-        raise Refused(f"{out}: exists; repair directories are never reused") from e
+        raise Refused(f"destination_exists: {out}: exists; repair directories are never reused") from e
     (out / "raw").mkdir()
     doc["source"] = ingest_raw(out, sources)
     (out / "raw").rename(out / "source")

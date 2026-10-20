@@ -6,6 +6,7 @@ import os
 import shutil
 import subprocess
 import sys
+from dataclasses import replace
 from pathlib import Path
 
 import numpy as np
@@ -35,7 +36,8 @@ def write(path, doc):
 
 
 @pytest.fixture
-def fixture(tmp_path):
+def fixture(tmp_path, monkeypatch):
+    monkeypatch.setenv("SONORANLAB_REPAIR_ROOT", str(tmp_path))
     pal = tmp_path / "palette.png"
     Image.fromarray(np.array([PALETTE], np.uint8)).save(pal)
     limits = {
@@ -242,15 +244,63 @@ def test_document_changes_detected(fixture, change):
     assert not diff(repair)["ok"]
 
 
-@pytest.mark.parametrize("where", ["existing", "parent", "game"])
+@pytest.mark.parametrize("where", ["existing", "parent", "game", "git", "job", "symlink", "outside", "root"])
 def test_refuse_output(fixture, where):
     job, profile, repair = fixture
     if where == "existing":
         repair.mkdir()
-    else:
+    elif where in ("parent", "game"):
         repair = (job if where == "parent" else profile.export.godot_project) / "repair"
-    with pytest.raises(Refused, match=r"exists|inside"):
+    elif where in ("git", "job", "symlink"):
+        container = repair.parent / "container"
+        if where == "symlink":
+            container.symlink_to(repair.parent / "missing", target_is_directory=True)
+        else:
+            container.mkdir()
+            (container / (".git" if where == "git" else "manifest.json")).write_text(
+                "gitdir: /elsewhere\n" if where == "git" else "{}"
+            )
+        repair = container / "new/repair"
+    elif where == "outside":
+        repair = job.parent / "../outside-repair"
+    elif where == "root":
+        repair = job.parent
+    before = hashes(job.parent)
+    paths = set(job.parent.rglob("*"))
+    with pytest.raises(Refused, match=r"exists|inside|symlink|strictly"):
         ws.prepare(job, profile, "hero", "idle", repair, converter=ws.FakeConverter())
+    assert hashes(job.parent) == before
+    assert set(job.parent.rglob("*")) == paths
+    if where != "existing" and where != "root":
+        assert not repair.exists()
+
+
+def test_prepare_refuses_palette_checkout(fixture):
+    job, profile, repair = fixture
+    checkout = job.parent / "palette-checkout"
+    (checkout / ".git").mkdir(parents=True)
+    (checkout / ".git" / "HEAD").write_text("ref: refs/heads/main\n")
+    palette = checkout / "art/palette.png"
+    palette.parent.mkdir()
+    shutil.copyfile(profile.palette.source, palette)
+    profile = replace(profile, palette=replace(profile.palette, source=palette))
+    repair = checkout / "somewhere/new/repair"
+    before = hashes(job.parent)
+    paths = set(job.parent.rglob("*"))
+    with pytest.raises(Refused, match=r"^forbidden_path:"):
+        ws.prepare(job, profile, "hero", "idle", repair, converter=ws.FakeConverter())
+    assert hashes(job.parent) == before
+    assert set(job.parent.rglob("*")) == paths
+    assert not repair.exists()
+
+
+def test_prepare_creates_missing_staging_root(fixture, monkeypatch):
+    job, profile, _ = fixture
+    root = job.parent / "missing/repairs"
+    monkeypatch.setenv("SONORANLAB_REPAIR_ROOT", str(root))
+    repair = root / "new"
+    assert prepare((job, profile, repair)) == repair
+    assert (repair / "repair.json").is_file()
 
 
 @pytest.mark.parametrize(
@@ -268,8 +318,6 @@ def test_refuse_symlinked_input(fixture, relative):
 
 
 def test_fractional_milliseconds_refused(fixture):
-    from dataclasses import replace
-
     job, profile, repair = fixture
     row = profile.characters["hero"]
     row = replace(row, animations={"idle": replace(row.animations["idle"], fps=12)})
