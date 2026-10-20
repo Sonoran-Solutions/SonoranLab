@@ -1,5 +1,60 @@
 # Phase 3.5 gate (DYL-111): senior-review package
 
+## Revision 3 (2026-10-20, after the senior re-review) — supersedes the heads in revision 2
+
+**Senior re-review of revision 2:** REVISE with one new P1. All earlier findings are confirmed fixed, and #36 is approved.
+
+**The P1:** existing `--repair` paths bypassed destination confinement. `lease()` created `session/lease.lock` before
+validating the directory, so `sonoranlab repair export <game checkout>` could write into the game. `authorize`, `abort`,
+`session start` and `finalize` behaved the same, and a copied repair outside the root was accepted.
+
+**Fix** (implemented by Gemini 3.8 Flash, high, via agy, as the owner requested; coordinator-reviewed):
+- `confine.admit_repair` is one shared, read-only admission check that creates nothing. It refuses with
+  `repair_not_admitted: ...` when the repair:
+  - has a symlinked component;
+  - lies outside `SONORANLAB_REPAIR_ROOT`;
+  - is in the SonoranLab repo, a Git checkout, a bare repo or a `GIT_DIR`/`GIT_WORK_TREE` area;
+  - is in the game's Godot project or palette checkout;
+  - is nested inside another job or repair;
+  - lacks a regular `.sonoranlab-staging` marker of kind `repair` whose id equals `repair.json`'s `repair_id`
+    (schema `sonoranlab.repair/1`);
+  - is not structurally a repair (`repair.json`, `mapping.json`, `source/`, `workspace/`).
+- It runs first inside `lease()`, so every lease holder is covered: export, authorize, abort, session start/stop/checkpoint,
+  broker and finalize. The CLI dispatcher also calls it explicitly for every mutating verb (export, authorize, abort,
+  session start|stop|checkpoint, relay, finalize).
+- **Regressions:** `tests/sonoranlab/repair/test_repair_admission.py` runs 6 mutating verbs against 9 invalid paths:
+  - a fake game checkout inside the root;
+  - a path outside the root;
+  - a byte copy of a valid repair outside the root;
+  - a missing staging marker, a mismatched id, and the wrong kind;
+  - a symlinked component;
+  - a path nested in a job;
+  - a path inside the SonoranLab repo.
+
+  Each case asserts a non-zero exit and a byte-for-byte unchanged target, with no `session/` or `lease.lock`. A positive case
+  shows a genuine repair is still admitted.
+- **Coordinator reproduction:** the senior's exact scenario, run against a *fake* game checkout with the default environment.
+  All six verbs refused, the fake game was unchanged, and no child or mailbox was created. The real game checkout was never
+  used.
+
+**Heads (revision 3):** #36 `04cfda5` (base main, APPROVED by the senior) → #35 `54655e7` → #37 `c375081` → #38 `a67bdc7`.
+#39 is the disposable combined check at `a67bdc7`, with its title and description updated. The split into the stack is
+blob-identical to the tested tree `e304fe4`. Intermediate tips: #35 98 repair tests pass, #37 266.
+
+**Evidence at `a67bdc7`:**
+- Full suite: **1439 passed, 0 skipped**, ruff clean.
+- The core imports no `sonoranlab.repair` module.
+- All five recorded owner reviews still pass `review check`.
+- Hosted CI: green on the #35, #36, #37, #38 and #39 heads. One #38 run hit a flaky pre-existing ops test (a benchmark
+  runner workflow-file comparison in `tests/`, code untouched by this stack); it was green on re-run and in the sibling run.
+
+**Recommendation:** unchanged. **ADOPT, narrow and optional,** then **GO for core Phase 4** with the editor optional. Owner
+decisions still needed: the formal disposition, merge approval, the user-scope MCP configuration, and the mount-namespace
+follow-up (not a merge blocker per the senior).
+
+---
+
+
 ## Revision 2 (2026-10-20, after the senior review) — supersedes the status, heads and recommendation below
 
 **Status: READY_FOR_SENIOR_REVIEW (revision 2).** Senior verdict was REVISE before merge, narrow ADOPT recommended.
