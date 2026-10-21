@@ -328,7 +328,8 @@ def test_cancel_during_generate_scopes_prompts(setup, monkeypatch, kind):
 
     finished = execute(job, runner, monkeypatch)
     assert finished["state"] == "cancelled", finished
-    assert calls == [("status", "owned-prompt")]
+    # The worker cancels its own unresolved prompt and confirms it stopped; nothing else is touched.
+    assert calls == [("cancel", "owned-prompt"), ("status", "owned-prompt")]
     assert foreign == {"foreign-prompt": "running"}
     assert len(finished["prompts"]) == 1
 
