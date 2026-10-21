@@ -16,6 +16,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from uuid import uuid4
 
+import yaml
 from jsonschema import Draft202012Validator
 from jsonschema.exceptions import ValidationError
 
@@ -552,6 +553,30 @@ def _review(job: Path, ctx: Context, *, entry: dict | None = None) -> dict:
     return {"production_usable": usable, "review_state": state, "problems": problems}
 
 
+def _confine_profile_templates(source: Path) -> None:
+    """Preflight the loader's indirect reads, including overridden character animations.
+
+    ponytail: load_profile(check_paths=False) only reads template.yaml indirectly;
+    extend this preflight if the loader gains other referenced-file reads.
+    """
+    try:
+        raw = yaml.safe_load(source.read_text())
+    except yaml.YAMLError as exc:
+        raise ToolError("invalid_params", "Job profile is not valid YAML") from exc
+    if not isinstance(raw, dict):
+        raise ToolError("invalid_params", "Job profile must be a mapping")
+    characters = raw.get("characters")
+    sections = [raw, *(characters.values() if isinstance(characters, dict) else [])]
+    for section in sections:
+        animations = section.get("animations") if isinstance(section, dict) else None
+        for anim in animations.values() if isinstance(animations, dict) else []:
+            template = anim.get("template") if isinstance(anim, dict) else None
+            if isinstance(template, str):
+                path = source.resolve().parent / Path(template).expanduser() / "template.yaml"
+                paths.resolve_input(path)
+                require_regular_file(path)
+
+
 def import_job(project: str, character: str, job_dir: str, *, ctx: Context) -> dict:
     profile = _character(project, character, ctx)
     job = _job_directory(job_dir, ctx)
@@ -572,9 +597,11 @@ def import_job(project: str, character: str, job_dir: str, *, ctx: Context) -> d
     for binding in provenances:
         source_profile = Path(binding["path"])
         _protected(source_profile, ctx)
+        require_regular_file(source_profile)
         if source_profile.resolve() != profile.path.resolve():
             paths.resolve_input(source_profile)
-        require_regular_file(source_profile)
+            _confine_profile_templates(source_profile)
+        # The repository profile (including its templates) was already loaded by _character.
         if load_profile(source_profile).id != project or sha256_file(source_profile) != binding.get("sha256"):
             raise ToolError("invalid_params", "Job profile provenance does not match the requested project")
     if manifest and manifest.get("character") != character:
