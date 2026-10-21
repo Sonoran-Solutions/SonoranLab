@@ -259,7 +259,38 @@ a new linked attempt, confirms blocked parents stopped, and revalidates frozen
 input hashes. Successful jobs cannot retry.
 
 `job_result` before a terminal outcome returns `not_ready` (added to the envelope's
-error codes by DYL-115). Record-level failure codes (worker_lost, corrupt_record,
+error codes by DYL-115). Terminal results return `{job_id, state, result, error,
+artifacts, artifact_count, artifacts_truncated}`: `result` is a compact executor
+summary, while artifacts are `{ref}` objects (default at most 200). Optional
+`artifacts_offset` (default 0) and `artifacts_limit` (1–500, default 200) select a
+page ordered by report.json, contact.png, manifest.json, export/**, animate.json,
+sweep.json, then other files, with relative-path tie breaks. `artifact_count` is
+the total; `artifacts_truncated` means further refs remain after the selected page.
+Status omits the full executor result and provides a compact
+`result_summary`, null until a result exists. Summaries retain verdicts, counts,
+timings, compact generation attempts and detail refs; full argument/hash inventories
+remain on disk. Output paths in summaries use native artifact refs. Verdict
+failure/warning/error lists retain at most 20 entries with `*_count` and
+`*_truncated` fields. Default animate envelopes target less than 64 KiB;
+explicit larger pages may exceed that.
+
+`get_artifact` accepts native `job_id:relative/path` refs under the durable job's
+output_dir, returning size, sha256, media type and PNG dimensions. Bare native IDs
+return job_id, file_count, total `size` and media_type. Imported-id metadata is
+unchanged; no bodies are returned and confinement remains enforced. `check_review`
+accepts native IDs: animate uses generation status's contained final-job resolution,
+process/export use their own output, and finalize_repair uses its imported child
+and import snapshot. All review results recompute from current files.
+
+When contact_sheet zoom is omitted, choose the largest value from 8 down to 1
+that fits both the 16384 px edge and 64 MiB decoded caps, and return `zoom` alongside
+`ref` and `dimensions`. Explicit zoom still refuses oversized images; even zoom 1
+is refused if it cannot fit. Terminal job records persist the executor-measured
+stage, and status promotes the measured stage to top-level `stage`. Animate's own
+non-null stage timings populate `timing.per-stage` rather than charging processing
+and export to generate; its `total` is excluded.
+
+Record-level failure codes (worker_lost, corrupt_record,
 needs_reconciliation, cancel_unconfirmed, launcher_failed, executor_error) live
 inside successful status/result envelopes, not the API error enum. See the
 [jobs runbook](../runbooks/jobs.md) for the exact transition table, crash outcomes,

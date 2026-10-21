@@ -6,7 +6,6 @@ import os
 import subprocess
 import sys
 from importlib import import_module
-from pathlib import Path
 
 from jsonschema import Draft202012Validator
 from jsonschema.exceptions import ValidationError
@@ -204,15 +203,23 @@ class Generation:
         progress = {"stage": stage, "completed": len(list(root.glob("gen/**/result.json"))), "planned": planned}
         if (root / "animate.json").is_file():
             doc = store.load(root / "animate.json")
+            timing = doc.get("timing") or {}
+            progress["stage"] = next(
+                (
+                    name
+                    for name in ("validate_export", "select_and_process", "generate", "prepare")
+                    if timing.get(name) is not None
+                ),
+                stage,
+            )
+            progress["timing"] = timing
             progress.update(self.status(doc, root))
         return progress
 
     @staticmethod
     def status(doc, root):
         verdict = doc.get("verdict") or {}
-        final = Path(verdict.get("job", root))
-        if not final.resolve().is_relative_to(root.resolve()):
-            raise ToolError("path_refused", "Final job escapes animate output")
+        final = registry._animate_final(doc, root, Context())
         review = registry._review(final, Context())
         godot = doc.get("godot_check") or {}
         return {

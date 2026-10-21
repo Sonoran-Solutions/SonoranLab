@@ -26,8 +26,8 @@ def _reference(value: str, ctx: Context) -> tuple[Path, str]:
     rel = paths._path(relative) if relative else Path(".")
     if rel.is_absolute():
         raise ToolError("path_refused", "Artifact path must be relative")
-    if re.fullmatch(store.JOB_ID, identifier) and (paths.state_root() / "jobs" / identifier).exists():
-        root = store.output(manager.get(identifier))
+    if native := records._native_job(identifier):
+        root = store.output(native)
     else:
         hits = [paths.state_root() / "outputs" / tool / identifier for tool in SYNC_TOOLS]
         hits = [p for p in hits if re.fullmatch(store.JOB_ID, identifier) and p.exists()]
@@ -132,7 +132,7 @@ def _size(width: int, height: int) -> None:
         raise ToolError("refused", "Contact sheet exceeds 16384 px edge or 64 MiB decoded size")
 
 
-def render(clips: dict, report: dict, spec, zoom: int):
+def _dimensions(clips: dict, spec, zoom: int) -> tuple[int, int]:
     from sonoranlab import contact
 
     cols, rows = max(map(len, clips.values())), len(clips)
@@ -145,7 +145,13 @@ def render(clips: dict, report: dict, spec, zoom: int):
         + rows * (ch + contact.GAP)
         + contact.FOOTER_H
     )
-    _size(width, height)
+    return width, height
+
+
+def render(clips: dict, report: dict, spec, zoom: int):
+    from sonoranlab import contact
+
+    _size(*_dimensions(clips, spec, zoom))
     return contact.contact_sheet(clips, report, cell=spec.cell, foot_y=spec.foot_y, scale=zoom)
 
 
@@ -164,10 +170,17 @@ def contact_sheet(params: dict, ctx: Context) -> dict:
     report = store.load(input_file(params["report"], ctx))
     if not isinstance(report, dict) or type(report.get("pass")) is not bool:
         raise ToolError("invalid_params", "Expected a validator report")
-    image = render(load_clips(frames), report, profile.character(params["character"]), params.get("zoom", 8))
+    clips, spec = load_clips(frames), profile.character(params["character"])
+    zoom = params.get("zoom")
+    if zoom is None:
+        for zoom in range(8, 0, -1):
+            width, height = _dimensions(clips, spec, zoom)
+            if max(width, height) <= 16384 and width * height * 4 <= 64 * 1024 * 1024:
+                break
+    image = render(clips, report, spec, zoom)
     out = output_dir("contact_sheet", ctx)
     _save(image, out / "contact.png")
-    return {"ref": artifact(out, out / "contact.png"), "dimensions": list(image.size)}
+    return {"ref": artifact(out, out / "contact.png"), "dimensions": list(image.size), "zoom": zoom}
 
 
 def compare(params: dict, ctx: Context) -> dict:
@@ -283,7 +296,10 @@ TOOLS = (
     Tool(
         "contact_sheet",
         "Render a size-capped review contact sheet.",
-        schema({"frames_dir": STRING, "report": STRING, "zoom": ZOOM}, ("frames_dir", "report")),
+        schema(
+            {"frames_dir": STRING, "report": STRING, "zoom": {k: v for k, v in ZOOM.items() if k != "default"}},
+            ("frames_dir", "report"),
+        ),
         False,
         "sync",
         contact_sheet,

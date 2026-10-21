@@ -172,6 +172,10 @@ def _finish(path: Path, ctx: Context, result: dict | None, failure: dict | None,
         stopped = not unresolved(job) or confirm(job, prober(), cancel=True)
     except Exception:
         stopped = False
+    measured = {}
+    # Preserve the durable outcome even if partial executor metadata is unreadable.
+    with suppress(Exception):
+        measured = executor(job["kind"]).stage({**job, "stage": ctx.current_stage, "result": result})
     with store.lock(path / "job.lock"):
         current = store.read(path)
         if corrupt(current):
@@ -179,6 +183,11 @@ def _finish(path: Path, ctx: Context, result: dict | None, failure: dict | None,
         current["prompts"] = job["prompts"]
         current["timing"] = job["timing"]
         current["result"] = result
+        stage = measured.get("stage")
+        current["stage"] = stage if stage in store.STAGES else ctx.current_stage
+        timing = measured.get("timing") or {}
+        if measured_times := {k: v for k, v in timing.items() if k in store.STAGES and store.nonnegative(v)}:
+            current["timing"]["per-stage"] = measured_times
         if cancelling or ctx.cancelled or current["state"] == "cancelling":
             if current["state"] in {"queued", "running"}:
                 store.transition(current, "cancelling")

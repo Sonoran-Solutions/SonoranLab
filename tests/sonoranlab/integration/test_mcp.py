@@ -166,7 +166,7 @@ def test_slow_job_status_result_and_client_disconnect(lab):
             result = await call(client, "job_result", {"job_id": job})
             assert result["result"]["complete"]
             assert any(a["ref"] == f"{job}:artifact.txt" for a in result["artifacts"])
-            assert all(not a["path"].startswith("/") for a in result["artifacts"])
+            assert all(set(a) == {"ref"} for a in result["artifacts"])
             assert len(events(lab, "start")) == 1
 
     run_async(exercise)

@@ -1,6 +1,7 @@
 """Review regressions: prompt ownership, reservation ordering, and corrupt evidence."""
 
 import hashlib
+import json
 import os
 import signal
 import sys
@@ -279,3 +280,66 @@ def test_job_status_fallback_reuses_registry_review_classification(jobs_env, mon
     human = call("job_status", {"job_id": job_id})["result"]["human"]
     assert human == {"review": expected["review_state"], "production_usable": expected["production_usable"]}
     assert human["review"] == "invalid"
+
+
+def test_result_summary_and_prioritized_artifact_pages_are_bounded(jobs_env, monkeypatch):
+    monkeypatch.setattr(manager, "launch", lambda job: None)
+    identifier = manager.submit("slow", {"instant": True})["job_id"]
+    path = store.job_dir(identifier)
+    worker._work(path)
+    root = out(identifier)
+    preferred = [
+        "animate/sweep/final/job/report.json",
+        "animate/sweep/final/job/contact.png",
+        "animate/sweep/final/job/manifest.json",
+        "animate/sweep/final/job/export/actor/actor.png",
+        "animate/animate.json",
+        "animate/sweep/sweep.json",
+    ]
+    for relative in [*preferred, *(f"animate/gen/attempt-1/frames/{i:04}.png" for i in range(1819))]:
+        target = root / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("{}")
+    with store.lock(path / "job.lock"):
+        job = store.read(path)
+        job["result"] = {
+            "animate": {
+                "outcome": "pass",
+                "counts": {"planned": 5, "ok": 5},
+                "verdict": {"pass": True, "job": str(root / "animate/sweep/final/job"), "failures": ["failure"] * 30},
+                "generation": {"requests": [{"direction": "east", "seed": 1, "argv": ["x" * 100000]}]},
+            },
+            "attempts": [{"result": identifier + ":animate/gen/result.json", "outputs": {"pixels": "x" * 100000}}],
+            "technical": {"validator": "pass", "godot": "not_run"},
+            "warnings": ["warning"] * 25,
+        }
+        store.save(path, job)
+    record = (path / "job.json").read_bytes()
+    params = {"job_id": identifier}
+    status = call("job_status", params)
+    response = call("job_result", params)
+    for envelope in (status, response):
+        assert envelope["ok"], envelope
+        assert len(json.dumps(envelope).encode()) < 64 * 1024
+    assert "result" not in status["result"]
+    assert "argv" not in status["result"]["result_summary"]["animate"]["generation"]["requests"][0]
+    result = response["result"]
+    assert result["result"]["warnings_count"] == 25 and len(result["result"]["warnings"]) == 20
+    verdict = result["result"]["animate"]["verdict"]
+    assert verdict["failures_count"] == 30 and verdict["failures_truncated"] and len(verdict["failures"]) == 20
+    assert len(result["artifacts"]) == 200 and result["artifacts_truncated"]
+    assert [item["ref"] for item in result["artifacts"][:6]] == [f"{identifier}:{rel}" for rel in preferred]
+    refs = []
+    for offset in range(0, result["artifact_count"], 500):
+        page = call("job_result", params | {"artifacts_offset": offset, "artifacts_limit": 500})["result"]
+        assert page["artifact_count"] == result["artifact_count"]
+        assert len(page["artifacts"]) <= 500
+        assert page["artifacts_truncated"] == (offset + len(page["artifacts"]) < result["artifact_count"])
+        refs.extend(item["ref"] for item in page["artifacts"])
+    assert len(refs) == len(set(refs)) == result["artifact_count"]
+    assert result["artifacts"] == [{"ref": ref} for ref in refs[:200]]
+    empty = call("job_result", params | {"artifacts_offset": len(refs)})["result"]
+    assert not empty["artifacts"] and not empty["artifacts_truncated"]
+    for bad in ({"artifacts_offset": -1}, {"artifacts_limit": 501}, {"artifacts_limit": 0}):
+        assert call("job_result", params | bad)["error"]["code"] == "invalid_params"
+    assert (path / "job.json").read_bytes() == record

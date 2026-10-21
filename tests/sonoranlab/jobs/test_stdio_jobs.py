@@ -3,6 +3,7 @@
 import json
 import os
 import runpy
+import subprocess
 import sys
 from pathlib import Path
 
@@ -65,5 +66,17 @@ def test_stdio_restart_sees_same_job_and_progress(jobs_env, monkeypatch, tmp_pat
                 assert not result.is_error
                 assert result.structured_content["result"]["result"] == {"complete": True}
                 assert json.loads(result.content[0].text) == result.structured_content
+                params = {"job_id": job_id, "artifacts_offset": 1, "artifacts_limit": 1}
+                paged = await session.call_tool("job_result", params)
+                cli = subprocess.run(
+                    [sys.executable, "-m", "sonoranlab.cli", "api", "job_result", "--params", "-"],
+                    input=json.dumps(params),
+                    text=True,
+                    capture_output=True,
+                    check=True,
+                    timeout=10,
+                )
+                assert paged.structured_content == json.loads(cli.stdout)
+                assert json.loads(paged.content[0].text) == paged.structured_content
 
     HARNESS["run_async"](second_pair)

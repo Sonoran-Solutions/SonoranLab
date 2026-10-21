@@ -1,6 +1,7 @@
 """An edited report and manifest cannot authorize invalid animation pixels."""
 
 import json
+import os
 from functools import partial
 
 import numpy as np
@@ -21,6 +22,56 @@ from sonoranlab.mcp import server
 from sonoranlab.validate import frame_digest
 
 setup = fixtures.setup
+
+
+def test_native_artifact_metadata_and_confinement(setup):
+    job = execute(setup, "process", mode="raw", raw=str(raw_set(setup.root)), stills=str(setup.stills))
+    root, identifier = store.output(job), job["job_id"]
+    for relative in ("export/hero/hero.png", "export/hero/hero.sonoranlab.json"):
+        response = call("get_artifact", {"ref": f"{identifier}:{relative}"}, ctx=setup.ctx)
+        assert response["ok"], response
+        meta = response["result"]
+        assert meta["ref"] == f"{identifier}:{relative}"
+        assert meta["size"] == (root / relative).stat().st_size
+        assert meta["sha256"] == sha256_file(root / relative)
+        assert meta["media_type"] == ("image/png" if relative.endswith(".png") else "application/json")
+        if relative.endswith(".png"):
+            with Image.open(root / relative) as image:
+                assert meta["dimensions"] == list(image.size)
+    meta = call("get_artifact", {"ref": identifier}, ctx=setup.ctx)["result"]
+    files = [p for p in root.rglob("*") if p.is_file()]
+    assert meta["file_count"] == len(files) and meta["size"] == sum(p.stat().st_size for p in files)
+    (root / "escape").symlink_to(setup.frames)
+    os.mkfifo(root / "fifo")
+    for relative in ("../report.json", str(setup.profile), "escape/north_0.png", "fifo"):
+        response = call("get_artifact", {"ref": f"{identifier}:{relative}"}, ctx=setup.ctx)
+        assert response["error"]["code"] == "path_refused", response
+
+
+def test_native_process_and_export_review_use_own_output(setup):
+    from test_review import PASS
+
+    from sonoranlab.review import record_review
+
+    job = execute(setup, "process", mode="raw", raw=str(raw_set(setup.root)), stills=str(setup.stills))
+    root, identifier = store.output(job), job["job_id"]
+    assert call("check_review", {"job": identifier}, ctx=setup.ctx)["result"]["review_state"] == "none"
+    record_review(root, **PASS)
+    assert call("check_review", {"job": identifier}, ctx=setup.ctx)["result"]["production_usable"]
+    exported = execute(setup, "export_godot", source=identifier + ":report.json")
+    review = call("check_review", {"job": exported["job_id"]}, ctx=setup.ctx)["result"]
+    assert review == registry._review(store.output(exported), setup.ctx)
+    assert not review["production_usable"]
+    (root / "export/hero/hero.png").write_bytes(b"changed")
+    review = call("check_review", {"job": identifier}, ctx=setup.ctx)["result"]
+    assert review["review_state"] == "invalid" and not review["production_usable"]
+
+
+def test_process_terminal_stage_is_measured_and_persisted(setup):
+    job = execute(setup, "process", mode="raw", raw=str(raw_set(setup.root)), stills=str(setup.stills))
+    assert job["stage"] == "validate_export"
+    status = call("job_status", {"job_id": job["job_id"]}, ctx=setup.ctx)["result"]
+    assert status["stage"] == status["progress"]["stage"] == "validate_export"
 
 
 @pytest.mark.parametrize("transport", ["cli", "mcp"])
