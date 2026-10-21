@@ -43,14 +43,14 @@ not launch/probe). No stubs are advertised.
 | `check_review` | Supported, implemented (DYL-114) | yes / sync | review.review_errors / production_usable; `review check` |
 | `import_job` | Supported, implemented (DYL-114) | no / sync | registry.import_job; explicit existing-job indexing, no job modification; `api import_job` |
 | `register_character` | Supported, implemented (DYL-114) | no / sync | New registry copies/hashes using artifacts patterns; initially unapproved; `api register_character` |
-| `validate` | Supported, pending | no / sync | validate.read_frames/read_stills/validate; `validate`, new output directory |
-| `contact_sheet` | Supported, pending | no / sync | contact.contact_sheet; `contact`, new output directory |
-| `compare` | Supported, pending | no / sync | Existing validate + contact primitives, new side-by-side/report orchestration; new output directory |
+| `validate` | Implemented (DYL-117) | no / sync | validate.read_frames/read_stills/validate; `validate`, new output directory |
+| `contact_sheet` | Implemented (DYL-117) | no / sync | contact.contact_sheet; `contact`, new output directory |
+| `compare` | Implemented (DYL-117) | no / sync | Existing validate + contact primitives, new side-by-side/report orchestration; new output directory |
 | `animate` | Implemented (DYL-116) | no / job | animate.animate; `animate --track E`, existing guard and selection/processing chain |
 | `pose_frame` | Implemented (DYL-116) | no / job | comfy.adapters.track_c.TrackC; `generate` Track C request, single pose / posed first frame only |
-| `process` | Supported, pending | no / job | pipeline.run; `process` |
-| `export_godot` | Supported, pending | no / job | export.godot.export_godot guarded export; `export godot`, STATE output only |
-| `godot_check` | Supported, pending | no / job | pipeline.check_in_godot / run_godot; existing --godot-check, isolated job output |
+| `process` | Implemented (DYL-117) | no / job | pipeline.run; `process` |
+| `export_godot` | Implemented (DYL-117) | no / job | export.godot.export_godot guarded export; `export godot`, STATE output only |
+| `godot_check` | Implemented (DYL-117) | no / job | pipeline.check_in_godot / run_godot; existing --godot-check, isolated job output |
 | `cancel_job` | Implemented (DYL-115) | no / sync | New job cancellation plus existing ComfyClient.cancel; preserve unknown outcomes |
 | `retry_job` | Implemented (DYL-115) | no / job | New explicit linked job over existing animate/process operations |
 | `prepare_repair` | Optional, pending | no / sync | repair.workspace.prepare; `repair prepare` |
@@ -90,9 +90,7 @@ see [generation tool schemas](../06-tool-surface.md#generation-tools-dyl-116).
 `animate(project, character, anim, ref_set_id, seeds, windows?, godot_check?,
 need_gib?, allow_pause?, idempotency_key?)` admits only character animations whose
 track_default is E, unchanged approved references, profile autonomy limits and
-E >=40 GiB. Sequential attempt admission is enforced; atomic concurrent admission
-needs DYL-115 validation moved under its existing submission lock (outside the
-allowed generation files). `pose_frame(project, character, ref_set_id, direction, template, seed,
+E >=40 GiB. Attempt admission is atomic under the manager's submission lock. `pose_frame(project, character, ref_set_id, direction, template, seed,
 allow_pause?, idempotency_key?)` resolves repository-only anim/direction/pose_NNN
 IDs and runs one C request at 60 GiB through the existing guarded generate CLI,
 using the adapter's documented direction prompt. No batch animation, prompt
@@ -105,9 +103,23 @@ guard_busy. Missing-container errors are unavailable with the offline start hint
 Pose success returns RawResult plus artifacts; failure retains adapter errors.
 Hash provenance comes from adapter result files, and unrecorded memory is null.
 Human approval stays separate and generation progress recomputes current review
-from the contained final pipeline job. Promoting these fields to the top-level
-DYL-115 job_status envelope requires a shared handler hook outside this ticket's
-allowed generation files; until that hook, use progress.technical/progress.human.
+from the contained final pipeline job. job_status promotes them to its top-level technical/human fields.
+
+### Deterministic operations (DYL-117)
+
+The six deterministic tools are implemented; exact inputs/results are listed in
+[docs/06](../06-tool-surface.md#deterministic-tools-dyl-117). They use repository
+project profiles only. Process runs the existing pipeline under the heavy lock;
+validate shares the CLI's final-resolution report builder and still/registration
+checks. Contact and comparison write new size-capped images; comparison reuses
+repair.compare's coordinate/palette rules and validate's bbox/foot helpers.
+
+Export shares the CLI's complete bound-report admission and rechecks frozen
+input hashes. Export/check accept artifact or imported-job refs only, and every
+output belongs to a new STATE directory. No game checkout writes or review.json
+writes are permitted. Isolated Godot checks preserve the signature-specific
+singleton retry and all attempts; missing engine is unavailable, never pass.
+Completed jobs and report.pass remain separate execution/technical verdicts.
 
 ### Envelope and transport
 

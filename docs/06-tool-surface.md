@@ -37,14 +37,14 @@ no placeholder tools in discovery. See ADR-0010 for each library/CLI mapping.
 | `check_review` | read-only / sync | Implemented: recompute artifact-bound human review from disk |
 | `import_job` | mutating / sync | Implemented: index existing jobs and hashes without modifying them |
 | `register_character` | mutating / sync | Implemented: immutable still copies, initially unapproved |
-| `validate` | mutating / sync | Supported, pending: validator report in a new output directory |
-| `contact_sheet` | mutating / sync | Supported, pending: new review image output directory |
-| `compare` | mutating / sync | Supported, pending: new side-by-side contact and report output directory |
+| `validate` | mutating / sync | Implemented (DYL-117): validator report in a new output directory |
+| `contact_sheet` | mutating / sync | Implemented (DYL-117): new review image output directory |
+| `compare` | mutating / sync | Implemented (DYL-117): new side-by-side contact and report output directory |
 | `animate` | mutating / job | Implemented (DYL-116): Track E profile animation |
 | `pose_frame` | mutating / job | Implemented (DYL-116): Track C single pose / posed first frame only |
-| `process` | mutating / job | Supported, pending: deterministic pixel chain |
-| `export_godot` | mutating / job | Supported, pending: guarded export into STATE, never the game checkout |
-| `godot_check` | mutating / job | Supported, pending: headless import/playback check in isolated output |
+| `process` | mutating / job | Implemented (DYL-117): deterministic pixel chain |
+| `export_godot` | mutating / job | Implemented (DYL-117): guarded export into STATE, never the game checkout |
+| `godot_check` | mutating / job | Implemented (DYL-117): headless import/playback check in isolated output |
 | `cancel_job` | mutating / sync | Implemented: durable intent, worker TERM, prompt-scoped cancellation and stop confirmation |
 | `retry_job` | mutating / job | Implemented: explicit new attempt from frozen request, linked by parent_job_id |
 | `prepare_repair` | mutating / sync | **Optional**, pending: ADR-0009 scoped workspace handoff |
@@ -248,12 +248,10 @@ and output paths. Exact schemas are advertised by `api --list` and MCP discovery
 
 Seeds are distinct integers in 0..2147483647; animate admits at most the profile's
 max_seeds_per_attempt (4). Animation must belong to the character and default to
-Track E. Existing animation jobs, including every explicit linked retry, count
-against max_attempts_per_animation (3). Same-key replays reverify inputs and return
-the existing job without consuming an attempt. DYL-115 currently validates before
-its submission reservation lock, so simultaneous admissions can race the attempt
-limit; moving validation into that existing lock is a pending shared-manager fix
-outside the allowed generation files. Keys are nonempty, at most 200
+Track E. Animation attempts that submitted a prompt or are still active, including every
+explicit linked retry, count against max_attempts_per_animation (3); the check runs
+atomically under the manager's submission lock (executor `admit` hook). Same-key
+replays return the existing job without consuming an attempt. Keys are nonempty, at most 200
 characters. Pause units must be in the owner's `SONORANLAB_ALLOW_PAUSE_UNITS`
 os.pathsep list; an unset/empty list authorizes none.
 
@@ -288,16 +286,61 @@ adapter failures retain their structured code/stage/message/retryable fields.
 Absent-container errors become failed(unavailable), with hint
 `start it: bash env/comfy.sh up --offline`; no service is started and no fallback
 runs. Cancel uses DYL-115 prompt ownership and TERM handling.
-The existing manager prober hardcodes `sonoranlab-comfy`; confirming cancellation
-for a custom SONORANLAB_COMFY_CONTAINER also needs that shared prober to honor
-the configured container. This fix is outside the allowed generation files.
+The manager's cancel prober honours the same SONORANLAB_COMFY_CONTAINER.
 
 Generation's stage() reads disk only: generation result count versus request
 count, sweep presence for select_and_process, and export presence for
 validate_export. For completed animations, `job_status.progress.technical` and
 `job_status.progress.human` recompute technical status and review from the contained
-final job using the registry check_review logic. Results initially report
+final job using the registry check_review logic. `job_status` promotes these
+measured verdicts to its top-level `technical`/`human` fields. Results initially report
 production_usable=false and awaiting owner review; saved results never constitute
-fresh review evidence. The DYL-115 outer status handler currently retains its
-placeholder top-level technical fields and reviews the outer output directory;
-a shared status hook is needed to promote the generation-specific status.
+fresh review evidence.
+
+## Deterministic tools (DYL-117)
+
+All six take `project`, `character`, `anim` from the repository profile; profile
+paths and output targets are not caller options. Inputs accept confined paths,
+`job_id:relative/path` refs, or imported artifact IDs. Export/check `source` must
+be a job/import/artifact ref, never a bare path. Every directory and descendant
+read is confined; traversal, escaping symlinks, game checkout reads and special
+files are refused. Only the profile loader reads its recorded palette.
+
+| Tool | Additional required inputs | Optional inputs | Result |
+|---|---|---|---|
+| `process` | `raw`, `mode:"raw"` | `sheet`, `start_col`, `stills`, `anchors`, `godot_check`, `idempotency_key` | Immediate durable `job_id`; pipeline result contains report/contact/export refs and technical verdicts |
+| `validate` | `frames_dir`, `final_resolution:true` | `stills`, `registration` | `report`, `ref` for the new report.json |
+| `contact_sheet` | `frames_dir`, `report` | `zoom` (1–8, default 8) | PNG `ref`, `dimensions` |
+| `compare` | `before`, `after`, `final_resolution:true` | `zoom` (1–8, default 8) | Per-frame diffs, both reports, verdict change, three contact refs, compare.json `ref` |
+| `export_godot` | `source` (job or report ref) | `idempotency_key` | Immediate durable `job_id`; result contains new export refs |
+| `godot_check` | `source` (export ref) | `idempotency_key` | Immediate durable `job_id`; result contains engine verdict, every attempt, record `ref` |
+
+Sync outputs are exclusively created at STATE/outputs/tool/op_id/; op_id uses
+the job-id shape and refs use `op_id:relative/path`. Job outputs use the manager's
+exclusive artifact directory. Inputs and prior jobs remain unchanged. Tools never
+write review.json. A completed validation returns the report even on technical
+FAIL; callers inspect report.pass independently of successful execution.
+
+Validation calls the shared CLI report builder directly on final-resolution
+pixels, with identical still/registration checks and no pixelize, palette or
+registration pass. An inputs.json record binds its report hash and admitted
+input locations for subsequent export. Process calls pipeline.run with the CLI
+arguments and uses the DYL-115 heavy-CPU/GPU scheduler lock.
+
+Contact rendering uses contact.contact_sheet. All contacts, including compare's
+combined PNG, are refused before allocation above 16384 px per edge or 64 MiB
+decoded size; encoded files also have a 64 MiB cap. Comparison requires matching
+frame names and canvases. Coordinates are [x,y], ordered by row then column,
+limited to 2000 per frame with total count and truncated flag; fully hidden RGB
+is ignored by the existing repair comparator. Alpha and palette/off-palette
+changes, bbox edges and lowest-row foot-anchor deltas use existing helpers.
+
+Export admission shares the standalone CLI's profile hash, character, animation,
+clip timing, mirror, still and decoded-pixel digest checks, and checks existing
+manifest/import hashes. A bare pass:true cannot authorize export. Frozen jobs
+recheck hashes before execution; the profile game checkout is always forbidden
+as a destination. All eight supplied independent stills survive column zero.
+Godot uses pipeline.check_in_godot in its disposable fixture copy and retains
+run_godot's signature-specific singleton retries and every attempt. Missing
+Godot succeeds with technical.godot=unavailable (no pass); import/content failure
+is fail. Execution success never grants human approval.
