@@ -99,7 +99,9 @@ def test_import_is_light_and_does_not_spawn():
     assert result.stderr == ""
 
 
-def test_stdio_initialize_discovery_calls_parity_and_logging(tmp_path, caplog):
+def test_stdio_initialize_discovery_calls_parity_and_logging(tmp_path, caplog, monkeypatch):
+    # The in-process registry() used for comparison must see the same (absent) editor runtime as the server.
+    monkeypatch.setenv("SONORANLAB_EDITOR_RUNTIME", str(tmp_path / "missing-runtime"))
     env = dict(
         os.environ,
         SONORANLAB_STATE=str(tmp_path / "state"),

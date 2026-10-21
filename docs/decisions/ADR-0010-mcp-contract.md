@@ -53,11 +53,11 @@ not launch/probe). No stubs are advertised.
 | `godot_check` | Implemented (DYL-117) | no / job | pipeline.check_in_godot / run_godot; existing --godot-check, isolated job output |
 | `cancel_job` | Implemented (DYL-115) | no / sync | New job cancellation plus existing ComfyClient.cancel; preserve unknown outcomes |
 | `retry_job` | Implemented (DYL-115) | no / job | New explicit linked job over existing animate/process operations |
-| `prepare_repair` | Optional, pending | no / sync | repair.workspace.prepare; `repair prepare` |
-| `inspect_repair` | Optional, pending | yes / sync | repair.workspace.inspect; `repair inspect` |
-| `inspect_repair_diff` | Optional, pending | yes / sync | repair.compare.diff; `repair diff` |
-| `finalize_repair` | Optional, pending | no / job | repair.finalize.finalize; `repair finalize`, child job requires fresh review |
-| `abort_repair` | Optional, pending | no / sync | repair.workspace.abort; `repair abort` |
+| `prepare_repair` | Optional, implemented (DYL-118) | no / sync | repair.workspace.prepare; `repair prepare`, owner authorization/contained-worker handoff |
+| `inspect_repair` | Optional, implemented | yes / sync | repair.workspace.inspect; `repair inspect`, plus read-only authorization/lease/journal summaries |
+| `inspect_repair_diff` | Optional, implemented | yes / sync | repair.compare.diff; `repair diff`, capped coordinates/counts and authorization masks |
+| `finalize_repair` | Optional, implemented | no / job | repair.finalize.finalize; `repair finalize`, heavy CPU lock, child requires fresh review |
+| `abort_repair` | Optional, implemented | no / sync | admit_repair + repair.session.abort; exact current `repair abort` lease behavior |
 
 | Excluded operation | Disposition / reason | Existing operation if any |
 |---|---|---|
@@ -121,6 +121,41 @@ writes are permitted. Isolated Godot checks preserve the signature-specific
 singleton retry and all attempts; missing engine is unavailable, never pass.
 Completed jobs and report.pass remain separate execution/technical verdicts.
 
+### Optional repair acceptance (DYL-118)
+
+ADR-0009's accepted narrow/optional scope exposes exactly the five repair tools
+above. Their capability gate matches `capabilities.editor`'s runtime-directory
+presence check; absence removes them from discovery and direct calls return
+`invalid_params` / `Unknown or disabled tool`. Imports/discovery never launch
+the editor, and the disabled server does not import repair session/runtime.
+
+Prepare accepts registered/imported parent refs and a repository profile, creates
+a fresh workspace under repair_root(), and returns hashes, informational staged
+paths and owner/contained-worker next steps. All subsequent calls take a strict
+directory ID and use admit_repair, never a caller path. Inspect/diff read existing
+files only; diffs retain full counts and cap coordinate lists at 2000/frame.
+Authorization records and masks remain authoritative. No authorization, session,
+op/read, relay, editor export, Lua or upstream tool is added to MCP.
+
+The durable finalize kind freezes and rechecks inputs, then invokes the existing
+CLI finalizer under the heavy CPU lock, creating a fresh child at
+`<REPAIR_ROOT>/<repair.name>-child-<job_id>`. It then indexes the child through
+`registry.import_job`; the durable STATE output retains only an exclusively
+written `finalize-result.json` with child path, import artifact ID, hashes and
+verdicts. Default sibling roots work with the default READ root; a custom READ
+configuration that refuses the child import fails the job with that error and
+is never widened silently. A persistent per-workspace claim
+prevents a second acceptance after execution starts; uncertain attempts require
+a newly prepared repair. Parent/source/authorization/session checks, validator,
+guarded export, Godot check and child review rules remain the library's.
+The result supplies the child `artifact_id`, informational `child_path`, and
+file refs using `<artifact_id>:<relative_path>` accepted by `get_artifact`.
+The child is awaiting owner review, verified through `registry.check_review`
+on its import ID; an ancestor approval is never carried forward. Exact
+schemas/results are in
+[docs/06](../06-tool-surface.md#optional-repair-handoff-dyl-118)
+and the [repair runbook](../runbooks/repair.md).
+
 ### Envelope and transport
 
 Schema identifier: `sonoranlab.api/1`.
@@ -172,7 +207,9 @@ The normative layout, confinement, atomic-write rules and IDs are in
 [docs/06](../06-tool-surface.md#state-paths-and-ids): STATE defaults to
 ~/sonoranlab-work/mcp; READ roots default to ~/sonoranlab-work; profiles
 remain repository-owned/read-only. Inputs resolve strictly within READ or
-STATE and must be regular files; writes only within STATE to new outputs.
+STATE and must be regular files; core writes stay within STATE to new outputs.
+Optional repair preparation/finalization uses fresh REPAIR_ROOT directories
+through the existing repair admissions, then imports finalized children.
 Reject traversal, symlink escapes, devices and existing output directories.
 Game checkout reads/writes/output targets are refused even inside a root;
 only reading the profile-recorded palette via the library is allowed.
@@ -184,7 +221,7 @@ fsync and fcntl locks for read-modify-write.
 Project = profile id; character = profile character key;
 ref_set_id = refs- + first 12 sha256 hex over sorted (direction, file hash)
 pairs; job_id = job- + UTC yyyymmddThhmmssZ + '-' + 8 random hex.
-Artifacts use job_id:relative_path and STATE-relative references;
+Artifacts use job_id:relative_path, import artifact_id:relative_path and STATE-relative references;
 absolute paths appear only as informational metadata. Copies are immutable
 0444 files with hashes. Unknown outcomes must be reconciled, not replayed.
 
