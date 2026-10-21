@@ -31,8 +31,8 @@ no placeholder tools in discovery. See ADR-0010 for each library/CLI mapping.
 | `list_characters` | read-only / sync | Implemented: profile/registry union and verified approvals |
 | `get_character` | read-only / sync | Implemented: references, current review and imported job lineage |
 | `list_jobs` | read-only / sync | Implemented: bounded/filterable durable summaries (limit ≤200), offline lease reconciliation |
-| `job_status` | read-only / sync | Implemented: execution, measured file progress, timing and separate technical/human status |
-| `job_result` | read-only / sync | Implemented: terminal result/error and STATE-relative artifact references |
+| `job_status` | read-only / sync | Implemented: execution, measured file progress/timing, compact `result_summary` and separate technical/human status |
+| `job_result` | read-only / sync | Implemented: terminal result summary/error and paged artifact references |
 | `get_artifact` | read-only / sync | Implemented: bounded metadata only, no image pixels or text bodies |
 | `check_review` | read-only / sync | Implemented: recompute artifact-bound human review from disk |
 | `import_job` | mutating / sync | Implemented: index existing jobs and hashes without modifying them |
@@ -79,7 +79,7 @@ internal repair ID; the latter is returned in `identity.manifest_repair_id`.
 | `prepare_repair` | `{project, character, anim, parent_job}` | `repair_id`, state, identity hashes from the manifest, informational staged source paths, `next_steps` for owner authorization and the contained worker |
 | `inspect_repair` | `{repair_id}` | Workspace state/identity, authorization as recorded plus hash binding, session lease/state, journal event counts/digests; no edit or session launch |
 | `inspect_repair_diff` | `{repair_id}` | Existing `repair.compare.diff` report, coordinates capped at 2000 per frame/list with full `*_count`, palette/alpha problems and `unauthorized_changes` with counts |
-| `finalize_repair` | `{repair_id}` | Immediate durable `job_id`/state, kind `finalize_repair`, sharing the heavy CPU lock; poll `job_result` for child import `artifact_id`, informational `child_path`, validator/export/Godot verdicts, new hashes, and human `awaiting_owner_review` |
+| `finalize_repair` | `{repair_id}` | Immediate durable `job_id`/state, kind `finalize_repair`, sharing the heavy CPU lock; poll `job_result` for child import `artifact_id`, informational `child_path`, validator/export/Godot verdicts, manifest refs for hashes, and current human status |
 | `abort_repair` | `{repair_id}` | Existing CLI abort result; active writer lease refuses abort; evidence retained |
 
 `parent_job` accepts a durable job ID, imported artifact ID, or their confined
@@ -188,15 +188,15 @@ are shown without `?`:
 | `get_character` | `{project, character}` | `{id, cell, anchor_mode, animations, registered, reference_sets, jobs}` |
 | `register_character` | `{project, character, reference_dir, notes?: string}` | `{ref_set_id, approval, created: boolean}` |
 | `import_job` | `{project, character, job_dir}` | `{artifact_id, job_id, created: boolean}` |
-| `get_artifact` | `{ref}` | File: `{ref, size, sha256, media_type, dimensions?: [width,height]}`; imported ID: `{artifact_id, job_id, file_count, size, sha256, media_type}` |
-| `check_review` | `{job}` | `{production_usable: boolean, review_state: none\|pass\|fail\|invalid, problems: [{code,field,message}]}` |
+| `get_artifact` | `{ref}` | Native/import file ref: `{ref, size, sha256, media_type, dimensions?: [width,height]}`; bare native job ID: `{job_id, file_count, size, media_type}`; imported ID retains `{artifact_id, job_id, file_count, size, sha256, media_type}` |
+| `check_review` | `{job}` (native job ID or imported ID) | `{production_usable: boolean, review_state: none\|pass\|fail\|invalid, problems: [{code,field,message}]}` |
 
 `register_character` and `import_job` are mutating; the other four are
 read-only. The exact JSON Schemas are advertised by `api --list` and MCP
 `list_tools` from `api/tools/registry_tools.py`. `notes` is capped at 65536
 characters. `job` accepts `job-YYYYMMDDThhmmssZ-xxxxxxxx` or an `import-` ID.
-`ref` accepts an imported ID or `<job_id>:<relative path>` after explicit
-import. No discovery scan of arbitrary READ directories is performed.
+`ref` accepts a native job ID, an imported ID, or their file refs. Native jobs
+need no explicit import. No discovery scan of arbitrary READ directories is performed.
 Imported IDs are `import-` + 24 SHA256 hex of `project/character/absolute-job-path`.
 Imports are idempotent while the recorded metadata/export hashes match;
 changed evidence is a conflict. Imported-ID metadata describes the indexed
@@ -269,6 +269,25 @@ Cancellation confirms only this job's durable submission IDs. Unknown outcomes
 remain blocked(cancel_unconfirmed). Terminal cancellation is an idempotent no-op;
 retry creates a new linked attempt and refuses unresolved blocked parents or
 changed frozen inputs. `job_result` before a terminal outcome returns error code `not_ready`.
+`job_result` returns `{job_id, state, result, error, artifacts, artifact_count,
+artifacts_truncated}`. `result` is a compact executor summary; `artifacts` contains
+`{ref}` objects, with no redundant filesystem path. The default page contains at
+most 200 refs; optional `artifacts_offset` (default 0) and `artifacts_limit`
+(1–500, default 200) page through a stable priority order: report.json, contact.png,
+manifest.json, export/**, animate.json, sweep.json, then other files; ties use the
+relative path. `artifact_count` counts all files and `artifacts_truncated` is true
+when further refs remain after the selected page.
+`job_status` omits the full executor `result` and returns the same compact
+`result_summary` (null before a result exists). Summaries retain verdicts, counts,
+timings, compact generation attempts and detail refs; full argv, model/input/output
+hash inventories and detailed manifests remain on disk. Paths within the native
+output become `job_id:relative/path` refs in summaries. Verdict failures, warnings
+and errors are limited to 20 entries with `*_count` and `*_truncated` fields.
+Default animate status/result envelopes target less than 64 KiB; explicit larger
+artifact pages may exceed that.
+Terminal records persist the executor's measured stage; `job_status.stage` follows
+the measured progress stage when available. Animate's own non-null stage timings
+populate `timing.per-stage`, excluding its `total` field.
 Initial registry discovery performs startup reconciliation; server construction
 itself does not import registry modules. See the [jobs runbook](runbooks/jobs.md).
 
@@ -319,10 +338,10 @@ subdirectory, and uses its guarded generation runner. Track E requires at least
 Pipeline PASS and validator FAIL both mean job succeeded; technical.validator
 reports pass/fail separately. Only PASS includes export artifact references.
 No candidates/processing errors fail the job; guard exit 3/4 becomes retryable
-budget_refused/guard_busy. The result includes animate.json, stage timings,
-all planned attempt seed/direction/exits, counts and verdict failures, and
-per-attempt model/workflow/input/output hashes from result.json. Memory is null
-unless the adapter recorded a measurement. Five generated directions, mirrored
+budget_refused/guard_busy. The result summary includes an animate.json ref, stage
+timings, planned attempt seed/direction/exits, counts and verdict failures. Detailed
+per-attempt model/workflow/input/output hashes and memory measurements remain in
+the referenced result.json files. Five generated directions, mirrored
 animation rows and eight independent stills retain animate's existing semantics.
 
 `pose_frame` is **single pose / posed first frame; no automatic C->E fallback**.
@@ -332,7 +351,7 @@ are admitted, with matching generated direction and a profile animation. The
 request uses Track C's documented POSE_PROMPTS, the registered direction still
 and the template control image. The child runs `generate --request ... --exec ...`
 through guarded_argv with **60 GiB**, retaining the runwindow lease and worker
-TERM propagation. Result includes RawResult JSON and job-relative artifact refs;
+TERM propagation. Result summaries include RawResult status/timing/error and paged artifact refs;
 adapter failures retain their structured code/stage/message/retryable fields.
 
 Absent-container errors become failed(unavailable), with hint
@@ -349,6 +368,14 @@ measured verdicts to its top-level `technical`/`human` fields. Results initially
 production_usable=false and awaiting owner review; saved results never constitute
 fresh review evidence.
 
+`check_review` accepts native job IDs directly and always reads current evidence:
+animate resolves the contained final job through the same verdict pointer as
+generation status; process/export jobs use their own output; finalize_repair uses
+the imported child and its import snapshot. `get_artifact` accepts native
+`job_id:relative/path` refs rooted at the durable record's output_dir and bare IDs
+for file count/total size. Imported IDs retain their existing behavior. Traversal,
+escaping symlinks and special files remain refused; metadata never includes bodies.
+
 ## Deterministic tools (DYL-117)
 
 All six take `project`, `character`, `anim` from the repository profile; profile
@@ -362,7 +389,7 @@ files are refused. Only the profile loader reads its recorded palette.
 |---|---|---|---|
 | `process` | `raw`, `mode:"raw"` | `sheet`, `start_col`, `stills`, `anchors`, `godot_check`, `idempotency_key` | Immediate durable `job_id`; pipeline result contains report/contact/export refs and technical verdicts |
 | `validate` | `frames_dir`, `final_resolution:true` | `stills`, `registration` | `report`, `ref` for the new report.json |
-| `contact_sheet` | `frames_dir`, `report` | `zoom` (1–8, default 8) | PNG `ref`, `dimensions` |
+| `contact_sheet` | `frames_dir`, `report` | `zoom` (1–8; omitted selects largest fitting zoom) | PNG `ref`, `dimensions`, chosen `zoom` |
 | `compare` | `before`, `after`, `final_resolution:true` | `zoom` (1–8, default 8) | Per-frame diffs, both reports, verdict change, three contact refs, compare.json `ref` |
 | `export_godot` | `source` (job or report ref) | `idempotency_key` | Immediate durable `job_id`; result contains new export refs |
 | `godot_check` | `source` (export ref) | `idempotency_key` | Immediate durable `job_id`; result contains engine verdict, every attempt, record `ref` |

@@ -184,6 +184,8 @@ def test_pipeline_result(setup, monkeypatch, lift, verdict):
     job = execute(submit(setup), runner, monkeypatch)
     assert job["state"] == "succeeded", job["error"]
     result = job["result"]
+    assert job["stage"] == "validate_export"
+    assert job["timing"]["per-stage"] == {k: v for k, v in result["animate"]["timing"].items() if k in store.STAGES}
     assert result["technical"]["validator"] == verdict
     assert result["human"]["production_usable"] is False
     assert result["human"]["message"] == "awaiting owner review"
@@ -224,6 +226,8 @@ def test_guard_outcomes(setup, monkeypatch, code, error):
     assert job["error"]["retryable"] is True
     doc = store.load(store.output(job) / "animate/animate.json")
     assert doc["outcome"] == "blocked" and doc["counts"]["not_run"] == 4
+    assert job["stage"] == "generate"
+    assert job["timing"]["per-stage"] == {k: v for k, v in doc["timing"].items() if k in store.STAGES and v is not None}
 
 
 def test_retry_limit_and_idempotency(setup, monkeypatch):
@@ -235,6 +239,10 @@ def test_retry_limit_and_idempotency(setup, monkeypatch):
     for job in (first, second):  # a real failed generation leaves its durable submission record
         (store.output(job) / "submission.json").write_text(json.dumps({"prompt_id": f"p-{job['job_id']}"}))
         manager.get(job["job_id"])
+    with pytest.raises(ToolError, match="unresolved prompts"):
+        manager.retry_job(second["job_id"])
+    # Reconcile the older attempt too; replay its retained key without reserving new work.
+    assert manager.retry_job(first["job_id"], "first")["job_id"] == first["job_id"]
     third = manager.retry_job(second["job_id"])
     third = manager.get(third["job_id"])
     assert third["parent_job_id"] == second["job_id"] and third["attempt"] == 3

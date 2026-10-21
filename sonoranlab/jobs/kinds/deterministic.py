@@ -266,7 +266,12 @@ class Deterministic:
     def stage(self, job: dict) -> dict:
         root = store.output(job)
         result = job.get("result") or {}
-        return {"stage": job["stage"], "report": (root / "report.json").is_file(), "technical": result.get("technical")}
+        report = (root / "report.json").is_file()
+        return {
+            "stage": "validate_export" if self.kind == "process" and report else job["stage"],
+            "report": report,
+            "technical": result.get("technical"),
+        }
 
 
 EXECUTORS = {name: Deterministic(name) for name in ("process", "export_godot", "godot_check")}

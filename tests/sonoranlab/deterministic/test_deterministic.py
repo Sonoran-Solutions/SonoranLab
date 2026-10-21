@@ -306,6 +306,29 @@ def test_output_collision_and_size_caps(setup, monkeypatch):
         ops._size(8192, 8192)
 
 
+def test_contact_default_chooses_largest_fitting_zoom(setup):
+    import yaml
+
+    doc = yaml.safe_load(setup.profile.read_text())
+    doc["characters"]["hero"]["cell"] = 144
+    setup.profile.write_text(yaml.safe_dump(doc))
+    for direction in GEN:
+        for index in range(6):
+            Image.new("RGBA", (144, 144)).save(setup.frames / f"{direction}_{index}.png")
+    report = setup.root / "report.json"
+    store.atomic(report, {"pass": True})
+    params = {"frames_dir": str(setup.frames), "report": str(report)}
+    result = invoke(setup, "contact_sheet", **params)
+    assert result["zoom"] == 4
+    assert result["dimensions"] == [3470, 3856]
+    ops._size(*result["dimensions"])
+    for zoom in range(result["zoom"] + 1, 9):
+        response = call("contact_sheet", BASE | params | {"zoom": zoom}, ctx=setup.ctx)
+        assert response["error"]["code"] == "refused", response
+    explicit = invoke(setup, "contact_sheet", **params, zoom=3)
+    assert explicit["zoom"] == 3
+
+
 def test_process_cli_parity(setup, capsys):
     raw = raw_set(setup.root)
     job = execute(setup, "process", mode="raw", raw=str(raw), stills=str(setup.stills))

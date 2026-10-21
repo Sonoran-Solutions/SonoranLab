@@ -16,6 +16,7 @@ from sonoranlab.api.registry import ENVELOPE_SCHEMA, SERVER_VERSION
 
 
 async def list_tools(ctx: ServerRequestContext, params: types.PaginatedRequestParams | None) -> types.ListToolsResult:
+    tools = await anyio.to_thread.run_sync(registry)
     return types.ListToolsResult(
         tools=[
             types.Tool(
@@ -25,7 +26,7 @@ async def list_tools(ctx: ServerRequestContext, params: types.PaginatedRequestPa
                 output_schema=ENVELOPE_SCHEMA,
                 annotations=types.ToolAnnotations.model_validate(tool.annotations),
             )
-            for tool in registry().values()
+            for tool in tools.values()
         ]
     )
 

@@ -247,6 +247,18 @@ def test_finalize_result_record_is_exclusive(setup):
     assert (child / "repair-manifest.json").is_file()
 
 
+def test_native_finalize_review_uses_imported_child_snapshot(setup):
+    job, child = finalize(setup)
+    params = {"job": job["job_id"]}
+    expected = records.check_review(job["result"]["artifact_id"], ctx=setup.ctx)
+    assert invoke(setup, "check_review", **params) == expected
+    (child / "report.json").write_text("{}")
+    review = invoke(setup, "check_review", **params)
+    assert review["review_state"] == "invalid" and not review["production_usable"]
+    assert any(p["code"] == "import_drift" for p in review["problems"])
+    assert invoke(setup, "job_status", job_id=job["job_id"])["human"]["review"] == "invalid"
+
+
 def test_duplicate_queued_finalize_refused(setup):
     first = invoke(setup, "finalize_repair", repair_id=setup.repair.name)
     second = call("finalize_repair", {"repair_id": setup.repair.name}, ctx=setup.ctx)

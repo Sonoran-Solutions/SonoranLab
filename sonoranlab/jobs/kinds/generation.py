@@ -2,12 +2,10 @@
 
 from __future__ import annotations
 
-import hashlib
 import os
 import subprocess
 import sys
 from importlib import import_module
-from pathlib import Path
 
 from jsonschema import Draft202012Validator
 from jsonschema.exceptions import ValidationError
@@ -16,7 +14,7 @@ from sonoranlab import registry
 from sonoranlab.api.registry import Context, ToolError
 from sonoranlab.api.tools.generation import ANIMATE_SCHEMA, POSE_SCHEMA
 from sonoranlab.artifacts import require_regular_file, sha256_file
-from sonoranlab.jobs import manager, store
+from sonoranlab.jobs import store
 from sonoranlab.jobs.executors import JobFailure
 
 START_HINT = "start it: bash env/comfy.sh up --offline"
@@ -57,35 +55,6 @@ def template_path(params, ctx):
     except (OSError, ValueError) as exc:
         raise ToolError("path_refused", str(exc), field="template") from exc
     return anim, path
-
-
-def replay(kind, params):
-    """Revalidate idempotent replays before admission; they consume no extra attempt."""
-    key = params.get("idempotency_key")
-    if key is None:
-        return None
-    try:
-        claims = store.directory("idempotency")
-    except FileNotFoundError:
-        return None
-    path = claims / (hashlib.sha256(key.encode()).hexdigest() + ".json")
-    if path.is_symlink():
-        raise ToolError("path_refused", "Idempotency claim symlink is refused")
-    if not path.exists():
-        return None
-    normalized, hashes = EXECUTORS[kind].validate(params, budget=False)
-    fingerprint = hashlib.sha256(
-        store.canonical({"kind": kind, "params": normalized, "input_hashes": hashes})
-    ).hexdigest()
-    try:
-        claim = store.load(path)
-        existing = claim["request_fingerprint"]
-        job_id = claim["job_id"]
-    except (OSError, ValueError, KeyError, TypeError) as exc:
-        raise ToolError("conflict", "Idempotency reservation is incomplete; inspect it, never replay") from exc
-    if existing != fingerprint:
-        raise ToolError("idempotency_conflict", "Key already names a different request")
-    return manager.summary(manager.get(job_id))
 
 
 def artifact(job, path):
@@ -234,15 +203,23 @@ class Generation:
         progress = {"stage": stage, "completed": len(list(root.glob("gen/**/result.json"))), "planned": planned}
         if (root / "animate.json").is_file():
             doc = store.load(root / "animate.json")
+            timing = doc.get("timing") or {}
+            progress["stage"] = next(
+                (
+                    name
+                    for name in ("validate_export", "select_and_process", "generate", "prepare")
+                    if timing.get(name) is not None
+                ),
+                stage,
+            )
+            progress["timing"] = timing
             progress.update(self.status(doc, root))
         return progress
 
     @staticmethod
     def status(doc, root):
         verdict = doc.get("verdict") or {}
-        final = Path(verdict.get("job", root))
-        if not final.resolve().is_relative_to(root.resolve()):
-            raise ToolError("path_refused", "Final job escapes animate output")
+        final = registry._animate_final(doc, root, Context())
         review = registry._review(final, Context())
         godot = doc.get("godot_check") or {}
         return {

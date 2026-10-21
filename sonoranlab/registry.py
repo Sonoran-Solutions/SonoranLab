@@ -16,6 +16,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from uuid import uuid4
 
+import yaml
 from jsonschema import Draft202012Validator
 from jsonschema.exceptions import ValidationError
 
@@ -457,10 +458,7 @@ def _job_metadata(job: Path, ctx: Context) -> tuple[Path, dict, dict | None]:
             raise ToolError("invalid_params", f"{job / 'animate.json'}: invalid animate metadata")
         verdict = animate.get("verdict")
         if isinstance(verdict, dict) and verdict.get("job"):
-            final = _job_directory(verdict["job"], ctx)
-            if not final.is_relative_to(job):
-                raise ToolError("path_refused", "Animate final job escapes its directory")
-            job = final
+            job = _animate_final(animate, job, ctx)
         else:
             if animate["outcome"] in {"pass", "validator_fail"}:
                 raise ToolError("invalid_params", f"{job / 'animate.json'}: completed job lacks final verdict")
@@ -552,6 +550,32 @@ def _review(job: Path, ctx: Context, *, entry: dict | None = None) -> dict:
     return {"production_usable": usable, "review_state": state, "problems": problems}
 
 
+def _confine_profile_templates(source: Path) -> None:
+    """Preflight the loader's indirect reads, including overridden character animations.
+
+    ponytail: load_profile(check_paths=False) only reads template.yaml indirectly;
+    extend this preflight if the loader gains other referenced-file reads.
+    """
+    try:
+        raw = yaml.safe_load(source.read_text())
+    except yaml.YAMLError as exc:
+        raise ToolError("invalid_params", "Job profile is not valid YAML") from exc
+    if not isinstance(raw, dict):
+        raise ToolError("invalid_params", "Job profile must be a mapping")
+    characters = raw.get("characters")
+    sections = [raw, *(characters.values() if isinstance(characters, dict) else [])]
+    for section in sections:
+        animations = section.get("animations") if isinstance(section, dict) else None
+        for anim in animations.values() if isinstance(animations, dict) else []:
+            template = anim.get("template") if isinstance(anim, dict) else None
+            if isinstance(template, str):
+                # Profiles use ../templates/... relative to their own directory; normalise lexically, then confine
+                # (paths._confine still checks both the lexical and the symlink-resolved path against the roots).
+                path = Path(os.path.normpath(source.resolve().parent / Path(template).expanduser() / "template.yaml"))
+                paths.resolve_input(path)
+                require_regular_file(path)
+
+
 def import_job(project: str, character: str, job_dir: str, *, ctx: Context) -> dict:
     profile = _character(project, character, ctx)
     job = _job_directory(job_dir, ctx)
@@ -572,9 +596,11 @@ def import_job(project: str, character: str, job_dir: str, *, ctx: Context) -> d
     for binding in provenances:
         source_profile = Path(binding["path"])
         _protected(source_profile, ctx)
+        require_regular_file(source_profile)
         if source_profile.resolve() != profile.path.resolve():
             paths.resolve_input(source_profile)
-        require_regular_file(source_profile)
+            _confine_profile_templates(source_profile)
+        # The repository profile (including its templates) was already loaded by _character.
         if load_profile(source_profile).id != project or sha256_file(source_profile) != binding.get("sha256"):
             raise ToolError("invalid_params", "Job profile provenance does not match the requested project")
     if manifest and manifest.get("character") != character:
@@ -657,8 +683,45 @@ def _find_job(ref: str, ctx: Context) -> dict:
 
 
 def check_review(job: str, *, ctx: Context) -> dict:
+    if native := _native_job(job):
+        return _native_review(native, ctx)
     entry = _find_job(job, ctx)
     return _review(_review_directory(entry, ctx), ctx, entry=entry)
+
+
+def _native_job(identifier: str) -> dict | None:
+    from sonoranlab.jobs import manager, store
+
+    if not _JOB.fullmatch(identifier):
+        return None
+    path = paths.state_root() / "jobs" / identifier
+    if not (path.exists() or path.is_symlink()):
+        return None
+    job = manager.get(identifier)
+    if manager.corrupt(job):
+        raise ToolError("refused", "Job record is corrupt; preserve it")
+    # store.output rejects STATE symlinks and escaping output_dir records.
+    store.output(job)
+    return job
+
+
+def _animate_final(doc: dict, root: Path, ctx: Context) -> Path:
+    final = _job_directory((doc.get("verdict") or {}).get("job", root), ctx)
+    if not final.is_relative_to(root.resolve()):
+        raise ToolError("path_refused", "Animate final job escapes its directory")
+    return final
+
+
+def _native_review(job: dict, ctx: Context) -> dict:
+    from sonoranlab.jobs import store
+
+    root = store.output(job)
+    if job["kind"] == "animate" and (root / "animate/animate.json").is_file():
+        doc = _json(_job_file(root, "animate/animate.json"), code="invalid_params")
+        root = _animate_final(doc, root / "animate", ctx)
+    elif job["kind"] == "finalize_repair" and (job.get("result") or {}).get("artifact_id"):
+        return check_review(job["result"]["artifact_id"], ctx=ctx)
+    return _review(root, ctx)
 
 
 def _review_directory(entry: dict, ctx: Context) -> Path:
@@ -679,33 +742,44 @@ def _spec(profile, character: str) -> dict:
 
 
 def _job_summary(entry: dict, ctx: Context) -> dict:
-    job = _job_directory(entry["job_dir"], ctx)
-    current = _review_directory(entry, ctx)
-    review = _review(current, ctx, entry=entry)
-    manifest, animate = {}, None
-    if not any(p["code"] == "import_drift" for p in review["problems"]):
-        try:
+    try:
+        job = _job_directory(entry["job_dir"], ctx)
+        current = _review_directory(entry, ctx)
+        review = _review(current, ctx, entry=entry)
+        manifest, animate = {}, None
+        if not any(p["code"] == "import_drift" for p in review["problems"]):
             _, manifest, animate = _job_metadata(job, ctx)
-        except (ToolError, FileNotFoundError) as exc:
-            if isinstance(exc, ToolError) and exc.error["code"] != "invalid_params":
-                raise
-    result = manifest.get("result", {})
-    verdict = result.get("pass")
-    godot = (animate or manifest).get("godot_check")
-    gc = "not_run"
-    if isinstance(godot, dict):
-        gc = "pass" if godot.get("pass") is True else "unavailable" if godot.get("available") is False else "fail"
-    links = manifest.get("repair") or manifest.get("upstream") or {}
-    parent = links.get("parent_job") if isinstance(links, dict) else None
-    return {
-        **entry,
-        "technical": {"validator": None if verdict is None else "pass" if verdict else "fail", "godot": gc},
-        "human": {"review": review["review_state"], "production_usable": review["production_usable"]},
-        "review_problems": review["problems"],
-        "lineage": {"parent_job": parent, "repair_children": []},
-        "current_hashes": {rel: _current_hash(job, rel) for rel in entry["hashes"]},
-        "review_job": str(current),
-    }
+        result = manifest.get("result", {})
+        verdict = result.get("pass")
+        godot = (animate or manifest).get("godot_check")
+        gc = "not_run"
+        if isinstance(godot, dict):
+            gc = "pass" if godot.get("pass") is True else "unavailable" if godot.get("available") is False else "fail"
+        links = manifest.get("repair") or manifest.get("upstream") or {}
+        parent = links.get("parent_job") if isinstance(links, dict) else None
+        return {
+            **entry,
+            "technical": {"validator": None if verdict is None else "pass" if verdict else "fail", "godot": gc},
+            "human": {"review": review["review_state"], "production_usable": review["production_usable"]},
+            "review_problems": review["problems"],
+            "lineage": {"parent_job": parent, "repair_children": []},
+            "current_hashes": {rel: _current_hash(job, rel) for rel in entry["hashes"]},
+            "review_job": str(current),
+        }
+    except (ToolError, OSError, ValueError) as exc:
+        problem = (
+            {"code": exc.error["code"], "message": exc.error["message"]}
+            if isinstance(exc, ToolError)
+            else {"code": "invalid_params" if isinstance(exc, ValueError) else "internal", "message": str(exc)}
+        )
+        return {
+            **entry,
+            "technical": {"validator": "invalid", "godot": "invalid"},
+            "human": {"review": "invalid", "production_usable": False},
+            "review_problems": [problem],
+            "lineage": {"parent_job": None, "repair_children": []},
+            "current_hashes": {},
+        }
 
 
 def get_character(project: str, character: str, *, ctx: Context) -> dict:
@@ -760,9 +834,28 @@ def get_artifact(ref: str, *, ctx: Context) -> dict:
     from PIL import Image
 
     identifier, separator, relative = ref.partition(":")
-    entry = _find_job(identifier, ctx)
-    job = _job_directory(entry["job_dir"], ctx)
+    native = _native_job(identifier)
+    if native:
+        from sonoranlab.jobs import store
+
+        job = _job_directory(store.output(native), ctx)
+        entry = {"job_id": identifier}
+    else:
+        entry = _find_job(identifier, ctx)
+        job = _job_directory(entry["job_dir"], ctx)
     if not separator:
+        if native:
+            files = [
+                _job_file(job, p.relative_to(job).as_posix())
+                for p in job.rglob("*")
+                if not p.is_dir() or p.is_symlink()
+            ]
+            return {
+                "job_id": identifier,
+                "file_count": len(files),
+                "size": sum(p.stat().st_size for p in files),
+                "media_type": "application/vnd.sonoranlab.job+json",
+            }
         # Imported-id metadata is bounded: file count/digest, never an unbounded manifest or pixel data.
         return {
             "artifact_id": entry["artifact_id"],

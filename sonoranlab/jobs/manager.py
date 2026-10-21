@@ -127,10 +127,39 @@ def error(code: str, job: dict, message: str, retryable: bool = False) -> dict:
     return {"code": code, "stage": job["stage"], "message": message, "retryable": retryable}
 
 
+def _launch_lost(worker: dict) -> bool:
+    """Only confirmed death after startup grace is evidence of a lost pre-lease worker."""
+    attempted = worker.get("launch_attempted_at")
+    if not attempted:
+        return False
+    try:
+        if (datetime.now(UTC) - datetime.fromisoformat(attempted)).total_seconds() < 30:
+            return False
+        if worker["launcher"] == "systemd":
+            proc = subprocess.run(
+                ["systemctl", "--user", "show", worker["unit"], "--property=ActiveState", "--value"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            return proc.returncode == 0 and proc.stdout.strip() in {"inactive", "failed"}
+        pid = worker.get("launch_pid")
+        if type(pid) is int and pid > 0:
+            try:
+                return Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[0] == "Z"
+            except FileNotFoundError:
+                return True
+    except (OSError, ValueError, TypeError, IndexError, subprocess.SubprocessError):
+        pass  # Failure to inspect is not evidence of death.
+    return False
+
+
 def _reconcile(path: Path, job: dict) -> dict:
     if corrupt(job):
         return job
-    started_queued = job["state"] == "queued" and job["worker"]["started_at"] is not None
+    started_queued = job["state"] == "queued" and (
+        job["worker"]["started_at"] is not None or _launch_lost(job["worker"])
+    )
     if (job["state"] in {"running", "cancelling"} or started_queued) and not store.live(path):
         try:
             job["prompts"] = discover(job)
@@ -236,15 +265,19 @@ def launch(job: dict) -> None:
         path = store.job_dir(job["job_id"])
         fd = os.open(path / "worker.log", os.O_CREAT | os.O_WRONLY | os.O_APPEND | os.O_NOFOLLOW, 0o600)
         with os.fdopen(fd, "ab") as log:
-            _CHILDREN.append(
-                subprocess.Popen(
-                    argv,
-                    start_new_session=True,
-                    stdin=subprocess.DEVNULL,
-                    stdout=subprocess.DEVNULL,
-                    stderr=log,
-                )
+            child = subprocess.Popen(
+                argv,
+                start_new_session=True,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=log,
             )
+            _CHILDREN.append(child)
+        with store.lock(path / "job.lock"):
+            current = store.read(path)
+            if not corrupt(current):
+                current["worker"]["launch_pid"] = child.pid
+                store.save(path, current)
 
 
 def submit(
@@ -315,7 +348,14 @@ def submit(
                         "conflict", "Idempotency reservation is incomplete; inspect it, never replay"
                     ) from exc
         for old in reconcile_all():
-            if old.get("request_fingerprint") == fingerprint and old["state"] in store.ACTIVE:
+            if old.get("request_fingerprint") != fingerprint:
+                continue
+            if unresolved(old):
+                raise ToolError(
+                    "conflict",
+                    f"Identical request has unresolved prompts: {old['job_id']}; cancel/reconcile it first",
+                )
+            if old["state"] in store.ACTIVE:
                 raise ToolError("conflict", f"Identical request already active: {old['job_id']}")
         # Budget-style admission (e.g. attempt limits) is decided atomically with the reservation.
         if admit := getattr(implementation, "admit", None):
@@ -356,6 +396,7 @@ def submit(
                 "pid": None,
                 "boot_id": None,
                 "started_at": None,
+                "launch_attempted_at": created,
             },
             "output_dir": out.relative_to(state_root()).as_posix(),
             "prompts": [],
