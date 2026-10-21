@@ -525,7 +525,14 @@ def test_launchers_and_launch_failure(jobs_env, monkeypatch):
         assert "--collect" in launch and "--quiet" in launch
         assert launch[-4:] == [sys.executable, "-m", "sonoranlab.jobs.worker", job_id]
         manager._signal(record)
-        assert commands[-1] == ["systemctl", "--user", "kill", "--signal=SIGTERM", f"sonoranlab-job-{job_id}"]
+        assert commands[-1] == [
+            "systemctl",
+            "--user",
+            "kill",
+            "--kill-whom=main",
+            "--signal=SIGTERM",
+            f"sonoranlab-job-{job_id}",
+        ]
     assert manager.cancel_job(job_id)["state"] == "cancelled"
     monkeypatch.setenv("SONORANLAB_JOB_LAUNCHER", "popen")
     with monkeypatch.context() as patch:

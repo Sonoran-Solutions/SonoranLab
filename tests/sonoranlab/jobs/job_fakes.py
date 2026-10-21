@@ -9,7 +9,7 @@ import uuid
 from pathlib import Path
 
 from sonoranlab.api.paths import state_root
-from sonoranlab.jobs import JobCancelled, store
+from sonoranlab.jobs import JobFailure, store
 
 
 def fake_root():
@@ -111,6 +111,8 @@ class Fake:
                 wait_file(root / "release", ctx)
             if params.get("guard_exit"):
                 ctx.run([sys.executable, "-c", f"raise SystemExit({params['guard_exit']})"])
+            if params.get("command"):
+                ctx.run(params["command"], check=False)
             if params.get("child"):
                 script = (
                     "import signal,time; from pathlib import Path; "
@@ -130,15 +132,19 @@ class Fake:
                     )
             if params.get("log_bytes"):
                 os.write(2, b"x" * params["log_bytes"])
+            if unfinished := params.get("unfinished"):
+                if unfinished in {"cancel_unconfirmed", "submit_unknown"}:
+                    write(root / "gen/result.json", {"error": {"code": unfinished}})
+                if unfinished == "failure":
+                    raise JobFailure("fake_failure", "generate", "executor failed", True)
+                if unfinished == "raise":
+                    raise RuntimeError("executor crashed")
+                return {"complete": True, "partial": True}
             if prompt_id:
                 write(fake_root() / f"{prompt_id}.json", {"state": "done"})
                 write(root / "gen/result.json", {"status": "ok"})
             (root / "artifact.txt").write_text("fake artifact")
             return {"complete": True}
-        except JobCancelled:
-            if prompt_id and not (fake_root() / "still-running").exists():
-                write(fake_root() / f"{prompt_id}.json", {"state": "unknown"})
-            raise
         finally:
             log({"event": "end", "job_id": job["job_id"]})
 

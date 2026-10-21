@@ -16,7 +16,7 @@ from pathlib import Path
 
 from sonoranlab.jobs import store
 from sonoranlab.jobs.executors import JobCancelled, JobFailure, executor
-from sonoranlab.jobs.manager import confirm, corrupt, discover, error, prober
+from sonoranlab.jobs.manager import confirm, corrupt, discover, error, prober, unresolved
 
 LOG_LIMIT = 1024 * 1024
 
@@ -81,7 +81,6 @@ def terminate_children(pid: int) -> None:
         return
     for child in children:
         child_pid = int(child)
-        terminate_children(child_pid)
         with suppress(ProcessLookupError):
             os.kill(child_pid, signal.SIGTERM)
 
@@ -106,6 +105,8 @@ class Context:
     def check_cancelled(self):
         with store.lock(self.path / "job.lock"):
             job = store.read(self.path)
+            if corrupt(job):
+                raise JobFailure("corrupt_record", self.current_stage, "Job record is corrupt; preserve it")
         if self.cancelled or job["state"] in {"cancelling", "cancelled"}:
             self.cancelled = True
             raise JobCancelled
@@ -124,6 +125,8 @@ class Context:
         self.current_stage, self.stage_started = stage, time.monotonic()
         with store.lock(self.path / "job.lock"):
             job = store.read(self.path)
+            if corrupt(job):
+                raise JobFailure("corrupt_record", self.current_stage, "Job record is corrupt; preserve it")
             job["stage"] = stage
             job["timing"]["per-stage"] = self.stage_times
             store.save(self.path, job)
@@ -157,19 +160,16 @@ def _finish(path: Path, ctx: Context, result: dict | None, failure: dict | None,
             )
         job["timing"]["run_s"] = time.monotonic() - started if started is not None else None
         job["timing"]["per-stage"] = ctx.timings() if started is not None else {}
-        if not ctx.cancelled and job["state"] != "cancelling":
-            job["prompts"] = discover(job)
-            job["result"] = result if failure is None else None
-            store.transition(job, "failed" if failure else "succeeded", error=failure)
+        job["prompts"] = discover(job)
+        cancelling = ctx.cancelled or job["state"] == "cancelling"
+        if cancelling:
+            if job["state"] in {"queued", "running"}:
+                store.transition(job, "cancelling")
+            job["cancel"] = job["cancel"] or {"requested_at": store.now(), "outcome": None}
             store.save(path, job)
-            return
-        if job["state"] in {"queued", "running"}:
-            store.transition(job, "cancelling")
-        job["cancel"] = job["cancel"] or {"requested_at": store.now(), "outcome": None}
-        store.save(path, job)
-    # Keep job.lock free during probes. No executor or child may still be submitting here.
+    # The lease and scheduler lock stay held, but job.lock is free during network cleanup.
     try:
-        stopped = confirm(job, prober(), cancel=False)
+        stopped = not unresolved(job) or confirm(job, prober(), cancel=True)
     except Exception:
         stopped = False
     with store.lock(path / "job.lock"):
@@ -178,12 +178,22 @@ def _finish(path: Path, ctx: Context, result: dict | None, failure: dict | None,
             return
         current["prompts"] = job["prompts"]
         current["timing"] = job["timing"]
-        current["cancel"]["outcome"] = "confirmed" if stopped else "unconfirmed"
-        store.transition(
-            current,
-            "cancelled" if stopped else "blocked",
-            error=None if stopped else error("cancel_unconfirmed", current, "Prompt stop could not be confirmed"),
-        )
+        current["result"] = result
+        if cancelling or ctx.cancelled or current["state"] == "cancelling":
+            if current["state"] in {"queued", "running"}:
+                store.transition(current, "cancelling")
+            current["cancel"] = current["cancel"] or {"requested_at": store.now(), "outcome": None}
+            current["cancel"]["outcome"] = "confirmed" if stopped else "unconfirmed"
+            state = "cancelled" if stopped else "blocked"
+            outcome = None if stopped else error("cancel_unconfirmed", current, "Prompt stop could not be confirmed")
+        else:
+            state = ("failed" if failure else "succeeded") if stopped else "blocked"
+            outcome = (
+                failure if stopped else error("needs_reconciliation", current, "Prompt stop could not be confirmed")
+            )
+        if failure is not None and not stopped:
+            outcome["detail"] = failure
+        store.transition(current, state, error=outcome)
         store.save(path, current)
 
 

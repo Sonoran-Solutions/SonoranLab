@@ -95,9 +95,10 @@ def discover(job: dict) -> list[dict]:
             if path.is_symlink() or not path.resolve().is_relative_to(root):
                 raise ValueError("Escaping submission")
             submission = store.load(path)
-            prompt_id = submission["prompt_id"]
-            if not isinstance(prompt_id, str) or not prompt_id or len(prompt_id) > 200:
+            candidate = submission["prompt_id"]
+            if not isinstance(candidate, str) or not candidate or len(candidate) > 200:
                 raise ValueError("Invalid prompt ID")
+            prompt_id = candidate
             result = path.parent / "result.json"
             if result.is_file() and not result.is_symlink():
                 value = store.load(result)
@@ -106,11 +107,11 @@ def discover(job: dict) -> list[dict]:
                     "submit_unknown",
                 }:
                     resolution = "result"
-            old = previous.get(relative, {})
-            if old.get("prompt_id") == prompt_id and old.get("resolution") == "confirmed_stopped":
-                resolution = "confirmed_stopped"
         except (OSError, ValueError, TypeError, KeyError, AttributeError):
             pass
+        old = previous.get(relative, {})
+        if old.get("prompt_id") == prompt_id and old.get("resolution") == "confirmed_stopped":
+            resolution = "confirmed_stopped"
         prompts.append({"prompt_id": prompt_id, "submission": relative, "resolution": resolution})
     # A missing submission must not erase a previously observed, unresolved prompt.
     seen = {p["submission"] for p in prompts}
@@ -129,7 +130,8 @@ def error(code: str, job: dict, message: str, retryable: bool = False) -> dict:
 def _reconcile(path: Path, job: dict) -> dict:
     if corrupt(job):
         return job
-    if job["state"] in {"running", "cancelling"} and not store.live(path):
+    started_queued = job["state"] == "queued" and job["worker"]["started_at"] is not None
+    if (job["state"] in {"running", "cancelling"} or started_queued) and not store.live(path):
         try:
             job["prompts"] = discover(job)
             pending = unresolved(job)
@@ -148,14 +150,19 @@ def _reconcile(path: Path, job: dict) -> dict:
 def get(job_id: str) -> dict:
     path = store.job_dir(job_id)
     with store.lock(path / "job.lock"):
-        job = _reconcile(path, store.read(path))
+        job = store.read(path)
+        if not corrupt(job):
+            try:
+                store.sync_events(path, job)
+            except OSError:
+                return store.corrupt_record(path, "Journal does not match job history; preserve for inspection")
+        job = _reconcile(path, job)
         if not corrupt(job):
             with suppress(OSError, ToolError):
                 prompts = discover(job)
                 if prompts != job["prompts"]:
                     job["prompts"] = prompts
                     store.save(path, job)
-            store.sync_events(path, job)
         return job
 
 
@@ -295,20 +302,22 @@ def submit(
             if claim.exists():
                 try:
                     existing = store.load(claim)
+                    if not isinstance(existing, dict):
+                        raise ValueError("Invalid claim")
                     if existing["request_fingerprint"] != fingerprint:
                         raise ToolError("idempotency_conflict", "Key already names a different request")
+                    record = store.load(store.job_dir(existing["job_id"]) / "job.json")
+                    if not isinstance(record, dict):
+                        raise ValueError("Invalid reservation")
                     return summary(get(existing["job_id"]))
-                except (ValueError, KeyError, FileNotFoundError) as exc:
+                except (ValueError, KeyError, TypeError, OSError) as exc:
                     raise ToolError(
                         "conflict", "Idempotency reservation is incomplete; inspect it, never replay"
                     ) from exc
-        else:
-            for old in reconcile_all():
-                if old.get("request_fingerprint") == fingerprint and old["state"] in store.ACTIVE:
-                    raise ToolError("conflict", f"Identical request already active: {old['job_id']}")
+        for old in reconcile_all():
+            if old.get("request_fingerprint") == fingerprint and old["state"] in store.ACTIVE:
+                raise ToolError("conflict", f"Identical request already active: {old['job_id']}")
         job_id = f"job-{datetime.now(UTC):%Y%m%dT%H%M%SZ}-{secrets.token_hex(4)}"
-        if key_hash:
-            store.atomic(claim, {"job_id": job_id, "request_fingerprint": fingerprint}, exclusive=True)
         path = resolve_output(root / job_id)
         path.mkdir()
         store.fsync_dir(root)
@@ -360,6 +369,8 @@ def submit(
             with store.lock(path / "lease.lock"):
                 pass
             store.save(path, job)
+        if key_hash:
+            store.atomic(claim, {"job_id": job_id, "request_fingerprint": fingerprint}, exclusive=True)
         try:
             launch(job)
         except (OSError, subprocess.SubprocessError) as exc:
@@ -399,7 +410,7 @@ def _signal(job: dict) -> bool:
     worker = job["worker"]
     if worker["launcher"] == "systemd":
         subprocess.run(
-            ["systemctl", "--user", "kill", "--signal=SIGTERM", f"sonoranlab-job-{job['job_id']}"],
+            ["systemctl", "--user", "kill", "--kill-whom=main", "--signal=SIGTERM", f"sonoranlab-job-{job['job_id']}"],
             capture_output=True,
             timeout=10,
             check=True,
@@ -414,7 +425,7 @@ def _signal(job: dict) -> bool:
             or os.getpgid(worker["pid"]) != worker["pid"]
         ):
             raise OSError("Worker process identity no longer matches")
-        os.killpg(worker["pid"], signal.SIGTERM)
+        os.kill(worker["pid"], signal.SIGTERM)
     else:
         return False  # The worker will see the durable request before it can start.
     return True
@@ -456,6 +467,11 @@ def cancel_job(job_id: str, *, probe: Prober | None = None) -> dict:
         except (OSError, ToolError):
             confirmed = False
         with store.lock(path / "job.lock"):
+            current = store.read(path)
+            if corrupt(current):
+                return summary(current)
+            current["prompts"] = job["prompts"]
+            job = current
             if confirmed:
                 job["cancel"]["outcome"] = "confirmed"
                 store.transition(job, "cancelled")
@@ -477,13 +493,17 @@ def retry_job(job_id: str, idempotency_key: str | None = None, *, probe: Prober 
         job = get(job_id)
         if corrupt(job) or job["state"] not in {"failed", "cancelled", "blocked"}:
             raise ToolError("conflict", "Only failed, cancelled or resolved blocked jobs can be retried")
-        if job["state"] == "blocked":
-            if store.live(path):
-                raise ToolError("conflict", "Blocked job still has a live worker")
-            if not confirm(job, probe or prober(), cancel=False):
-                raise ToolError("conflict", "Parent still has unresolved prompts; cancel/reconcile it first")
-            with store.lock(path / "job.lock"):
-                store.save(path, job)
+        if job["state"] == "blocked" and store.live(path):
+            raise ToolError("conflict", "Blocked job still has a live worker")
+        if unresolved(job) and not confirm(job, probe or prober(), cancel=False):
+            raise ToolError("conflict", "Parent still has unresolved prompts; cancel/reconcile it first")
+        with store.lock(path / "job.lock"):
+            current = store.read(path)
+            if corrupt(current):
+                raise ToolError("conflict", "Parent record is corrupt; preserve it for inspection")
+            current["prompts"] = job["prompts"]
+            store.save(path, current)
+            job = current
         try:
             if (path / "request.json").is_symlink():
                 raise ValueError("Frozen request symlink")

@@ -34,18 +34,11 @@ def job_status(params: dict, ctx: Context) -> dict:
         except (ToolError, OSError, ValueError):
             progress = {}
         root = store.output(job)
-        from sonoranlab.review import production_usable, review_errors
+        from sonoranlab.registry import _review
 
-        errors = review_errors(root)
-        human["production_usable"] = production_usable(root)
-        review = root / "review.json"
-        if review.exists():
-            try:
-                value = store.load(review)
-                verdict = value.get("verdict")
-                human["review"] = "pass" if not errors else "fail" if verdict == "fail" else "invalid"
-            except (OSError, ValueError, AttributeError):
-                human["review"] = "invalid"
+        review = _review(root, ctx)
+        human = {"review": review["review_state"], "production_usable": review["production_usable"]}
+
     return {**job, "progress": progress, "technical": technical, "human": human}
 
 

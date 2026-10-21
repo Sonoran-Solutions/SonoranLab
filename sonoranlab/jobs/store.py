@@ -277,21 +277,27 @@ def read(path: Path) -> dict:
         canonical(job)  # Refuse non-finite JSON numbers too.
         return job
     except (OSError, ValueError, KeyError, TypeError, OverflowError, RecursionError):
-        return {
-            "job_id": path.name,
-            "state": "blocked",
+        return corrupt_record(path)
+
+
+def corrupt_record(
+    path: Path, message: str = "Unreadable or partial job.json; preserve this directory for inspection"
+) -> dict:
+    return {
+        "job_id": path.name,
+        "state": "blocked",
+        "stage": "prepare",
+        "history": [],
+        "prompts": [],
+        "error": {
+            "code": "corrupt_record",
             "stage": "prepare",
-            "history": [],
-            "prompts": [],
-            "error": {
-                "code": "corrupt_record",
-                "stage": "prepare",
-                "message": "Unreadable or partial job.json; preserve this directory for inspection",
-                "retryable": False,
-            },
-            "result": None,
-            "timing": {"queue_wait_s": None, "run_s": None, "per-stage": {}},
-        }
+            "message": message,
+            "retryable": False,
+        },
+        "result": None,
+        "timing": {"queue_wait_s": None, "run_s": None, "per-stage": {}},
+    }
 
 
 def sync_events(path: Path, job: dict) -> None:

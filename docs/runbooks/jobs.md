@@ -39,7 +39,7 @@ Only these transitions are legal (`sonoranlab/jobs/store.py:TRANSITIONS`):
 
 Retry creates a NEW job/output with `parent_job_id`, `attempt + 1` and the frozen
 request. It accepts failed/cancelled/blocked parents, never rewinds their state.
-Blocked parents require confirmed stopped prompts; retry probes but does not
+Every parent requires confirmed stopped prompts; retry probes but does not
 cancel them. Changed frozen input hashes refuse retry: explicitly submit a fresh
 request. Pipeline completion, even with a technical FAIL, never implies approval.
 
@@ -71,10 +71,12 @@ mismatching journal is preserved for operator inspection. Internal records refus
 
 Idempotency claims use temp+fsync and exclusive os.link under the reservation
 lock. Raw keys are never stored. Same key/same canonical request fingerprint
-returns the original job, even terminal or corrupt; changed params/inputs yield
-idempotency_conflict. Without a key, identical queued/running/cancelling work
+returns the original job, even terminal; changed params/inputs yield
+idempotency_conflict. Every new reservation, keyed or not, conflicts with identical queued/running/cancelling work
 conflicts and names the existing job. A crash mid-reservation can leave an
-incomplete claim; it refuses replay and requires manual inspection.
+incomplete claim; it refuses replay and requires manual inspection. The job record,
+frozen request, output directory and lease inode are durable before publishing the
+claim. Claims naming a missing directory/record or non-object JSON refuse replay.
 
 Default launch uses a working `systemd-run --user` to create a collected
 `sonoranlab-job-<job_id>` service outside the MCP/desktop scope, explicitly carrying
@@ -115,7 +117,7 @@ and servers see the same jobs and progress.
 
 | Crash boundary | Read-time outcome |
 |---|---|
-| Before a submission file | failed(worker_lost) |
+| Started worker still queued, or before a submission file | failed(worker_lost) |
 | After submission.json, before posting | blocked(needs_reconciliation), durable prompt ID |
 | After posting, unresolved prompt during generation/processing/export | blocked(needs_reconciliation), prompt ID |
 | Processing/export after all prompts have results or confirmed-stop resolutions | failed(worker_lost); never inferred success |
@@ -123,12 +125,17 @@ and servers see the same jobs and progress.
 
 A PID is informational; a held lease establishes liveness. A free lease is a dead
 worker even if the PID exists. Cancellation records intent, then signals only the
-job's unit/process group. Boot ID, process start ticks and process-group identity
-protect Popen signalling against stale/reused PIDs. TERM forwards to children
+worker main process (`systemctl --kill-whom=main` or `os.kill(pid)`). Boot ID,
+process start ticks and process-group identity protect Popen signalling against stale/reused PIDs.
+The worker forwards TERM once to direct children; runwindow forwards to generate
 without raising through subprocess.run and prematurely killing the guard's drain.
 
 Active cancellation returns cancelling immediately. The worker confirms after
-children stop. Blocked cancellation calls client.cancel(prompt_id) only for its
+children stop. Both cancellation and normal executor completion cancel unresolved
+prompts while retaining the worker lease and GPU scheduler lock, with job.lock free
+during probes. An unconfirmed normal completion becomes blocked(needs_reconciliation),
+retaining the executor result and any failure under error.detail.
+Blocked cancellation calls client.cancel(prompt_id) only for its
 own unresolved submission IDs: never a global interrupt or a foreign prompt.
 A result file or persisted confirmed-stop resolution is resolved. Probes reporting
 done/unknown, or a container confirmed absent/stopped, confirm stop. Running,
@@ -140,8 +147,24 @@ PodmanExecTransport to sonoranlab-comfy; only mutation/worker cancellation probe
 
 Restore container/API access, inspect this job's IDs, then explicitly cancel and
 read status. Do not erase submission evidence or start replacement GPU work to
-make blocked state disappear. Lost queued launches are manually cancelled then
-explicitly retried; they are not automatically restarted.
+make blocked state disappear. Started queued workers with a free lease become
+failed(worker_lost) and can be explicitly retried; they are never automatically restarted.
+
+## Registry evidence
+
+Imported artifacts must still match their import snapshot (excluding review.json,
+which is checked by the review library). Changed or missing indexed files and added
+export files produce invalid review with `import_drift`. An import without its final
+report/manifest cannot become production usable by adding them later; import fresh evidence.
+
+Reference-file verification is separate from approval-record verification. Corrupt
+or invalid approval records do not prevent idempotent registration or a new owner
+approval when the references still match. Approval records are ordered by their
+timestamp filenames: the newest relevant record must be valid and bound to current
+hashes. A newer invalid/unreadable record makes approval invalid even if older valid
+records exist; a newer valid owner approval supersedes earlier invalid records.
+Historical approval problems remain listed after supersession. Reference drift
+always makes approval invalid and refuses owner approval until resolved.
 
 ## Retention and cleanup
 
