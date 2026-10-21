@@ -36,9 +36,9 @@ not launch/probe). No stubs are advertised.
 | `get_profile` | Supported, implemented | yes / sync | profile.load_profile + Profile.character; profile show/check semantics without external path checks; `api get_profile` |
 | `list_characters` | Supported, implemented (DYL-114) | yes / sync | Profile.characters + new STATE registry records; no prior registry CLI, `api list_characters` |
 | `get_character` | Supported, implemented (DYL-114) | yes / sync | Profile.character + registry/history; `profile show` plus new record lookup |
-| `list_jobs` | Supported, pending | yes / sync | New STATE job records over existing job artifacts; `api list_jobs` |
-| `job_status` | Supported, pending | yes / sync | New job model, existing animate summaries and technical reports; `api job_status` |
-| `job_result` | Supported, pending | yes / sync | Existing manifest/report/contact artifacts, new job record lookup; `api job_result` |
+| `list_jobs` | Implemented (DYL-115) | yes / sync | New STATE job records over existing job artifacts; `api list_jobs` |
+| `job_status` | Implemented (DYL-115) | yes / sync | New job model, existing animate summaries and technical reports; `api job_status` |
+| `job_result` | Implemented (DYL-115) | yes / sync | Existing manifest/report/contact artifacts, new job record lookup; `api job_result` |
 | `get_artifact` | Supported, implemented (DYL-114) | yes / sync | artifacts regular-file/hash checks + contact.contact_sheet; bounded metadata, size-capped contact images only |
 | `check_review` | Supported, implemented (DYL-114) | yes / sync | review.review_errors / production_usable; `review check` |
 | `import_job` | Supported, implemented (DYL-114) | no / sync | registry.import_job; explicit existing-job indexing, no job modification; `api import_job` |
@@ -51,8 +51,8 @@ not launch/probe). No stubs are advertised.
 | `process` | Supported, pending | no / job | pipeline.run; `process` |
 | `export_godot` | Supported, pending | no / job | export.godot.export_godot guarded export; `export godot`, STATE output only |
 | `godot_check` | Supported, pending | no / job | pipeline.check_in_godot / run_godot; existing --godot-check, isolated job output |
-| `cancel_job` | Supported, pending | no / sync | New job cancellation plus existing ComfyClient.cancel; preserve unknown outcomes |
-| `retry_job` | Supported, pending | no / job | New explicit linked job over existing animate/process operations |
+| `cancel_job` | Implemented (DYL-115) | no / sync | New job cancellation plus existing ComfyClient.cancel; preserve unknown outcomes |
+| `retry_job` | Implemented (DYL-115) | no / job | New explicit linked job over existing animate/process operations |
 | `prepare_repair` | Optional, pending | no / sync | repair.workspace.prepare; `repair prepare` |
 | `inspect_repair` | Optional, pending | yes / sync | repair.workspace.inspect; `repair inspect` |
 | `inspect_repair_diff` | Optional, pending | yes / sync | repair.compare.diff; `repair diff` |
@@ -95,7 +95,7 @@ Schema identifier: `sonoranlab.api/1`.
 {"schema":"sonoranlab.api/1","tool":"<name>","ok":false,"error":{"code":"invalid_params","message":"...","field":null,"retryable":false,"hint":null}}
 ```
 
-Codes: invalid_params, not_found, conflict, idempotency_conflict,
+Codes: invalid_params, not_found, conflict, not_ready, idempotency_conflict,
 path_refused, unavailable, refused, budget_refused, guard_busy, internal.
 Unknown exceptions become internal with exception type only, never a
 traceback on stdout. Schema validation uses jsonschema 4.26.0 (already in the lock as an
@@ -163,6 +163,32 @@ ran to completion, including a technical FAIL verdict, and implies no human
 approval. blocked means outcome unknown or reconciliation required (such as
 worker death after submission), never automatic retry/resubmission. Retry
 is an explicit new job with parent_job_id.
+
+### Durable job implementation (DYL-115)
+
+`sonoranlab/jobs` owns frozen requests, exclusive outputs, locked atomic records,
+append-only committed transition events, idempotency claims and worker leases.
+Detached workers prefer an independent user systemd service; Popen sessions are
+the fallback/test launcher. GPU and heavy-CPU kinds share STATE/gpu.lock, while
+each generation retains the existing run-window guard. No production executor
+is registered by this infrastructure ticket.
+
+Reads and initial registry discovery reconcile dead leases without network or
+replay: no unresolved prompts means failed(worker_lost); unresolved submission
+IDs mean blocked(needs_reconciliation). Corrupt records remain blocked and are
+never overwritten or rerun. Startup reconciliation occurs at registry discovery,
+the available hook inside DYL-115's scoped files, rather than server construction.
+Cancel records intent, signals only its worker, and confirms only prompt IDs
+owned by its submission files. Errors/live prompts remain blocked. Retry creates
+a new linked attempt, confirms blocked parents stopped, and revalidates frozen
+input hashes. Successful jobs cannot retry.
+
+`job_result` before a terminal outcome returns `not_ready` (added to the envelope's
+error codes by DYL-115). Record-level failure codes (worker_lost, corrupt_record,
+needs_reconciliation, cancel_unconfirmed, launcher_failed, executor_error) live
+inside successful status/result envelopes, not the API error enum. See the
+[jobs runbook](../runbooks/jobs.md) for the exact transition table, crash outcomes,
+manual retention and trusted test-only SONORANLAB_JOB_EXECUTORS hook.
 
 ### Superseded gate and defaults
 

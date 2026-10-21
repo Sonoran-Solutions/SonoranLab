@@ -20,7 +20,7 @@ presence only. An available editor runtime does not establish sandbox health.
 
 Supported means part of the reconciled Phase 4 contract, not necessarily
 implemented yet. **DYL-113 implements `capabilities`, `list_projects` and `get_profile`;
-DYL-114 adds the six registry tools below.** Other supported tools land in later tickets. There are
+DYL-114 adds the six registry tools below.** DYL-115 adds durable job reads, cancellation and retry. Other supported tools land in later tickets. There are
 no placeholder tools in discovery. See ADR-0010 for each library/CLI mapping.
 
 | Tool | Access / kind | Availability and purpose |
@@ -30,9 +30,9 @@ no placeholder tools in discovery. See ADR-0010 for each library/CLI mapping.
 | `get_profile` | read-only / sync | Implemented: project id → resolved canvas, cells, directions, animations, limits, autonomy, protected export target; palette path + sha256 only |
 | `list_characters` | read-only / sync | Implemented: profile/registry union and verified approvals |
 | `get_character` | read-only / sync | Implemented: references, current review and imported job lineage |
-| `list_jobs` | read-only / sync | Supported, pending: bounded job summaries |
-| `job_status` | read-only / sync | Supported, pending: execution, technical and human status separately |
-| `job_result` | read-only / sync | Supported, pending: result and artifact references |
+| `list_jobs` | read-only / sync | Implemented: bounded/filterable durable summaries (limit ≤200), offline lease reconciliation |
+| `job_status` | read-only / sync | Implemented: execution, measured file progress, timing and separate technical/human status |
+| `job_result` | read-only / sync | Implemented: terminal result/error and STATE-relative artifact references |
 | `get_artifact` | read-only / sync | Implemented: bounded metadata only, no image pixels or text bodies |
 | `check_review` | read-only / sync | Implemented: recompute artifact-bound human review from disk |
 | `import_job` | mutating / sync | Implemented: index existing jobs and hashes without modifying them |
@@ -45,8 +45,8 @@ no placeholder tools in discovery. See ADR-0010 for each library/CLI mapping.
 | `process` | mutating / job | Supported, pending: deterministic pixel chain |
 | `export_godot` | mutating / job | Supported, pending: guarded export into STATE, never the game checkout |
 | `godot_check` | mutating / job | Supported, pending: headless import/playback check in isolated output |
-| `cancel_job` | mutating / sync | Supported, pending: request cancellation without claiming an unknown outcome succeeded |
-| `retry_job` | mutating / job | Supported, pending: explicit new job linked by parent_job_id |
+| `cancel_job` | mutating / sync | Implemented: durable intent, worker TERM, prompt-scoped cancellation and stop confirmation |
+| `retry_job` | mutating / job | Implemented: explicit new attempt from frozen request, linked by parent_job_id |
 | `prepare_repair` | mutating / sync | **Optional**, pending: ADR-0009 scoped workspace handoff |
 | `inspect_repair` | read-only / sync | **Optional**, pending: workspace metadata |
 | `inspect_repair_diff` | read-only / sync | **Optional**, pending: bounded verified pixel diff |
@@ -84,7 +84,7 @@ or disabled tool names are `invalid_params` (exit 2). `api --list` prints
 registry metadata as a JSON array. Params default to `{}` and must satisfy
 the exact tool JSON schema; unknown properties are refused.
 
-Error codes: `invalid_params`, `not_found`, `conflict`,
+Error codes: `invalid_params`, `not_found`, `conflict`, `not_ready`,
 `idempotency_conflict`, `path_refused`, `unavailable`, `refused`,
 `budget_refused`, `guard_busy`, `internal`. Expected errors include a field,
 retryability and hint (nullable). Unknown exceptions return `internal` with
@@ -120,7 +120,7 @@ sha256 over the sorted (direction, file sha256) list. Job IDs are
 absolute paths only in informational fields. Writes use same-directory
 temporary files + fsync + os.replace + directory fsync; exclusive creates
 use O_EXCL/mkdir; record read-modify-write holds an fcntl lock.
-Registry record writers implement these rules; job writers are later-ticket work.
+Registry record writers implement these rules.
 
 ## Registry tool schemas (DYL-114)
 
@@ -181,6 +181,10 @@ sonoranlab registry approve-references --project P --character C --ref-set refs-
 bindings, reviewer, evidence and approved_at. Approval records are append-only;
 registration never infers approval from prior-phase files or profile comments.
 
+Durable job records and idempotency claims are implemented by `sonoranlab/jobs/`.
+See the [jobs runbook](runbooks/jobs.md) for locking, crash recovery, launchers,
+executor registration and retention. Production job kinds remain later-ticket work.
+
 ## Execution, technical and human status
 
 Never collapse these three meanings:
@@ -198,6 +202,23 @@ FAIL; it does not mean approved. `blocked` means unknown outcome or a need
 for reconciliation (for example a dead worker after submitting a prompt).
 Never auto-retry or resubmit a blocked job. An explicit retry creates a new
 job with `parent_job_id`. Long work returns a job_id immediately.
+
+### Durable job behavior
+
+Submission validates before creating records or output directories. Same
+idempotency key/fingerprint returns the original job; changed inputs conflict.
+A duplicate active fingerprint without a key conflicts. Detached single-attempt
+workers share a GPU/heavy-CPU scheduler lock; actual generation still uses the
+existing run-window guard per request. Status/list reconcile lease loss locally:
+no unresolved prompt → failed(worker_lost), unresolved IDs → blocked with IDs.
+No read launches, probes services, resubmits, or infers success.
+
+Cancellation confirms only this job's durable submission IDs. Unknown outcomes
+remain blocked(cancel_unconfirmed). Terminal cancellation is an idempotent no-op;
+retry creates a new linked attempt and refuses unresolved blocked parents or
+changed frozen inputs. `job_result` before a terminal outcome returns error code `not_ready`.
+Initial registry discovery performs startup reconciliation; server construction
+itself does not import registry modules. See the [jobs runbook](runbooks/jobs.md).
 
 ## Reconciled acceptance sequence
 
