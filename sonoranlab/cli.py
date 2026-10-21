@@ -36,6 +36,14 @@ def build_parser() -> argparse.ArgumentParser:
     mcp = verbs.add_parser("mcp", help="local MCP transport").add_subparsers(dest="action", required=True)
     mcp.add_parser("serve", help="serve MCP on stdio").set_defaults(func=mcp_serve_cmd)
 
+    owner_registry = verbs.add_parser("registry", help="owner-only reference approval").add_subparsers(
+        dest="action", required=True
+    )
+    approve = owner_registry.add_parser("approve-references", help="owner only; agents must never run this command")
+    for name in ("project", "character", "ref-set", "reviewer", "evidence"):
+        approve.add_argument("--" + name, required=True)
+    approve.set_defaults(func=registry_approve_cmd)
+
     prof = verbs.add_parser("profile", help="check or show a project profile (docs/07)").add_subparsers(
         dest="action", required=True
     )
@@ -310,6 +318,21 @@ def mcp_serve_cmd(args: argparse.Namespace) -> int:
     from sonoranlab.mcp.server import main
 
     return main()
+
+
+def registry_approve_cmd(args: argparse.Namespace) -> int:
+    from sonoranlab.api.registry import Context, ToolError
+    from sonoranlab.registry import approve_references
+
+    try:
+        result = approve_references(
+            args.project, args.character, args.ref_set, args.reviewer, args.evidence, ctx=Context()
+        )
+    except (ToolError, OSError, ValueError) as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    print(json.dumps(result))
+    return 0
 
 
 def profile_check(args: argparse.Namespace) -> int:

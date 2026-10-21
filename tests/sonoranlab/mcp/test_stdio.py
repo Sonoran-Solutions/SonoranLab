@@ -121,6 +121,8 @@ def test_stdio_initialize_discovery_calls_parity_and_logging(tmp_path, caplog):
                     assert tool.output_schema == ENVELOPE_SCHEMA
                     for key, value in registered.annotations.items():
                         assert tool.annotations.model_dump(by_alias=True)[key] == value
+                    if tool.name not in ("capabilities", "list_projects", "get_profile"):
+                        continue  # later tools have their own stdio/CLI parity tests with fixtures
                     args = {"project": "twos-are-up"} if tool.name == "get_profile" else {}
                     result = await session.call_tool(tool.name, args)
                     assert not result.is_error

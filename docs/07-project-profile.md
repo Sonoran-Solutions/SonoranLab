@@ -108,3 +108,13 @@ generated directions and has a frame set for the clip's (and each character over
 checks on (the default; `--no-path-check` skips them) it also checks the palette file (exists, `sha256`, `colours`,
 `bg_key` absent) and the export project, `sprites_dir` and manifest. It prints one line per problem, naming the field
 and the bad value, and exits 2 if there is any. The MCP server refuses to start on a profile that fails this.
+
+## Registry
+
+The Phase 4 registry unions profile character rows with registered records in
+STATE; it never edits this profile or the game. Add new character rows through
+a reviewed PR before registering eight still references. Copies start unapproved;
+`autonomy.allow_auto_approve: false` remains binding. Only the owner may run
+`sonoranlab registry approve-references`; agents must never invoke it and MCP
+does not expose it. Approval and job review are reverified against current
+hashes on every read. See [registry schemas](06-tool-surface.md#registry-tool-schemas-dyl-114).

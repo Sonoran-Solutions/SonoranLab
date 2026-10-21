@@ -24,11 +24,18 @@ def install(monkeypatch):
 
 
 def test_registry_metadata_and_schemas():
-    assert set(registry()) == {"capabilities", "list_projects", "get_profile"}
+    assert {"capabilities", "list_projects", "get_profile"} <= set(registry())
     for tool in registry().values():
         Draft202012Validator.check_schema(tool.input_schema)
-        assert tool.read_only and tool.kind == "sync" and tool.version == "1"
-        assert tool.annotations == {"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True}
+        assert tool.kind in ("sync", "job") and tool.version == "1"
+        assert tool.annotations == {
+            "readOnlyHint": tool.read_only,
+            "destructiveHint": False,
+            "idempotentHint": tool.read_only,
+        }
+    for name in ("capabilities", "list_projects", "get_profile"):
+        tool = registry()[name]
+        assert tool.read_only and tool.kind == "sync"
     Draft202012Validator.check_schema(ENVELOPE_SCHEMA)
 
 
