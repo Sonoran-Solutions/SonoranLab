@@ -22,7 +22,10 @@ PORT="${SONORANLAB_PORT:-8189}"
 # The GTT backstop is the guard's preflight margin plus --oom-score-adj 1000 making ComfyUI the kernel OOM victim.
 MEM="${SONORANLAB_MEM:-64g}"
 # Toolbox-documented flags (start_comfy_ui alias / benchmark_workflows.py). Change one at a time and record it.
-FLAGS="${SONORANLAB_COMFY_FLAGS:---disable-mmap --gpu-only --disable-smart-memory --cache-none --bf16-vae}"
+# Only the custom nodes the workflows need are loaded: the four env/Containerfile pins + the base image's ComfyUI-GGUF. The base image also ships ComfyUI-AMDGPUMonitor, whose import-time
+# thread spawns five `rocm-smi` interpreters every second (~32% CPU idle, DYL-112); no SonoranLab workflow uses it.
+NODES="ComfyUI-GGUF ComfyUI-PixelGridHelpers ComfyUI-RMBG PixelOE comfyui_controlnet_aux"
+FLAGS="${SONORANLAB_COMFY_FLAGS:---disable-mmap --gpu-only --disable-smart-memory --cache-none --bf16-vae --disable-all-custom-nodes --whitelist-custom-nodes $NODES}"
 
 # absent | stopped | running | unknown. Only a confirmed answer counts: a podman error (`container exists` rc 125,
 # failed inspect) or an unexpected state (paused, stopping, removing, ...) is unknown and is never treated as idle.
