@@ -63,6 +63,12 @@ expectations to confirm in Phase 0:
 Record actual peak memory per workflow in `benchmark/results/`; do not copy
 these numbers into other docs.
 
+The run-window guard publishes a mode-0600 `runwindow.lease.json` in `SONORANLAB_WORK`
+(default `~/sonoranlab-work`) while holding `runwindow.lock`. Generation verifies its
+direct parent's PID, nonce, boot ID, live lock and admitted memory budget before staging
+work. The lease is removed when the window ends; stale claims fail closed. This is local
+safety against mistakes, not a security boundary against an adversarial same-user process.
+
 ## The 3080
 
 - Use it for: SDXL / klein-4B static candidates, PixelOE GPU backend,

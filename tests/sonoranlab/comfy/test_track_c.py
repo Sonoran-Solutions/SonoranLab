@@ -2,7 +2,6 @@
 
 import hashlib
 import json
-import os
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -375,10 +374,8 @@ def test_result_feeds_track_e_as_start_image(env) -> None:
 
 
 @pytest.fixture
-def cli_env(env, monkeypatch):
-    # inside a fake run window (sonoranlab.comfy.guard.inside_guard): the CLI must never exec the real guard here
-    monkeypatch.setenv("SONORANLAB_RUNWINDOW", "12345")
-    monkeypatch.setattr(os, "getppid", lambda: 12345)
+def cli_env(env, monkeypatch, lease_window):
+    lease_window(env.work, need_gib=60)
     monkeypatch.setattr(cli, "_exec", lambda *a: pytest.fail("CLI test must remain inside the fake guard"))
     monkeypatch.setenv("SONORANLAB_WORK", str(env.work))
     monkeypatch.setattr(track_c, "load_workflow", lambda p: object())

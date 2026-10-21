@@ -1,5 +1,6 @@
 """Run-window dispatch with fake exec only: never launch the guard or ComfyUI."""
 
+import fcntl
 import json
 import os
 import sys
@@ -10,13 +11,13 @@ import pytest
 
 from sonoranlab import cli
 from sonoranlab.comfy import guard
-from sonoranlab.comfy.adapters import track_e
+from sonoranlab.comfy.adapters import track_c, track_e
 from sonoranlab.comfy.adapters.base import GenerateRequest
 
 
 @pytest.mark.parametrize("marker, expected", [(None, False), ("12345", True), ("54321", False), ("", False)])
-def test_inside_guard_requires_direct_parent(monkeypatch, marker, expected: bool) -> None:
-    monkeypatch.setattr(os, "getppid", lambda: 12345)
+def test_inside_guard_requires_direct_parent(lease_window, monkeypatch, marker, expected: bool) -> None:
+    lease_window()
     monkeypatch.delenv("SONORANLAB_RUNWINDOW", raising=False)
     if marker is not None:
         monkeypatch.setenv("SONORANLAB_RUNWINDOW", marker)
@@ -37,7 +38,7 @@ def dispatch(tmp_path: Path, monkeypatch):
     calls = []
     monkeypatch.setattr(cli, "_exec", lambda executable, argv: calls.append((executable, argv)))
     monkeypatch.setattr(os, "getppid", lambda: 12345)
-    monkeypatch.setenv("SONORANLAB_RUNWINDOW", "54321")
+    monkeypatch.delenv("SONORANLAB_RUNWINDOW", raising=False)
     monkeypatch.setenv("SONORANLAB_UNGUARDED", "1")  # inherited bypasses never authorize generation
     req = GenerateRequest("E", "samurai", "run", "east", tmp_path / "still.png", "", 7, tmp_path / "attempt")
     path = tmp_path / "request.json"
@@ -115,15 +116,104 @@ def test_bad_request_never_execs(dispatch, contents: str) -> None:
     assert dispatch.calls == []
 
 
-def test_generate_inside_guard_runs_adapter(dispatch, monkeypatch) -> None:
-    monkeypatch.setenv("SONORANLAB_RUNWINDOW", "12345")
+@pytest.mark.parametrize("track,budget", [("C", 60), ("E", 40)])
+def test_generate_inside_guard_runs_adapter(dispatch, lease_window, monkeypatch, track, budget) -> None:
+    window = lease_window(need_gib=budget)
+    assert guard.admitted_window() == window.data
+    assert guard.inside_guard(budget) and not guard.inside_guard(budget + 1)
+    dispatch.path.write_text(json.dumps({**dispatch.req.to_json(), "track": track}))
+    req = GenerateRequest.from_json(json.loads(dispatch.path.read_text()))
     generated = []
 
     def generate(self, req):
         generated.append(req)
         return SimpleNamespace(status="ok", to_json=lambda: {"status": "ok"})
 
-    monkeypatch.setattr(track_e, "make_client", lambda *a, **kw: object())
-    monkeypatch.setattr(track_e.TrackE, "generate", generate)
+    module, adapter = (track_c, track_c.TrackC) if track == "C" else (track_e, track_e.TrackE)
+    monkeypatch.setattr(module, "make_client", lambda *a, **kw: object())
+    monkeypatch.setattr(adapter, "generate", generate)
     assert cli.main(["generate", "--request", str(dispatch.path)]) == 0
-    assert generated == [dispatch.req] and dispatch.calls == []
+    assert generated == [req] and dispatch.calls == []
+
+
+@pytest.mark.parametrize(
+    "fault",
+    [
+        "undersized",
+        "nonce",
+        "missing_nonce",
+        "parent",
+        "pid",
+        "unlocked",
+        "boot",
+        "corrupt",
+        "missing",
+        "schema",
+        "bool_budget",
+        "nan_budget",
+        "infinite_budget",
+        "non_numeric_budget",
+        "owner",
+        "directory",
+        "fifo",
+    ],
+)
+def test_generate_refuses_unverifiable_window_before_staging(dispatch, lease_window, monkeypatch, capsys, fault):
+    window = lease_window(need_gib=40 if fault == "undersized" else 60)
+    dispatch.path.write_text(json.dumps({**dispatch.req.to_json(), "track": "C"}))
+    if fault == "nonce":
+        monkeypatch.setenv("SONORANLAB_RUNWINDOW_NONCE", "wrong")
+    elif fault == "missing_nonce":
+        monkeypatch.delenv("SONORANLAB_RUNWINDOW_NONCE")
+    elif fault == "parent":
+        monkeypatch.setenv("SONORANLAB_RUNWINDOW", "54321")
+    elif fault == "pid":
+        window.data["pid"] = 54321
+    elif fault == "unlocked":
+        fcntl.flock(window.lock, fcntl.LOCK_UN)
+    elif fault == "boot":
+        window.boot.write_text("another-boot")
+    elif fault == "schema":
+        window.data["schema"] = "unknown"
+    elif fault.endswith("_budget"):
+        window.data["need_gib"] = {
+            "bool_budget": True,
+            "nan_budget": float("nan"),
+            "infinite_budget": float("inf"),
+            "non_numeric_budget": "60",
+        }[fault]
+    elif fault == "owner":
+        uid = os.getuid()
+        monkeypatch.setattr(os, "getuid", lambda: uid + 1)
+    window.path.write_text(json.dumps(window.data))
+    if fault == "corrupt":
+        window.path.write_text("{broken json")
+    elif fault in ("missing", "directory", "fifo"):
+        window.path.unlink()
+        if fault == "directory":
+            window.path.mkdir()
+        elif fault == "fifo":
+            os.mkfifo(window.path)
+    assert cli.main(["generate", "--request", str(dispatch.path)]) == 3
+    assert "REFUSED" in capsys.readouterr().err
+    assert not dispatch.calls and not dispatch.req.out_dir.exists()
+
+
+def test_generate_checks_explicit_need_against_lease(dispatch, lease_window, capsys):
+    lease_window(need_gib=60)
+    assert cli.main(["generate", "--request", str(dispatch.path), "--need-gib", "64"]) == 3
+    assert "requires 64 GiB" in capsys.readouterr().err
+    assert not dispatch.calls and not dispatch.req.out_dir.exists()
+
+
+def test_generate_refuses_empty_window_claim(dispatch, monkeypatch):
+    monkeypatch.setenv("SONORANLAB_RUNWINDOW", "")
+    assert cli.main(["generate", "--request", str(dispatch.path)]) == 3
+    assert not dispatch.calls and not dispatch.req.out_dir.exists()
+
+
+def test_stale_lock_probe_is_released(lease_window):
+    window = lease_window()
+    fcntl.flock(window.lock, fcntl.LOCK_UN)
+    assert guard.admitted_window() is None
+    fcntl.flock(window.lock, fcntl.LOCK_EX | fcntl.LOCK_NB)

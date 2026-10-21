@@ -455,7 +455,9 @@ def test_generation_unknown_track_is_refused_before_any_run(tmp_path, body):
     assert calls == []
 
 
-def test_generation_cli_refuses_track_c_at_40_gib(tmp_path, capsys):
-    (path,) = _requests(tmp_path, "C")
-    assert main(["sweep", "run", "--requests", str(path), "--repo", str(tmp_path), "--need-gib", "40"]) == 2
-    assert "Track C needs 60 GiB" in capsys.readouterr().err
+@pytest.mark.parametrize("track,need,minimum", [("C", "40", 60), ("E", "39.9", 40)])
+def test_generation_cli_refuses_under_budget(tmp_path, capsys, monkeypatch, track, need, minimum):
+    (path,) = _requests(tmp_path, track)
+    monkeypatch.setattr(subprocess, "run", lambda *a, **kw: pytest.fail("under-budget request must not run"))
+    assert main(["sweep", "run", "--requests", str(path), "--repo", str(tmp_path), "--need-gib", need]) == 2
+    assert f"Track {track} needs {minimum} GiB" in capsys.readouterr().err

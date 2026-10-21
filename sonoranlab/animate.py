@@ -16,6 +16,7 @@ import subprocess
 import time
 from collections.abc import Callable, Sequence
 from datetime import datetime
+from importlib import import_module
 from pathlib import Path
 
 import numpy as np
@@ -58,8 +59,10 @@ def _preflight(profile, character, anim, track, seeds, windows, need_gib, godot_
         )
     if windows not in ("default", "steady"):
         raise UsageError("windows must be default|steady")
-    if not isinstance(need_gib, (int, float)) or not math.isfinite(need_gib) or need_gib <= 0:
-        raise UsageError("need_gib must be a positive number")
+    # Match sweep's lazy import: the deterministic core keeps ComfyUI imports behind generation entry points.
+    minimum = import_module("sonoranlab.comfy.guard").min_need_gib(track)
+    if type(need_gib) not in (int, float) or not math.isfinite(need_gib) or need_gib < minimum:
+        raise UsageError(f"refusing an under-budget run window; Track {track} needs {minimum:g} GiB (finite number)")
     if (
         not seeds
         or len({*seeds}) != len(seeds)

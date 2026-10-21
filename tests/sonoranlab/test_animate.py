@@ -167,6 +167,46 @@ def test_usage_errors_write_nothing(tmp_path):
     assert [p.name for p in out.iterdir()] == ["keep"]
 
 
+@pytest.mark.parametrize("need", [39.9, 0, float("nan"), float("inf"), True])
+def test_under_budget_preflight_writes_nothing(tmp_path, need):
+    fake = Fake()
+    res = run(tmp_path, fake, need_gib=need)
+    assert res["exit"] == 2 and res["outcome"] == "usage"
+    assert "Track E needs 40 GiB" in res["error"]
+    assert not (tmp_path / "out").exists() and not fake.calls
+
+
+def test_minimum_budget_proceeds_to_generation(tmp_path):
+    fake = Fake(refuse=(1, 3))
+    assert run(tmp_path, fake, need_gib=40)["outcome"] == "blocked"
+    assert len(fake.calls) == 1 and (tmp_path / "out").exists()
+
+
+def test_cli_under_budget_preflight_writes_nothing(tmp_path, capsys):
+    assert (
+        main(
+            [
+                "animate",
+                "--profile",
+                str(toy_profile(tmp_path)),
+                "--character",
+                "hero",
+                "--anim",
+                "idle",
+                "--reference",
+                str(stills_dir(tmp_path)),
+                "--out",
+                str(tmp_path / "out"),
+                "--need-gib",
+                "10",
+            ]
+        )
+        == 2
+    )
+    assert "Track E needs 40 GiB" in capsys.readouterr().err
+    assert not (tmp_path / "out").exists()
+
+
 def _without(src: Path, dst: Path, name: str) -> Path:
     dst.mkdir()
     for p in src.glob("*.png"):

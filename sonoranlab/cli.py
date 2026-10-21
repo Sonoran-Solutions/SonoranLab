@@ -644,7 +644,7 @@ def _cancel_on_term(fn: Callable[[], T]) -> T:
 
 
 def generate_cmd(args: argparse.Namespace) -> int:
-    """Exit 0 ok, 1 generation failed (result.json says why), 2 bad request/config. The comfy client loads lazily."""
+    """Exit 0 ok, 1 generation failed, 2 bad request/config, 3 invalid window. The comfy client loads lazily."""
     import math
 
     from sonoranlab.comfy.adapters.base import GenerateRequest
@@ -656,7 +656,15 @@ def generate_cmd(args: argparse.Namespace) -> int:
         if args.need_gib is not None and (not math.isfinite(args.need_gib) or args.need_gib < minimum):
             raise ValueError(f"refusing an under-budget run window; Track {req.track} needs {minimum:g} GiB")
         need = args.need_gib or minimum
-        if not inside_guard():
+        if "SONORANLAB_RUNWINDOW" in os.environ:
+            if not inside_guard(need):
+                print(
+                    f"generate: REFUSED: invalid, stale or undersized run-window lease; "
+                    f"Track {req.track} requires {need:g} GiB",
+                    file=sys.stderr,
+                )
+                return 3
+        else:
             child = ["--request", str(args.request), "--base-url", args.base_url, "--timeout", f"{args.timeout:g}"]
             child += ["--need-gib", f"{need:g}"] + (["--exec", args.exec_container] if args.exec_container else [])
             # --allow-pause belongs to the guard, not the child; the child sees it only through the run window
