@@ -55,10 +55,11 @@ BASE = {"project": "toy", "character": "hero", "anim": "idle"}
 
 
 def assert_editor_mode_discovery(unavailable, available):
-    """DYL-118 rebase extension point: add available repair advertisement assertion here."""
+    """Core tools are identical in both modes; the five optional repair tools appear only with the editor runtime."""
     assert set(unavailable) == CORE
     assert {k: v for k, v in available.items() if k not in REPAIR} == unavailable
     assert not (set(unavailable) & REPAIR)
+    assert set(available) - set(unavailable) == REPAIR
 
 
 def events(lab, event):
