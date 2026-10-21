@@ -38,7 +38,9 @@ def job_status(params: dict, ctx: Context) -> dict:
 
         review = _review(root, ctx)
         human = {"review": review["review_state"], "production_usable": review["production_usable"]}
-
+    # An executor that knows where its final artifact lives (animate: sweep/final/job) reports measured verdicts.
+    technical = progress.pop("technical", technical)
+    human = progress.pop("human", human)
     return {**job, "progress": progress, "technical": technical, "human": human}
 
 
