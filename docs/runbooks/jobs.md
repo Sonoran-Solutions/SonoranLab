@@ -21,8 +21,7 @@ Listing filters by project/state, newest IDs first, with limit 1–200 (default 
 Status returns measured file progress and timing, technical placeholders and human
 review recomputed from disk via the existing review library. A terminal result
 includes result/error and partial artifact references. Nonterminal/blocked results
-return `conflict`, hint `not_ready`: `not_ready` is absent from the current shared
-envelope's closed error enum, whose file is outside this ticket's write scope.
+return error code `not_ready` (retryable): poll `job_status`.
 
 ## Lifecycle
 

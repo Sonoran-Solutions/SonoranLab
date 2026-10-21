@@ -52,8 +52,7 @@ def job_status(params: dict, ctx: Context) -> dict:
 def job_result(params: dict, ctx: Context) -> dict:
     job = manager.get(params["job_id"])
     if job["state"] not in store.TERMINAL:
-        # ponytail: the closed envelope enum lacks not_ready; add it centrally when that file enters scope.
-        raise ToolError("conflict", "Job result is not ready", field="job_id", hint="not_ready")
+        raise ToolError("not_ready", "Job result is not ready; poll job_status", field="job_id", retryable=True)
     root = store.output(job)
     artifacts = [
         {

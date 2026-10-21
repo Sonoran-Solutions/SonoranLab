@@ -193,7 +193,7 @@ def test_status_result_and_cli_responsive_offline(jobs_env, monkeypatch):
         assert response["result"]["technical"]["validator"] is None
         assert response["result"]["human"] == {"review": "none", "production_usable": False}
         not_ready = call("job_result", {"job_id": job_id})
-        assert not_ready["error"]["hint"] == "not_ready"
+        assert not_ready["error"]["code"] == "not_ready"
     cli = subprocess.run(
         [sys.executable, "-m", "sonoranlab.cli", "api", "job_status", "--params", "-"],
         input=json.dumps({"job_id": job_id}),

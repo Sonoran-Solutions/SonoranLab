@@ -23,6 +23,7 @@ ERROR_CODES = (
     "invalid_params",
     "not_found",
     "conflict",
+    "not_ready",
     "idempotency_conflict",
     "path_refused",
     "unavailable",

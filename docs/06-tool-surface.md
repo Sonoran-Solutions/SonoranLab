@@ -19,14 +19,8 @@ presence only. An available editor runtime does not establish sandbox health.
 ## Tool inventory
 
 Supported means part of the reconciled Phase 4 contract, not necessarily
-<<<<<<< HEAD
 implemented yet. **DYL-113 implements `capabilities`, `list_projects` and `get_profile`;
-DYL-114 adds the six registry tools below.** Other supported tools land in later tickets. There are
-=======
-implemented yet. **DYL-113 implements only `capabilities`, `list_projects`
-and `get_profile`.** DYL-115 adds durable job reads, cancellation and retry;
-production job executors land in later tickets. There are
->>>>>>> 148f35e (DYL-115: durable job manager with idempotent submission, guarded scheduling, scoped cancel and crash recovery)
+DYL-114 adds the six registry tools below.** DYL-115 adds durable job reads, cancellation and retry. Other supported tools land in later tickets. There are
 no placeholder tools in discovery. See ADR-0010 for each library/CLI mapping.
 
 | Tool | Access / kind | Availability and purpose |
@@ -34,26 +28,15 @@ no placeholder tools in discovery. See ADR-0010 for each library/CLI mapping.
 | `capabilities` | read-only / sync | Implemented: server version, API schema, tool metadata and capability flags |
 | `list_projects` | read-only / sync | Implemented: `result.projects` = profiles/*.yaml as id, name, relative profile_path |
 | `get_profile` | read-only / sync | Implemented: project id → resolved canvas, cells, directions, animations, limits, autonomy, protected export target; palette path + sha256 only |
-<<<<<<< HEAD
 | `list_characters` | read-only / sync | Implemented: profile/registry union and verified approvals |
 | `get_character` | read-only / sync | Implemented: references, current review and imported job lineage |
-| `list_jobs` | read-only / sync | Supported, pending: bounded job summaries |
-| `job_status` | read-only / sync | Supported, pending: execution, technical and human status separately |
-| `job_result` | read-only / sync | Supported, pending: result and artifact references |
+| `list_jobs` | read-only / sync | Implemented: bounded/filterable durable summaries (limit ≤200), offline lease reconciliation |
+| `job_status` | read-only / sync | Implemented: execution, measured file progress, timing and separate technical/human status |
+| `job_result` | read-only / sync | Implemented: terminal result/error and STATE-relative artifact references |
 | `get_artifact` | read-only / sync | Implemented: bounded metadata only, no image pixels or text bodies |
 | `check_review` | read-only / sync | Implemented: recompute artifact-bound human review from disk |
 | `import_job` | mutating / sync | Implemented: index existing jobs and hashes without modifying them |
 | `register_character` | mutating / sync | Implemented: immutable still copies, initially unapproved |
-=======
-| `list_characters` | read-only / sync | Supported, pending: registry summaries |
-| `get_character` | read-only / sync | Supported, pending: references, history and artifacts |
-| `list_jobs` | read-only / sync | Implemented: bounded/filterable durable summaries (limit ≤200), offline lease reconciliation |
-| `job_status` | read-only / sync | Implemented: execution, measured file progress, timing and separate technical/human status |
-| `job_result` | read-only / sync | Implemented: terminal result/error and STATE-relative artifact references |
-| `get_artifact` | read-only / sync | Supported, pending: bounded metadata; images only as size-capped contact sheets |
-| `check_review` | read-only / sync | Supported, pending: recompute artifact-bound human review from disk |
-| `register_character` | mutating / sync | Supported, pending: copy references, initially unapproved |
->>>>>>> 148f35e (DYL-115: durable job manager with idempotent submission, guarded scheduling, scoped cancel and crash recovery)
 | `validate` | mutating / sync | Supported, pending: validator report in a new output directory |
 | `contact_sheet` | mutating / sync | Supported, pending: new review image output directory |
 | `compare` | mutating / sync | Supported, pending: new side-by-side contact and report output directory |
@@ -101,7 +84,7 @@ or disabled tool names are `invalid_params` (exit 2). `api --list` prints
 registry metadata as a JSON array. Params default to `{}` and must satisfy
 the exact tool JSON schema; unknown properties are refused.
 
-Error codes: `invalid_params`, `not_found`, `conflict`,
+Error codes: `invalid_params`, `not_found`, `conflict`, `not_ready`,
 `idempotency_conflict`, `path_refused`, `unavailable`, `refused`,
 `budget_refused`, `guard_busy`, `internal`. Expected errors include a field,
 retryability and hint (nullable). Unknown exceptions return `internal` with
@@ -137,8 +120,7 @@ sha256 over the sorted (direction, file sha256) list. Job IDs are
 absolute paths only in informational fields. Writes use same-directory
 temporary files + fsync + os.replace + directory fsync; exclusive creates
 use O_EXCL/mkdir; record read-modify-write holds an fcntl lock.
-<<<<<<< HEAD
-Registry record writers implement these rules; job writers are later-ticket work.
+Registry record writers implement these rules.
 
 ## Registry tool schemas (DYL-114)
 
@@ -198,11 +180,10 @@ sonoranlab registry approve-references --project P --character C --ref-set refs-
 `sonoranlab.ref-approval/1`, project, character, ref_set_id, direction/hash
 bindings, reviewer, evidence and approved_at. Approval records are append-only;
 registration never infers approval from prior-phase files or profile comments.
-=======
+
 Durable job records and idempotency claims are implemented by `sonoranlab/jobs/`.
 See the [jobs runbook](runbooks/jobs.md) for locking, crash recovery, launchers,
 executor registration and retention. Production job kinds remain later-ticket work.
->>>>>>> 148f35e (DYL-115: durable job manager with idempotent submission, guarded scheduling, scoped cancel and crash recovery)
 
 ## Execution, technical and human status
 
@@ -235,8 +216,7 @@ No read launches, probes services, resubmits, or infers success.
 Cancellation confirms only this job's durable submission IDs. Unknown outcomes
 remain blocked(cancel_unconfirmed). Terminal cancellation is an idempotent no-op;
 retry creates a new linked attempt and refuses unresolved blocked parents or
-changed frozen inputs. `job_result` before a terminal outcome returns `conflict`
-with hint `not_ready`, preserving the shared envelope's current closed code enum.
+changed frozen inputs. `job_result` before a terminal outcome returns error code `not_ready`.
 Initial registry discovery performs startup reconciliation; server construction
 itself does not import registry modules. See the [jobs runbook](runbooks/jobs.md).
 

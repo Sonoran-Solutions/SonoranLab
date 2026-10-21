@@ -34,26 +34,15 @@ not launch/probe). No stubs are advertised.
 | `capabilities` | Supported, implemented | yes / sync | Runtime path presence (same env/default as repair.runtime), shutil.which; `api capabilities` |
 | `list_projects` | Supported, implemented | yes / sync | profiles/*.yaml + profile.load_profile(check_paths=False); `api list_projects` |
 | `get_profile` | Supported, implemented | yes / sync | profile.load_profile + Profile.character; profile show/check semantics without external path checks; `api get_profile` |
-<<<<<<< HEAD
 | `list_characters` | Supported, implemented (DYL-114) | yes / sync | Profile.characters + new STATE registry records; no prior registry CLI, `api list_characters` |
 | `get_character` | Supported, implemented (DYL-114) | yes / sync | Profile.character + registry/history; `profile show` plus new record lookup |
-| `list_jobs` | Supported, pending | yes / sync | New STATE job records over existing job artifacts; `api list_jobs` |
-| `job_status` | Supported, pending | yes / sync | New job model, existing animate summaries and technical reports; `api job_status` |
-| `job_result` | Supported, pending | yes / sync | Existing manifest/report/contact artifacts, new job record lookup; `api job_result` |
+| `list_jobs` | Implemented (DYL-115) | yes / sync | New STATE job records over existing job artifacts; `api list_jobs` |
+| `job_status` | Implemented (DYL-115) | yes / sync | New job model, existing animate summaries and technical reports; `api job_status` |
+| `job_result` | Implemented (DYL-115) | yes / sync | Existing manifest/report/contact artifacts, new job record lookup; `api job_result` |
 | `get_artifact` | Supported, implemented (DYL-114) | yes / sync | artifacts regular-file/hash checks + contact.contact_sheet; bounded metadata, size-capped contact images only |
 | `check_review` | Supported, implemented (DYL-114) | yes / sync | review.review_errors / production_usable; `review check` |
 | `import_job` | Supported, implemented (DYL-114) | no / sync | registry.import_job; explicit existing-job indexing, no job modification; `api import_job` |
 | `register_character` | Supported, implemented (DYL-114) | no / sync | New registry copies/hashes using artifacts patterns; initially unapproved; `api register_character` |
-=======
-| `list_characters` | Supported, pending | yes / sync | Profile.characters + new STATE registry records; no prior registry CLI, `api list_characters` |
-| `get_character` | Supported, pending | yes / sync | Profile.character + registry/history; `profile show` plus new record lookup |
-| `list_jobs` | Implemented (DYL-115) | yes / sync | New STATE job records over existing job artifacts; `api list_jobs` |
-| `job_status` | Implemented (DYL-115) | yes / sync | New job model, existing animate summaries and technical reports; `api job_status` |
-| `job_result` | Implemented (DYL-115) | yes / sync | Existing manifest/report/contact artifacts, new job record lookup; `api job_result` |
-| `get_artifact` | Supported, pending | yes / sync | artifacts regular-file/hash checks + contact.contact_sheet; bounded metadata, size-capped contact images only |
-| `check_review` | Supported, pending | yes / sync | review.review_errors / production_usable; `review check` |
-| `register_character` | Supported, pending | no / sync | New registry copies/hashes using artifacts patterns; initially unapproved; `api register_character` |
->>>>>>> 148f35e (DYL-115: durable job manager with idempotent submission, guarded scheduling, scoped cancel and crash recovery)
 | `validate` | Supported, pending | no / sync | validate.read_frames/read_stills/validate; `validate`, new output directory |
 | `contact_sheet` | Supported, pending | no / sync | contact.contact_sheet; `contact`, new output directory |
 | `compare` | Supported, pending | no / sync | Existing validate + contact primitives, new side-by-side/report orchestration; new output directory |
@@ -106,7 +95,7 @@ Schema identifier: `sonoranlab.api/1`.
 {"schema":"sonoranlab.api/1","tool":"<name>","ok":false,"error":{"code":"invalid_params","message":"...","field":null,"retryable":false,"hint":null}}
 ```
 
-Codes: invalid_params, not_found, conflict, idempotency_conflict,
+Codes: invalid_params, not_found, conflict, not_ready, idempotency_conflict,
 path_refused, unavailable, refused, budget_refused, guard_busy, internal.
 Unknown exceptions become internal with exception type only, never a
 traceback on stdout. Schema validation uses jsonschema 4.26.0 (already in the lock as an
@@ -194,9 +183,8 @@ owned by its submission files. Errors/live prompts remain blocked. Retry creates
 a new linked attempt, confirms blocked parents stopped, and revalidates frozen
 input hashes. Successful jobs cannot retry.
 
-The shared envelope currently omits `not_ready` from its closed error enum;
-job_result uses `conflict` plus hint `not_ready` until a coordinator-owned envelope
-extension is adopted. Record-level failure codes (worker_lost, corrupt_record,
+`job_result` before a terminal outcome returns `not_ready` (added to the envelope's
+error codes by DYL-115). Record-level failure codes (worker_lost, corrupt_record,
 needs_reconciliation, cancel_unconfirmed, launcher_failed, executor_error) live
 inside successful status/result envelopes, not the API error enum. See the
 [jobs runbook](../runbooks/jobs.md) for the exact transition table, crash outcomes,
