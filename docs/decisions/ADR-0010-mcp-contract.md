@@ -1,0 +1,175 @@
+# ADR-0010 — Phase 4 MCP contract
+
+**Status:** proposed (2026-10-20, DYL-113)
+
+## Context
+
+Phase 3.5 was adopted narrowly and optionally (ADR-0009). The old Phase 4
+plan and tool document still described Track A candidates and `walk_4dir`,
+which cannot ship the game-native format (ADR-0007). ADR-0004 selects E for
+locomotion under an explicit Phase 1 owner exception, not a demonstrated
+60-minute end-to-end pass. ADR-0008 keeps technical validation separate from
+human review. This decision records the coordinator's Phase 4 contract;
+it does not redesign generation or relax a prior gate.
+
+## Decision
+
+One operations layer (`sonoranlab/api/`) serves CLI JSON and local stdio MCP
+(`sonoranlab mcp serve`, server name `sonoranlab`, SDK `mcp==2.3.0`).
+Tools carry name, version, description, exact JSON input schema,
+read_only, sync/job kind, handler `(params, Context)` and an optional
+capability gate. Area modules export tools through `api/tools/__init__.py`;
+new tickets add their module there without editing existing tools.
+Handlers reuse the existing library operations used by CLI verbs.
+
+### Reconciled inventory and operation mapping
+
+Supported = approved contract surface; pending = implemented by later
+tickets. Only the first three tools are implemented by DYL-113. Optional
+tools are advertised only when `editor=available` (runtime presence check,
+not launch/probe). No stubs are advertised.
+
+| Tool | Disposition | Read-only / kind | Existing operation / CLI equivalent |
+|---|---|---|---|
+| `capabilities` | Supported, implemented | yes / sync | Runtime path presence (same env/default as repair.runtime), shutil.which; `api capabilities` |
+| `list_projects` | Supported, implemented | yes / sync | profiles/*.yaml + profile.load_profile(check_paths=False); `api list_projects` |
+| `get_profile` | Supported, implemented | yes / sync | profile.load_profile + Profile.character; profile show/check semantics without external path checks; `api get_profile` |
+| `list_characters` | Supported, pending | yes / sync | Profile.characters + new STATE registry records; no prior registry CLI, `api list_characters` |
+| `get_character` | Supported, pending | yes / sync | Profile.character + registry/history; `profile show` plus new record lookup |
+| `list_jobs` | Supported, pending | yes / sync | New STATE job records over existing job artifacts; `api list_jobs` |
+| `job_status` | Supported, pending | yes / sync | New job model, existing animate summaries and technical reports; `api job_status` |
+| `job_result` | Supported, pending | yes / sync | Existing manifest/report/contact artifacts, new job record lookup; `api job_result` |
+| `get_artifact` | Supported, pending | yes / sync | artifacts regular-file/hash checks + contact.contact_sheet; bounded metadata, size-capped contact images only |
+| `check_review` | Supported, pending | yes / sync | review.review_errors / production_usable; `review check` |
+| `register_character` | Supported, pending | no / sync | New registry copies/hashes using artifacts patterns; initially unapproved; `api register_character` |
+| `validate` | Supported, pending | no / sync | validate.read_frames/read_stills/validate; `validate`, new output directory |
+| `contact_sheet` | Supported, pending | no / sync | contact.contact_sheet; `contact`, new output directory |
+| `compare` | Supported, pending | no / sync | Existing validate + contact primitives, new side-by-side/report orchestration; new output directory |
+| `animate` | Supported, pending | no / job | animate.animate; `animate --track E`, existing guard and selection/processing chain |
+| `pose_frame` | Supported, pending | no / job | comfy.adapters.track_c.TrackC; `generate` Track C request, single pose / posed first frame only |
+| `process` | Supported, pending | no / job | pipeline.run; `process` |
+| `export_godot` | Supported, pending | no / job | export.godot.export_godot guarded export; `export godot`, STATE output only |
+| `godot_check` | Supported, pending | no / job | pipeline.check_in_godot / run_godot; existing --godot-check, isolated job output |
+| `cancel_job` | Supported, pending | no / sync | New job cancellation plus existing ComfyClient.cancel; preserve unknown outcomes |
+| `retry_job` | Supported, pending | no / job | New explicit linked job over existing animate/process operations |
+| `prepare_repair` | Optional, pending | no / sync | repair.workspace.prepare; `repair prepare` |
+| `inspect_repair` | Optional, pending | yes / sync | repair.workspace.inspect; `repair inspect` |
+| `inspect_repair_diff` | Optional, pending | yes / sync | repair.compare.diff; `repair diff` |
+| `finalize_repair` | Optional, pending | no / job | repair.finalize.finalize; `repair finalize`, child job requires fresh review |
+| `abort_repair` | Optional, pending | no / sync | repair.workspace.abort; `repair abort` |
+
+| Excluded operation | Disposition / reason | Existing operation if any |
+|---|---|---|
+| Approve references / record review | Owner CLI only; no agent approval tool | reference owner workflow; `review record` / review.record_review |
+| `generate_character` | Deferred; Track A is an experimental non-default baseline, not the production entrance | benchmark Track A workflow; no supported production candidate CLI |
+| `regenerate_region` | Deferred; diffusion inpaint is outside the adopted pixel-repair scope | No supported operation |
+| `smoke_render` beside | Deferred; isolated Godot check covers Phase 4 engine verification | pipeline.check_in_godot is not a sibling comparison render |
+| `list_pose_templates` | Deferred; no template-management need in this contract | Profile animation template metadata |
+| `bake_rig` | Deferred; Track D template production is outside this surface | Existing benchmark/template bake tooling |
+| Automatic C→E fallback | Excluded; no implicit track changes or new budget commitments | Explicit single-pose C and locomotion E only |
+| Arbitrary graphs, shell, Lua, profile overrides | Excluded; bypasses the validated operation/policy boundary | Owner development tools only |
+
+### Envelope and transport
+
+Schema identifier: `sonoranlab.api/1`.
+
+```json
+{"schema":"sonoranlab.api/1","tool":"<name>","ok":true,"result":{}}
+```
+
+```json
+{"schema":"sonoranlab.api/1","tool":"<name>","ok":false,"error":{"code":"invalid_params","message":"...","field":null,"retryable":false,"hint":null}}
+```
+
+Codes: invalid_params, not_found, conflict, idempotency_conflict,
+path_refused, unavailable, refused, budget_refused, guard_busy, internal.
+Unknown exceptions become internal with exception type only, never a
+traceback on stdout. Schema validation uses jsonschema 4.26.0 (already in the lock as an
+MCP dependency; pinned explicitly in pyproject so the API does not rely on a transitive).
+
+`sonoranlab api <tool> [--params FILE|-]` emits exactly the MCP envelope.
+Exit 0 = ok; 1 = tool failure/refused/validation FAIL; 2 = usage/schema error
+(including unknown/disabled tools). `api --list` emits registry metadata.
+MCP includes JSON text plus `structuredContent=envelope` and `isError` for
+failures. Every tool's exact schema and readOnlyHint, destructiveHint,
+idempotentHint are advertised. Blocking handlers run via anyio.to_thread;
+logs go to stderr. Startup/initialize/list/read never probe services, launch
+ComfyUI/Godot/Aseprite or import torch/pixeloe. Capabilities reports server
+version, API schema, tool list (read_only/kind), ComfyUI configured container
+and not_probed, Godot path/null, editor available/unavailable and offline
+policy. Editor presence follows SONORANLAB_EDITOR_RUNTIME or the pinned
+Phase 3.5 default; later repair admission must still validate containment.
+
+Profiles summarize canvas, per-character cells, direction
+order/generate/mirror_animations, animations, validator defaults, autonomy
+and export target marked read-only/protected. Palette is path + sha256
+only, never colours. No external palette/game file is read for discovery.
+
+SDK 2.3 integration notes for later tickets: low-level `Server` takes
+`on_list_tools` / `on_call_tool` constructor callbacks, each async with
+`(ctx, params)` arguments; this is not the 1.x decorator API. Python model
+fields are `input_schema`, `output_schema`, `structured_content`, `is_error`
+and snake_case annotation hints; SDK JSON aliases produce `inputSchema`,
+`structuredContent`, `isError`, etc. Keep validation in the shared API so
+tool errors remain envelopes. The SDK stdio transport owns protocol streams
+and diverts incidental fd-1 output to stderr; do not replace its framing.
+
+### Paths, state and IDs
+
+The normative layout, confinement, atomic-write rules and IDs are in
+[docs/06](../06-tool-surface.md#state-paths-and-ids): STATE defaults to
+~/sonoranlab-work/mcp; READ roots default to ~/sonoranlab-work; profiles
+remain repository-owned/read-only. Inputs resolve strictly within READ or
+STATE and must be regular files; writes only within STATE to new outputs.
+Reject traversal, symlink escapes, devices and existing output directories.
+Game checkout reads/writes/output targets are refused even inside a root;
+only reading the profile-recorded palette via the library is allowed.
+Relative inputs use cwd, relative outputs STATE, existing parents resolve
+strictly. Path helpers do not create directories. Record writers (later
+tickets) use exclusive creates, same-directory temp+fsync+replace+directory
+fsync and fcntl locks for read-modify-write.
+
+Project = profile id; character = profile character key;
+ref_set_id = refs- + first 12 sha256 hex over sorted (direction, file hash)
+pairs; job_id = job- + UTC yyyymmddThhmmssZ + '-' + 8 random hex.
+Artifacts use job_id:relative_path and STATE-relative references;
+absolute paths appear only as informational metadata. Copies are immutable
+0444 files with hashes. Unknown outcomes must be reconciled, not replayed.
+
+### Status separation
+
+- job.state: queued | running | cancelling | cancelled | succeeded | failed | blocked.
+- job.stage: prepare | generate | select_and_process | validate_export | check (measured, informational).
+- technical.validator: pass | fail | null; technical.godot: pass | fail | not_run | unavailable.
+- human.review: none | pass | fail | invalid; human.production_usable: boolean.
+
+Always recompute human state from disk via review.review_errors and
+review.production_usable; never cache approval. succeeded means the pipeline
+ran to completion, including a technical FAIL verdict, and implies no human
+approval. blocked means outcome unknown or reconciliation required (such as
+worker death after submission), never automatic retry/resubmission. Retry
+is an explicit new job with parent_job_id.
+
+### Superseded gate and defaults
+
+The old PLAN exit sequence **generate_character → animate → validate →
+export_godot**, `walk_4dir`, Track A is **superseded, NOT passed**. The Phase 4
+exit sequence is approved-reference registration → animate (Track E, five
+generated directions + mirrored animation rows + eight independent stills)
+→ inspect/validate/export/check, followed by separately bound human review.
+The live Phase 4 exit gate remains open until demonstrated end to end.
+
+Track E leads locomotion; Track C is single pose / posed first frame only;
+Track A is not default. No automatic C→E fallback. Optional Aseprite pixel
+repair (ADR-0009) is not diffusion inpainting. GitHub issue #40 (Qwen Image
+2.1 spike) changes no defaults. Guard/budgets reuse env/runwindow.py and
+comfy/guard.py: E ≥40 GiB, C ≥60 GiB, plus 8 GiB guard margin; never lower
+budgets, add --gtt-credit or implement a new memory controller.
+
+## Consequences
+
+CLI and MCP have one validation/error/result boundary. DYL-113 supplies
+three read tools and transport/confinement tests; later tickets implement
+registry records, jobs, deterministic operations and optional repair.
+No pixel/validation logic is duplicated. The skeleton passes without GPU,
+editor or engine launches; this does not establish the live Phase 4 gate.

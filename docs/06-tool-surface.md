@@ -1,129 +1,154 @@
 # 06 — Tool surface (MCP)
 
-This is the only thing the orchestrator sees. Design rules:
+Phase 4 contract: [ADR-0010](decisions/ADR-0010-mcp-contract.md) (proposed).
+One operations layer (`sonoranlab/api/`), two front ends:
 
-- **Coarse, idempotent tools with structured results.** The agent is good at
-  judging, retrying, and reading JSON. It is bad at assembling ComfyUI graphs
-  and cannot see sub-pixel problems. So: no graph access, every result carries
-  numbers, every visual review goes through an 8× contact sheet.
-- **Long work returns a `job_id` immediately.** Generation on ROCm is
-  minutes, not seconds. `job_status` / `job_result` poll. Nothing blocks.
-- **Every tool is a CLI verb first.** `sonoranlab <verb> --json` produces the
-  same payload the tool returns, so everything is testable without an agent.
-- **Results reference artifact paths, never inline pixels.** The agent asks
-  for a contact sheet when it wants to look.
-
-Transport: official `mcp` Python SDK, stdio for Claude Code. Server name
-`sonoranlab`.
-
-## Project / profile
-
-### `list_projects()`
-→ `[{id, name, profile_path}]`
-
-### `get_profile(project)`
-→ the resolved profile (`docs/07`): canvas, palette, foot line, directions,
-animations, approved reference list, export target.
-
-### `list_characters(project)`
-→ `[{id, name, status: "draft"|"approved", refs: [path], animations: {name: {status, job_id, report_summary}}}]`
-
-### `get_character(project, character)`
-→ full record including validator history and existing exported assets. The
-agent uses this to avoid redoing work and to pick style-consistent siblings
-for comparison.
-
-### `register_character(project, name, refs: [path], notes?)`
-→ `{character_id}`. Copies refs into the project; does not generate.
-
-### `approve_candidate(project, character, candidate_path)`
-→ marks a generated image as the canonical reference for later animation.
-Humans call this via CLI; the agent may call it when `profile.autonomy.allow_auto_approve` is true.
-
-## Generation (async)
-
-### `generate_character(project, character, spec, n=8, track="A", seed?)`
-Static candidates from refs + a text spec. Returns `{job_id}`.
-Result: `{candidates: [{path, seed, validator: {...}}], contact: path}`.
-
-### `pose_frames(project, character, animation, track="C", seed?, frames?: [int])`
-Frames for an animation using the project's pose templates. `frames` lets the
-agent regenerate specific indices. Returns `{job_id}`.
-
-### `animate(project, character, animation, track="E", seed?, directions?: [str])`
-Full animation; `directions` lets the agent redo one facing. Returns `{job_id}`.
-
-### `regenerate_region(project, character, animation, frame, mask: path, prompt)`
-Masked inpaint of one frame. Untouched pixels are preserved in code
-(composited back from the original), not by prompt. Returns `{job_id}`.
-
-### `job_status(job_id)`
-→ `{state: "queued"|"running"|"done"|"failed", progress: 0..1, elapsed_s, message}`
-
-### `job_result(job_id)`
-→ track-specific result: `{raw: [path], processed: [path], report: {...}, contact: path, manifest: {...}}`
-
-### `cancel_job(job_id)`
-
-## Deterministic (sync, fast)
-
-### `process(project, input: path|[path], animation, profile_overrides?)`
-Runs the whole chain (`docs/05`) on raw frames or a raw sheet.
-→ `{processed: [path], report: {...}, contact: path}`
-
-### `validate(project, frames: [path], animation)`
-Validator only (`docs/08`). → report JSON. Use when the agent edited frames
-externally or wants to compare two candidates.
-
-### `contact_sheet(frames: [path], zoom=8, labels?: [str])`
-→ `{path}`. The agent's eyes.
-
-### `compare(project, a: [path], b: [path], animation)`
-→ side-by-side contact + both reports + a diff summary (which frames changed,
-palette/bbox/foot deltas). Used for "did the retry help."
-
-### `export_godot(project, character, animation, frames: [path], target?: path)`
-→ `{sheet_png, spriteframes_tres, scene_tscn?, imported_at}`. See `docs/09`.
-
-### `smoke_render(project, character, animation, beside?: character_id)`
-Headless Godot render of the exported animation next to an existing class;
-returns a screenshot path and the engine's import log. The last style-drift
-check in the orchestrator loop.
-
-## Templates
-
-### `list_pose_templates(project)`
-→ `[{animation, directions, frame_count, path}]`
-
-### `bake_rig(project, rig: path, animation, directions, frame_count)`
-Track D: Godot headless orthographic bake → frames + OpenPose renders into
-`templates/poses/`. Returns `{job_id}`.
-
-## Result conventions
-
-Every generation result includes:
-
-```json
-{
-  "job_id": "…",
-  "track": "E",
-  "manifest": {
-    "profile_hash": "…", "workflow_hash": "…", "models": {"name": "sha"},
-    "seed": 1234, "timings": {"generate_s": 212.4, "process_s": 3.1},
-    "peak_mem_gb": 41.2
-  },
-  "report": { "pass": false, "frames": 32, "failures": ["foot_slide: frame 9 (3px)"], "...": "docs/08" },
-  "contact": "artifacts/twos-are-up/necromancer/walk_4dir/job-…/contact.png"
-}
+```sh
+sonoranlab api --list
+sonoranlab api get_profile --params -  # stdin: {"project":"twos-are-up"}
+sonoranlab mcp serve
 ```
 
-`report.pass` is the gate. `report.failures` is written for an LLM to read
-and act on (which frame, which rule, by how much).
+The official SDK is pinned to `mcp==2.3.0`. Transport is local stdio only;
+server name is `sonoranlab`. stdout contains only protocol (MCP) or JSON
+(CLI); logging goes to stderr. Startup, initialize, list and read tools never
+launch ComfyUI, Godot or Aseprite, or import torch/pixeloe. Capabilities report
+ComfyUI `not_probed`, Godot's executable path or null, and editor runtime
+presence only. An available editor runtime does not establish sandbox health.
 
-## What is deliberately not a tool
+## Tool inventory
 
-- Anything that takes a ComfyUI graph as input.
-- "Set palette" / "set canvas" at call time. Those live in the profile; the
-  agent edits the profile file if it needs to and the change is reviewable.
-- Free-form shell. The orchestrator has Claude Code for that; this server is
-  the pipeline, not a terminal.
+Supported means part of the reconciled Phase 4 contract, not necessarily
+implemented yet. **DYL-113 implements only `capabilities`, `list_projects`
+and `get_profile`.** Other supported tools land in later tickets. There are
+no placeholder tools in discovery. See ADR-0010 for each library/CLI mapping.
+
+| Tool | Access / kind | Availability and purpose |
+|---|---|---|
+| `capabilities` | read-only / sync | Implemented: server version, API schema, tool metadata and capability flags |
+| `list_projects` | read-only / sync | Implemented: `result.projects` = profiles/*.yaml as id, name, relative profile_path |
+| `get_profile` | read-only / sync | Implemented: project id → resolved canvas, cells, directions, animations, limits, autonomy, protected export target; palette path + sha256 only |
+| `list_characters` | read-only / sync | Supported, pending: registry summaries |
+| `get_character` | read-only / sync | Supported, pending: references, history and artifacts |
+| `list_jobs` | read-only / sync | Supported, pending: bounded job summaries |
+| `job_status` | read-only / sync | Supported, pending: execution, technical and human status separately |
+| `job_result` | read-only / sync | Supported, pending: result and artifact references |
+| `get_artifact` | read-only / sync | Supported, pending: bounded metadata; images only as size-capped contact sheets |
+| `check_review` | read-only / sync | Supported, pending: recompute artifact-bound human review from disk |
+| `register_character` | mutating / sync | Supported, pending: copy references, initially unapproved |
+| `validate` | mutating / sync | Supported, pending: validator report in a new output directory |
+| `contact_sheet` | mutating / sync | Supported, pending: new review image output directory |
+| `compare` | mutating / sync | Supported, pending: new side-by-side contact and report output directory |
+| `animate` | mutating / job | Supported, pending: Track E locomotion |
+| `pose_frame` | mutating / job | Supported, pending: Track C single pose / posed first frame only |
+| `process` | mutating / job | Supported, pending: deterministic pixel chain |
+| `export_godot` | mutating / job | Supported, pending: guarded export into STATE, never the game checkout |
+| `godot_check` | mutating / job | Supported, pending: headless import/playback check in isolated output |
+| `cancel_job` | mutating / sync | Supported, pending: request cancellation without claiming an unknown outcome succeeded |
+| `retry_job` | mutating / job | Supported, pending: explicit new job linked by parent_job_id |
+| `prepare_repair` | mutating / sync | **Optional**, pending: ADR-0009 scoped workspace handoff |
+| `inspect_repair` | read-only / sync | **Optional**, pending: workspace metadata |
+| `inspect_repair_diff` | read-only / sync | **Optional**, pending: bounded verified pixel diff |
+| `finalize_repair` | mutating / job | **Optional**, pending: new validated child job; new review required |
+| `abort_repair` | mutating / sync | **Optional**, pending: abort the repair workspace |
+
+Optional repair tools register only when `editor=available`; the core works
+without the editor. This is authorized pixel repair through the contained
+broker, not diffusion inpainting. No arbitrary editor operations or Lua.
+
+**Deferred / not tools:** approval of references and recording human review
+are owner CLI operations. `generate_character` (Track A), `regenerate_region`
+(diffusion inpaint), `smoke_render` beside another character,
+`list_pose_templates`, `bake_rig`, automatic C→E fallback, arbitrary graphs,
+shell, Lua and profile overrides are excluded. Reasons and existing
+operations are recorded in ADR-0010. Track A is not the default; GitHub issue
+#40 (Qwen Image 2.1 spike) changes no defaults.
+
+## Envelope and CLI exits
+
+Every tool returns an object in schema `sonoranlab.api/1`:
+
+```json
+{"schema":"sonoranlab.api/1","tool":"list_projects","ok":true,"result":{"projects":[]}}
+```
+
+```json
+{"schema":"sonoranlab.api/1","tool":"get_profile","ok":false,"error":{"code":"not_found","message":"Unknown project","field":"project","retryable":false,"hint":null}}
+```
+
+MCP returns the same object as `structuredContent` and JSON text content,
+with `isError` reflecting `ok`. CLI exit 0 means ok; 1 is a tool failure
+(including refused / validation FAIL); 2 is usage or schema error. Unknown
+or disabled tool names are `invalid_params` (exit 2). `api --list` prints
+registry metadata as a JSON array. Params default to `{}` and must satisfy
+the exact tool JSON schema; unknown properties are refused.
+
+Error codes: `invalid_params`, `not_found`, `conflict`,
+`idempotency_conflict`, `path_refused`, `unavailable`, `refused`,
+`budget_refused`, `guard_busy`, `internal`. Expected errors include a field,
+retryability and hint (nullable). Unknown exceptions return `internal` with
+the exception type; no traceback in the result or stdout.
+
+## State, paths and IDs
+
+`STATE = $SONORANLAB_STATE`, default `~/sonoranlab-work/mcp`.
+`READ = $SONORANLAB_READ_ROOTS` (os.pathsep list), default
+`~/sonoranlab-work`; STATE is also readable. Project profiles are read-only
+repository files. Caller input paths must exist, resolve strictly inside a
+read root or STATE and be regular files. Reject `..`, symlink escapes,
+devices and other non-regular files. Relative inputs use cwd; relative
+outputs use STATE. Output parents must already exist; the leaf must be new
+and created exclusively. Helpers perform no creation during discovery.
+Game checkouts from profile `export.godot_project` are always protected,
+even if inside STATE/READ; only the profile's recorded palette may be read
+by the library's palette loader. Export never writes into the game.
+
+```text
+STATE/registry/<project>/<character>/character.json
+                                    refs/<ref_set_id>/still_<dir>.png
+STATE/jobs/<job_id>/job.json         (+ events.jsonl, request.json, lease.lock)
+STATE/artifacts/<project>/<character>/<anim>/<job_id>/
+STATE/idempotency/<sha256(key)>.json
+```
+
+Copied references are mode 0444 with sha256 recorded. Project = profile id;
+character = profile character key. `ref_set_id = refs-` + first 12 hex of
+sha256 over the sorted (direction, file sha256) list. Job IDs are
+`job-<UTC yyyymmddThhmmssZ>-<8 random hex>`. Artifact refs are
+`<job_id>:<relative path>`; outputs use IDs and STATE-relative refs, with
+absolute paths only in informational fields. Writes use same-directory
+temporary files + fsync + os.replace + directory fsync; exclusive creates
+use O_EXCL/mkdir; record read-modify-write holds an fcntl lock.
+These record writers are later-ticket work, not part of this skeleton.
+
+## Execution, technical and human status
+
+Never collapse these three meanings:
+
+- `job.state`: queued, running, cancelling, cancelled, succeeded, failed, blocked.
+- `job.stage`: prepare, generate, select_and_process, validate_export, check
+  (informational, measured).
+- `technical`: validator = pass/fail/null; godot = pass/fail/not_run/unavailable.
+- `human`: review = none/pass/fail/invalid; production_usable = boolean.
+  Always recompute from disk using `review_errors` / `production_usable`;
+  never cache approval.
+
+`succeeded` means the pipeline completed, including a reported technical
+FAIL; it does not mean approved. `blocked` means unknown outcome or a need
+for reconciliation (for example a dead worker after submitting a prompt).
+Never auto-retry or resubmit a blocked job. An explicit retry creates a new
+job with `parent_job_id`. Long work returns a job_id immediately.
+
+## Reconciled acceptance sequence
+
+Approved-reference registration → `animate` (Track E: five generated
+directions, mirrored animation rows, eight independent stills) → inspect
+via job/artifact/contact tools → validate → export → Godot check; human
+review remains a separate owner action. Track C provides a single pose or
+posed first frame, with no automatic C→E fallback. Track E leads locomotion.
+The old `generate_character` → `animate` → `validate` → `export_godot`,
+`walk_4dir`, Track A exit sequence is superseded, **not passed**.
+
+Generation must reuse `env/runwindow.py` and `sonoranlab/comfy/guard.py`:
+Track E needs at least 40 GiB, Track C at least 60 GiB, plus the guard's
+8 GiB margin. No lower budgets, `--gtt-credit` or new memory controller.

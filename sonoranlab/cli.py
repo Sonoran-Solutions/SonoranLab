@@ -28,6 +28,14 @@ def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="sonoranlab", description=__doc__.splitlines()[0])
     verbs = p.add_subparsers(dest="verb", required=True)
 
+    api = verbs.add_parser("api", help="call the shared tool registry and print its JSON envelope")
+    api.add_argument("tool", nargs="?")
+    api.add_argument("--list", action="store_true", dest="list_tools")
+    api.add_argument("--params", metavar="FILE|-", help="JSON object (default: empty object)")
+    api.set_defaults(func=api_cmd)
+    mcp = verbs.add_parser("mcp", help="local MCP transport").add_subparsers(dest="action", required=True)
+    mcp.add_parser("serve", help="serve MCP on stdio").set_defaults(func=mcp_serve_cmd)
+
     prof = verbs.add_parser("profile", help="check or show a project profile (docs/07)").add_subparsers(
         dest="action", required=True
     )
@@ -268,6 +276,40 @@ def build_parser() -> argparse.ArgumentParser:
             if action in ("authorize", "op", "read"):
                 command.add_argument("--spec", type=Path, required=True)
     return p
+
+
+def api_cmd(args: argparse.Namespace) -> int:
+    from sonoranlab.api import call, registry
+    from sonoranlab.api.registry import ToolError, failure
+
+    if args.list_tools:
+        if args.tool or args.params:
+            envelope = failure(args.tool or "", ToolError("invalid_params", "--list takes no tool or parameters"))
+        else:
+            print(json.dumps([tool.summary() for tool in registry().values()]))
+            return 0
+    elif not args.tool:
+        envelope = failure("", ToolError("invalid_params", "A tool name or --list is required", field="tool"))
+    else:
+        try:
+
+            def reject_constant(value: str) -> None:
+                raise ValueError(f"Non-finite JSON number: {value}")
+
+            text = sys.stdin.read() if args.params == "-" else Path(args.params).read_text() if args.params else "{}"
+            params = json.loads(text, parse_constant=reject_constant)
+        except (OSError, ValueError) as exc:
+            envelope = failure(args.tool, ToolError("invalid_params", str(exc), field="params"))
+        else:
+            envelope = call(args.tool, params)
+    print(json.dumps(envelope))
+    return 0 if envelope["ok"] else 2 if envelope["error"]["code"] == "invalid_params" else 1
+
+
+def mcp_serve_cmd(args: argparse.Namespace) -> int:
+    from sonoranlab.mcp.server import main
+
+    return main()
 
 
 def profile_check(args: argparse.Namespace) -> int:
