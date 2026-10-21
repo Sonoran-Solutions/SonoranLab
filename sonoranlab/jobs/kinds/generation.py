@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import os
 import subprocess
 import sys
@@ -16,7 +15,7 @@ from sonoranlab import registry
 from sonoranlab.api.registry import Context, ToolError
 from sonoranlab.api.tools.generation import ANIMATE_SCHEMA, POSE_SCHEMA
 from sonoranlab.artifacts import require_regular_file, sha256_file
-from sonoranlab.jobs import manager, store
+from sonoranlab.jobs import store
 from sonoranlab.jobs.executors import JobFailure
 
 START_HINT = "start it: bash env/comfy.sh up --offline"
@@ -57,35 +56,6 @@ def template_path(params, ctx):
     except (OSError, ValueError) as exc:
         raise ToolError("path_refused", str(exc), field="template") from exc
     return anim, path
-
-
-def replay(kind, params):
-    """Revalidate idempotent replays before admission; they consume no extra attempt."""
-    key = params.get("idempotency_key")
-    if key is None:
-        return None
-    try:
-        claims = store.directory("idempotency")
-    except FileNotFoundError:
-        return None
-    path = claims / (hashlib.sha256(key.encode()).hexdigest() + ".json")
-    if path.is_symlink():
-        raise ToolError("path_refused", "Idempotency claim symlink is refused")
-    if not path.exists():
-        return None
-    normalized, hashes = EXECUTORS[kind].validate(params, budget=False)
-    fingerprint = hashlib.sha256(
-        store.canonical({"kind": kind, "params": normalized, "input_hashes": hashes})
-    ).hexdigest()
-    try:
-        claim = store.load(path)
-        existing = claim["request_fingerprint"]
-        job_id = claim["job_id"]
-    except (OSError, ValueError, KeyError, TypeError) as exc:
-        raise ToolError("conflict", "Idempotency reservation is incomplete; inspect it, never replay") from exc
-    if existing != fingerprint:
-        raise ToolError("idempotency_conflict", "Key already names a different request")
-    return manager.summary(manager.get(job_id))
 
 
 def artifact(job, path):

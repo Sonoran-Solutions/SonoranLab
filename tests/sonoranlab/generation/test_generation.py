@@ -235,6 +235,10 @@ def test_retry_limit_and_idempotency(setup, monkeypatch):
     for job in (first, second):  # a real failed generation leaves its durable submission record
         (store.output(job) / "submission.json").write_text(json.dumps({"prompt_id": f"p-{job['job_id']}"}))
         manager.get(job["job_id"])
+    with pytest.raises(ToolError, match="unresolved prompts"):
+        manager.retry_job(second["job_id"])
+    # Reconcile the older attempt too; replay its retained key without reserving new work.
+    assert manager.retry_job(first["job_id"], "first")["job_id"] == first["job_id"]
     third = manager.retry_job(second["job_id"])
     third = manager.get(third["job_id"])
     assert third["parent_job_id"] == second["job_id"] and third["attempt"] == 3

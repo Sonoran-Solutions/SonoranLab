@@ -44,9 +44,7 @@ POSE_SCHEMA = schema(
 
 
 def submit(kind, params):
-    from sonoranlab.jobs.kinds.generation import replay
-
-    return replay(kind, params) or manager.submit(kind, params, params.get("idempotency_key"))
+    return manager.submit(kind, params, params.get("idempotency_key"))
 
 
 TOOLS = (
