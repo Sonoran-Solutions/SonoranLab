@@ -35,7 +35,7 @@ class ComfyProber:
     def __init__(self):
         client = importlib.import_module("sonoranlab.comfy.client")
 
-        self.container = "sonoranlab-comfy"
+        self.container = os.environ.get("SONORANLAB_COMFY_CONTAINER", "sonoranlab-comfy")
         self.podman = shlex.split(os.environ.get("SONORANLAB_PODMAN", "podman"))
         self.client = client.ComfyClient(
             "http://127.0.0.1:8188",
@@ -317,6 +317,9 @@ def submit(
         for old in reconcile_all():
             if old.get("request_fingerprint") == fingerprint and old["state"] in store.ACTIVE:
                 raise ToolError("conflict", f"Identical request already active: {old['job_id']}")
+        # Budget-style admission (e.g. attempt limits) is decided atomically with the reservation.
+        if admit := getattr(implementation, "admit", None):
+            admit(normalized, attempt, reconcile_all())
         job_id = f"job-{datetime.now(UTC):%Y%m%dT%H%M%SZ}-{secrets.token_hex(4)}"
         path = resolve_output(root / job_id)
         path.mkdir()

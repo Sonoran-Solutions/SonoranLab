@@ -46,8 +46,8 @@ not launch/probe). No stubs are advertised.
 | `validate` | Supported, pending | no / sync | validate.read_frames/read_stills/validate; `validate`, new output directory |
 | `contact_sheet` | Supported, pending | no / sync | contact.contact_sheet; `contact`, new output directory |
 | `compare` | Supported, pending | no / sync | Existing validate + contact primitives, new side-by-side/report orchestration; new output directory |
-| `animate` | Supported, pending | no / job | animate.animate; `animate --track E`, existing guard and selection/processing chain |
-| `pose_frame` | Supported, pending | no / job | comfy.adapters.track_c.TrackC; `generate` Track C request, single pose / posed first frame only |
+| `animate` | Implemented (DYL-116) | no / job | animate.animate; `animate --track E`, existing guard and selection/processing chain |
+| `pose_frame` | Implemented (DYL-116) | no / job | comfy.adapters.track_c.TrackC; `generate` Track C request, single pose / posed first frame only |
 | `process` | Supported, pending | no / job | pipeline.run; `process` |
 | `export_godot` | Supported, pending | no / job | export.godot.export_godot guarded export; `export godot`, STATE output only |
 | `godot_check` | Supported, pending | no / job | pipeline.check_in_godot / run_godot; existing --godot-check, isolated job output |
@@ -82,6 +82,32 @@ mutate only the STATE registry. Both front ends use the same Tool definitions.
 Owner `registry approve-references` is absent from MCP and must never be run
 by an agent; append-only schema `sonoranlab.ref-approval/1` binds the current
 reference hashes. Neither a successful import nor technical PASS grants approval.
+
+### Generation schemas and outcomes (DYL-116)
+
+The narrow generation tools are implemented over the durable executor interface;
+see [generation tool schemas](../06-tool-surface.md#generation-tools-dyl-116).
+`animate(project, character, anim, ref_set_id, seeds, windows?, godot_check?,
+need_gib?, allow_pause?, idempotency_key?)` admits only character animations whose
+track_default is E, unchanged approved references, profile autonomy limits and
+E >=40 GiB. Sequential attempt admission is enforced; atomic concurrent admission
+needs DYL-115 validation moved under its existing submission lock (outside the
+allowed generation files). `pose_frame(project, character, ref_set_id, direction, template, seed,
+allow_pause?, idempotency_key?)` resolves repository-only anim/direction/pose_NNN
+IDs and runs one C request at 60 GiB through the existing guarded generate CLI,
+using the adapter's documented direction prompt. No batch animation, prompt
+injection or automatic C->E fallback is exposed. Pause units are restricted to
+the owner-set SONORANLAB_ALLOW_PAUSE_UNITS list.
+
+Animate pass/validator_fail -> succeeded with separate technical pass/fail;
+no_candidates/error -> failed; guard 3/4 -> failed, retryable budget_refused or
+guard_busy. Missing-container errors are unavailable with the offline start hint.
+Pose success returns RawResult plus artifacts; failure retains adapter errors.
+Hash provenance comes from adapter result files, and unrecorded memory is null.
+Human approval stays separate and generation progress recomputes current review
+from the contained final pipeline job. Promoting these fields to the top-level
+DYL-115 job_status envelope requires a shared handler hook outside this ticket's
+allowed generation files; until that hook, use progress.technical/progress.human.
 
 ### Envelope and transport
 

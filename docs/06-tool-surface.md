@@ -40,8 +40,8 @@ no placeholder tools in discovery. See ADR-0010 for each library/CLI mapping.
 | `validate` | mutating / sync | Supported, pending: validator report in a new output directory |
 | `contact_sheet` | mutating / sync | Supported, pending: new review image output directory |
 | `compare` | mutating / sync | Supported, pending: new side-by-side contact and report output directory |
-| `animate` | mutating / job | Supported, pending: Track E locomotion |
-| `pose_frame` | mutating / job | Supported, pending: Track C single pose / posed first frame only |
+| `animate` | mutating / job | Implemented (DYL-116): Track E profile animation |
+| `pose_frame` | mutating / job | Implemented (DYL-116): Track C single pose / posed first frame only |
 | `process` | mutating / job | Supported, pending: deterministic pixel chain |
 | `export_godot` | mutating / job | Supported, pending: guarded export into STATE, never the game checkout |
 | `godot_check` | mutating / job | Supported, pending: headless import/playback check in isolated output |
@@ -233,3 +233,71 @@ The old `generate_character` → `animate` → `validate` → `export_godot`,
 Generation must reuse `env/runwindow.py` and `sonoranlab/comfy/guard.py`:
 Track E needs at least 40 GiB, Track C at least 60 GiB, plus the guard's
 8 GiB margin. No lower budgets, `--gtt-credit` or new memory controller.
+
+
+## Generation tools (DYL-116)
+
+Both tools submit GPU jobs immediately through the durable manager. Their schemas
+reject extra fields, caller tracks, graphs, workflows, prompts, profile overrides
+and output paths. Exact schemas are advertised by `api --list` and MCP discovery.
+
+| Tool | Required parameters | Optional parameters and defaults |
+|---|---|---|
+| `animate` | project, character, anim, ref_set_id, seeds | windows=default (`default` or `steady`), godot_check=true, need_gib=40, allow_pause=[], idempotency_key |
+| `pose_frame` | project, character, ref_set_id, direction, template, seed | allow_pause=[], idempotency_key |
+
+Seeds are distinct integers in 0..2147483647; animate admits at most the profile's
+max_seeds_per_attempt (4). Animation must belong to the character and default to
+Track E. Existing animation jobs, including every explicit linked retry, count
+against max_attempts_per_animation (3). Same-key replays reverify inputs and return
+the existing job without consuming an attempt. DYL-115 currently validates before
+its submission reservation lock, so simultaneous admissions can race the attempt
+limit; moving validation into that existing lock is a pending shared-manager fix
+outside the allowed generation files. Keys are nonempty, at most 200
+characters. Pause units must be in the owner's `SONORANLAB_ALLOW_PAUSE_UNITS`
+os.pathsep list; an unset/empty list authorizes none.
+
+Reference approval is recomputed and all eight registered still hashes verified
+at submission and again before generation. Unapproved/invalid references return
+`refused` with `owner must run sonoranlab registry approve-references`; no job or
+output directory is created. Frozen input hashes bind stills, profile and workflow
+source; pose_frame also binds the template PNG. Explicit retries revalidate them.
+
+`animate` calls the existing animate library, creates its required new `animate/`
+subdirectory, and uses its guarded generation runner. Track E requires at least
+40 GiB. The container is `SONORANLAB_COMFY_CONTAINER` or `sonoranlab-comfy`.
+Pipeline PASS and validator FAIL both mean job succeeded; technical.validator
+reports pass/fail separately. Only PASS includes export artifact references.
+No candidates/processing errors fail the job; guard exit 3/4 becomes retryable
+budget_refused/guard_busy. The result includes animate.json, stage timings,
+all planned attempt seed/direction/exits, counts and verdict failures, and
+per-attempt model/workflow/input/output hashes from result.json. Memory is null
+unless the adapter recorded a measurement. Five generated directions, mirrored
+animation rows and eight independent stills retain animate's existing semantics.
+
+`pose_frame` is **single pose / posed first frame; no automatic C->E fallback**.
+Template IDs are `anim/direction/pose_NNN` (for example `run/east/pose_000`), with
+no extension or caller paths. Only regular PNGs under repository templates/poses
+are admitted, with matching generated direction and a profile animation. The
+request uses Track C's documented POSE_PROMPTS, the registered direction still
+and the template control image. The child runs `generate --request ... --exec ...`
+through guarded_argv with **60 GiB**, retaining the runwindow lease and worker
+TERM propagation. Result includes RawResult JSON and job-relative artifact refs;
+adapter failures retain their structured code/stage/message/retryable fields.
+
+Absent-container errors become failed(unavailable), with hint
+`start it: bash env/comfy.sh up --offline`; no service is started and no fallback
+runs. Cancel uses DYL-115 prompt ownership and TERM handling.
+The existing manager prober hardcodes `sonoranlab-comfy`; confirming cancellation
+for a custom SONORANLAB_COMFY_CONTAINER also needs that shared prober to honor
+the configured container. This fix is outside the allowed generation files.
+
+Generation's stage() reads disk only: generation result count versus request
+count, sweep presence for select_and_process, and export presence for
+validate_export. For completed animations, `job_status.progress.technical` and
+`job_status.progress.human` recompute technical status and review from the contained
+final job using the registry check_review logic. Results initially report
+production_usable=false and awaiting owner review; saved results never constitute
+fresh review evidence. The DYL-115 outer status handler currently retains its
+placeholder top-level technical fields and reviews the outer output directory;
+a shared status hook is needed to promote the generation-specific status.
