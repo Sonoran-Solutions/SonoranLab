@@ -708,33 +708,44 @@ def _spec(profile, character: str) -> dict:
 
 
 def _job_summary(entry: dict, ctx: Context) -> dict:
-    job = _job_directory(entry["job_dir"], ctx)
-    current = _review_directory(entry, ctx)
-    review = _review(current, ctx, entry=entry)
-    manifest, animate = {}, None
-    if not any(p["code"] == "import_drift" for p in review["problems"]):
-        try:
+    try:
+        job = _job_directory(entry["job_dir"], ctx)
+        current = _review_directory(entry, ctx)
+        review = _review(current, ctx, entry=entry)
+        manifest, animate = {}, None
+        if not any(p["code"] == "import_drift" for p in review["problems"]):
             _, manifest, animate = _job_metadata(job, ctx)
-        except (ToolError, FileNotFoundError) as exc:
-            if isinstance(exc, ToolError) and exc.error["code"] != "invalid_params":
-                raise
-    result = manifest.get("result", {})
-    verdict = result.get("pass")
-    godot = (animate or manifest).get("godot_check")
-    gc = "not_run"
-    if isinstance(godot, dict):
-        gc = "pass" if godot.get("pass") is True else "unavailable" if godot.get("available") is False else "fail"
-    links = manifest.get("repair") or manifest.get("upstream") or {}
-    parent = links.get("parent_job") if isinstance(links, dict) else None
-    return {
-        **entry,
-        "technical": {"validator": None if verdict is None else "pass" if verdict else "fail", "godot": gc},
-        "human": {"review": review["review_state"], "production_usable": review["production_usable"]},
-        "review_problems": review["problems"],
-        "lineage": {"parent_job": parent, "repair_children": []},
-        "current_hashes": {rel: _current_hash(job, rel) for rel in entry["hashes"]},
-        "review_job": str(current),
-    }
+        result = manifest.get("result", {})
+        verdict = result.get("pass")
+        godot = (animate or manifest).get("godot_check")
+        gc = "not_run"
+        if isinstance(godot, dict):
+            gc = "pass" if godot.get("pass") is True else "unavailable" if godot.get("available") is False else "fail"
+        links = manifest.get("repair") or manifest.get("upstream") or {}
+        parent = links.get("parent_job") if isinstance(links, dict) else None
+        return {
+            **entry,
+            "technical": {"validator": None if verdict is None else "pass" if verdict else "fail", "godot": gc},
+            "human": {"review": review["review_state"], "production_usable": review["production_usable"]},
+            "review_problems": review["problems"],
+            "lineage": {"parent_job": parent, "repair_children": []},
+            "current_hashes": {rel: _current_hash(job, rel) for rel in entry["hashes"]},
+            "review_job": str(current),
+        }
+    except (ToolError, OSError, ValueError) as exc:
+        problem = (
+            {"code": exc.error["code"], "message": exc.error["message"]}
+            if isinstance(exc, ToolError)
+            else {"code": "invalid_params" if isinstance(exc, ValueError) else "internal", "message": str(exc)}
+        )
+        return {
+            **entry,
+            "technical": {"validator": "invalid", "godot": "invalid"},
+            "human": {"review": "invalid", "production_usable": False},
+            "review_problems": [problem],
+            "lineage": {"parent_job": None, "repair_children": []},
+            "current_hashes": {},
+        }
 
 
 def get_character(project: str, character: str, *, ctx: Context) -> dict:

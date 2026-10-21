@@ -229,6 +229,69 @@ def test_import_artifact_metadata_and_escape_refusal(imported):
         records.get_artifact(entry["job_id"] + ":escape.txt", ctx=ctx)
 
 
+def test_removed_profile_read_root_isolates_imported_job(setup, job, monkeypatch):
+    ctx, _, state = setup
+    ref = register(setup)["ref_set_id"]
+    records.approve_references("toy", "hero", ref, "Owner", "inspected eight stills", ctx=ctx)
+    before_refs = records.get_character("toy", "hero", ctx=ctx)["reference_sets"]
+    monkeypatch.setenv("SONORANLAB_READ_ROOTS", str(job.parent.parent))
+    bad = shutil.copytree(job, state / "bad-job")
+    record_review(bad, **PASS)
+    bad_entry = records.import_job("toy", "hero", str(bad), ctx=ctx)
+    good = shutil.copytree(job, state / "good-job")
+    manifest_path = good / "manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    profile = ctx.repo / "profiles/toy.yaml"
+    manifest["profile"] = {"path": str(profile), "sha256": sha256_file(profile)}
+    manifest_path.write_text(json.dumps(manifest))
+    record_review(good, **PASS)
+    good_entry = records.import_job("toy", "hero", str(good), ctx=ctx)
+    assert records.check_review(bad_entry["job_id"], ctx=ctx)["production_usable"]
+
+    monkeypatch.delenv("SONORANLAB_READ_ROOTS")
+    full = call("get_character", {"project": "toy", "character": "hero"}, ctx=ctx)
+    assert full["ok"], full
+    character = full["result"]
+    assert character["reference_sets"] == before_refs
+    jobs = {entry["artifact_id"]: entry for entry in character["jobs"]}
+    invalid = jobs[bad_entry["artifact_id"]]
+    assert invalid["technical"] == {"validator": "invalid", "godot": "invalid"}
+    assert invalid["human"] == {"review": "invalid", "production_usable": False}
+    assert invalid["review_problems"] == [{"code": "path_refused", "message": "Path is outside the permitted roots"}]
+    assert jobs[good_entry["artifact_id"]]["human"] == {"review": "pass", "production_usable": True}
+    listed = call("list_characters", {"project": "toy"}, ctx=ctx)
+    assert listed["ok"], listed
+    listed_character = listed["result"]["characters"][0]
+    assert listed_character["jobs"] == [bad_entry["job_id"], good_entry["job_id"]]
+    assert listed_character["reference_sets"][0]["approval"] == before_refs[0]["approval"]
+    review = call("check_review", {"job": bad_entry["job_id"]}, ctx=ctx)
+    assert not review["ok"] and review["error"]["code"] == "path_refused"
+
+
+@pytest.mark.parametrize("stage", ["_job_directory", "_review", "_job_metadata"])
+@pytest.mark.parametrize(
+    "error,code",
+    [
+        (ToolError("path_refused", "refused"), "path_refused"),
+        (OSError("unreadable"), "internal"),
+        (ValueError("invalid"), "invalid_params"),
+    ],
+)
+def test_job_summary_isolates_revalidation_errors(imported, monkeypatch, stage, error, code):
+    ctx, _, entry = imported
+    stored = records.get_character("toy", "hero", ctx=ctx)["jobs"][0]
+
+    def fail(*args, **kwargs):
+        raise error
+
+    monkeypatch.setattr(records, stage, fail)
+    summary = records._job_summary(stored, ctx)
+    assert summary["artifact_id"] == entry["artifact_id"]
+    assert summary["technical"] == {"validator": "invalid", "godot": "invalid"}
+    assert summary["human"] == {"review": "invalid", "production_usable": False}
+    assert summary["review_problems"] == [{"code": code, "message": str(error)}]
+
+
 def test_import_refuses_cross_project_and_corrupt_metadata(setup, job, monkeypatch):
     ctx, _, state = setup
     monkeypatch.setenv("SONORANLAB_READ_ROOTS", str(job.parent.parent))
