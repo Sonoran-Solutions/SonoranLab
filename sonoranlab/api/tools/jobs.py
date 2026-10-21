@@ -127,6 +127,3 @@ TOOLS = (
         retry_job,
     ),
 )
-
-# ponytail: startup reconciliation runs at first registry discovery; move to create_server when it enters scope.
-manager.reconcile_all()

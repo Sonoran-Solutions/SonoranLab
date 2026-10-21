@@ -272,6 +272,14 @@ def main(argv: list[str] | None = None) -> int:
             return _work(path)
     except BlockingIOError:
         return 0
+    except Exception as exc:
+        with store.lock(path / "job.lock"):
+            job = store.read(path)
+            if not corrupt(job) and job["state"] == "queued" and not store.live(path):
+                store.transition(job, "failed", error=error("worker_start_failed", job, type(exc).__name__, True))
+                store.save(path, job)
+        traceback.print_exc()
+        return 1
 
 
 if __name__ == "__main__":
