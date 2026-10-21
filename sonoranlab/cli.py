@@ -437,130 +437,208 @@ def _parse_clip(spec: str) -> dict:
     }
 
 
-def export_godot_cmd(args: argparse.Namespace) -> int:
+def export_godot_checked(args: argparse.Namespace, *, sheet_pixels=None, write: bool = True) -> dict:
+    """Shared CLI/API admission: profile, clip, still and pixel bindings."""
     from PIL import Image
 
     from sonoranlab.export.godot import export_godot
     from sonoranlab.slice import slice_sheet
 
     try:
-        try:
-            report_bytes = args.report.read_bytes() if args.report else b"null"
-            report = json.loads(report_bytes)
-        except (OSError, ValueError) as e:
-            raise ValueError("export needs a passing validator report") from e
-        if not isinstance(report, dict) or report.get("pass") is not True:
-            raise ValueError("export needs a passing validator report")
-        prof = load_profile(args.profile)
-        spec = prof.character(args.character, cell=args.cell)
-        rows = list(prof.directions.order)
-        if args.rows.split(",") != rows or (args.cell, args.cell) != spec.cell:
-            raise ValueError("--rows and --cell must match the profile; export refused")
-        if len(args.clip) != 1:
-            raise ValueError("export needs a single --clip matching the validated report; export refused")
-        clip = _parse_clip(args.clip[0])
-        if report.get("character") != args.character:
-            raise ValueError("report character does not match --character; export refused")
-        if report.get("animation") != clip["name"]:
-            raise ValueError("report animation does not match --clip; export refused")
-        bound = report.get("provenance") if isinstance(report.get("provenance"), dict) else {}
-        bound = bound.get("profile") if isinstance(bound.get("profile"), dict) else {}
-        report_sha, profile_sha = bound.get("sha256"), sha256_file(args.profile)
-        if not isinstance(report_sha, str) or not report_sha:
-            raise ValueError("report has no profile provenance; export refused")
-        if report_sha != profile_sha:
-            raise ValueError(f"report was validated with a different profile (sha256 {report_sha}); export refused")
-        anim_spec = spec.animations.get(clip["name"])
-        if anim_spec is None:
+        report_bytes = args.report.read_bytes() if args.report else b"null"
+        report = json.loads(report_bytes)
+    except (OSError, ValueError) as e:
+        raise ValueError("export needs a passing validator report") from e
+    if not isinstance(report, dict) or report.get("pass") is not True:
+        raise ValueError("export needs a passing validator report")
+    prof = load_profile(args.profile)
+    spec = prof.character(args.character, cell=args.cell)
+    rows = list(prof.directions.order)
+    if args.rows.split(",") != rows or (args.cell, args.cell) != spec.cell:
+        raise ValueError("--rows and --cell must match the profile; export refused")
+    if len(args.clip) != 1:
+        raise ValueError("export needs a single --clip matching the validated report; export refused")
+    clip = _parse_clip(args.clip[0])
+    if report.get("character") != args.character:
+        raise ValueError("report character does not match --character; export refused")
+    if report.get("animation") != clip["name"]:
+        raise ValueError("report animation does not match --clip; export refused")
+    bound = report.get("provenance") if isinstance(report.get("provenance"), dict) else {}
+    bound = bound.get("profile") if isinstance(bound.get("profile"), dict) else {}
+    report_sha, profile_sha = bound.get("sha256"), sha256_file(args.profile)
+    if not isinstance(report_sha, str) or not report_sha:
+        raise ValueError("report has no profile provenance; export refused")
+    if report_sha != profile_sha:
+        raise ValueError(f"report was validated with a different profile (sha256 {report_sha}); export refused")
+    anim_spec = spec.animations.get(clip["name"])
+    if anim_spec is None:
+        raise ValueError(
+            f"--clip {clip['name']!r} is not a clip of {spec.name} ({', '.join(spec.animations)}); export refused"
+        )
+    for field in ("frames", "fps", "loop", "loop_from"):
+        want, got = getattr(anim_spec, field), clip[field]
+        if got != want:  # frames/fps/loop equal numerically; None == None for loop_from
             raise ValueError(
-                f"--clip {clip['name']!r} is not a clip of {spec.name} ({', '.join(spec.animations)}); export refused"
+                f"--clip {field} {got} does not match the profile's {clip['name']} {field} {want}; export refused"
             )
-        for field in ("frames", "fps", "loop", "loop_from"):
-            want, got = getattr(anim_spec, field), clip[field]
-            if got != want:  # frames/fps/loop equal numerically; None == None for loop_from
-                raise ValueError(
-                    f"--clip {field} {got} does not match the profile's {clip['name']} {field} {want}; export refused"
-                )
-        if clip["start"] < 1:
-            raise ValueError("--clip must start after still column 0; export refused")
-        if not isinstance(report.get("digests"), dict) or not report["digests"]:
-            raise ValueError("report has no frame digests; export refused")
-        remaining = dict(report["digests"])
+    if clip["start"] < 1:
+        raise ValueError("--clip must start after still column 0; export refused")
+    if not isinstance(report.get("digests"), dict) or not report["digests"]:
+        raise ValueError("report has no frame digests; export refused")
+    remaining = dict(report["digests"])
+    if sheet_pixels is None:
         with Image.open(args.sheet) as im:
             sheet = np.asarray(im.convert("RGBA"))
-        cells = slice_sheet(sheet, spec.cell, rows, clip["frames"], start_col=clip["start"])
+    else:
+        sheet = sheet_pixels
+    cells = slice_sheet(sheet, spec.cell, rows, clip["frames"], start_col=clip["start"])
 
-        def bind(key: str, f: np.ndarray, tag: str) -> None:
-            digest = frame_digest(f)
-            if remaining.pop(key, None) != digest:
-                raise ValueError(f"sheet {tag} does not match the validated report (digest {digest}); export refused")
+    def bind(key: str, f: np.ndarray, tag: str) -> None:
+        digest = frame_digest(f)
+        if remaining.pop(key, None) != digest:
+            raise ValueError(f"sheet {tag} does not match the validated report (digest {digest}); export refused")
 
-        for d in rows:
-            if d in prof.directions.generate:
-                for i, f in enumerate(cells[d]):
-                    bind(f"{d}_{i}", f, f"{d} frame {i}")
-        for d, src in prof.directions.mirror_animations.items():
+    for d in rows:
+        if d in prof.directions.generate:
             for i, f in enumerate(cells[d]):
-                if not np.array_equal(f, cells[src][i][:, ::-1]):
-                    raise ValueError(f"sheet {d} frame {i} does not mirror {src}; export refused")
-                if (key := f"{d}_{i}") in remaining:
-                    bind(key, f, f"{d} frame {i}")
-        cw, ch = spec.cell
-        stills = {}
-        for r, d in enumerate(rows):
-            f = sheet[r * ch : (r + 1) * ch, :cw]
-            if (f[..., 3] > 0).any():
-                bind(f"still_{d}", f, f"still {d}")
-                stills[d] = f
-        if remaining:
-            raise ValueError(f"report digest {next(iter(remaining))} has no matching sheet cell; export refused")
-        if (sheet[:, cw : clip["start"] * cw, 3] > 0).any():
-            raise ValueError("sheet has populated columns outside --clip and still column 0; export refused")
-        still_report = validate(
-            {},
-            stills=stills,
-            cell=spec.cell,
-            frames=0,
-            directions=rows,
-            palette=load_palette(prof),
-            foot_y=spec.foot_y,
-            anchor_x=spec.anchor_x,
-            padding=spec.padding,
-            limits=spec.limits,
-            max_colours=prof.palette.max_colors_per_cell,
-            loop=False,
-            anchor_mode=spec.anchor_mode,
-            fringe_tolerance=prof.alpha.fringe_tolerance,
-        )
-        if not still_report["pass"]:
-            raise ValueError(f"{still_report['failures'][0]}; export refused")
-        prov = json.loads(args.provenance.read_text()) if args.provenance else {}
-        if not isinstance(prov, dict):
-            raise ValueError("provenance must be a JSON object")
-        prov["validator"] = {
-            "pass": True,
-            "report_sha256": hashlib.sha256(report_bytes).hexdigest(),
-            "character": args.character,
-            "animation": clip["name"],
-            "frames_bound": len(report["digests"]),
-            "profile_sha256": profile_sha,
-        }
-        paths = export_godot(
-            sheet,
-            character=args.character,
-            cell=(args.cell, args.cell),
-            rows=rows,
-            clips=[clip],
-            out_dir=args.out,
-            provenance=prov,
-            forbid_under=[prof.export.godot_project, *([args.forbid_under] if args.forbid_under else [])],
-            anim_name=args.anim_name,
-        )
+                bind(f"{d}_{i}", f, f"{d} frame {i}")
+    for d, src in prof.directions.mirror_animations.items():
+        for i, f in enumerate(cells[d]):
+            if not np.array_equal(f, cells[src][i][:, ::-1]):
+                raise ValueError(f"sheet {d} frame {i} does not mirror {src}; export refused")
+            if (key := f"{d}_{i}") in remaining:
+                bind(key, f, f"{d} frame {i}")
+    cw, ch = spec.cell
+    stills = {}
+    for r, d in enumerate(rows):
+        f = sheet[r * ch : (r + 1) * ch, :cw]
+        if (f[..., 3] > 0).any():
+            bind(f"still_{d}", f, f"still {d}")
+            stills[d] = f
+    if remaining:
+        raise ValueError(f"report digest {next(iter(remaining))} has no matching sheet cell; export refused")
+    if (sheet[:, cw : clip["start"] * cw, 3] > 0).any():
+        raise ValueError("sheet has populated columns outside --clip and still column 0; export refused")
+    still_report = validate(
+        {},
+        stills=stills,
+        cell=spec.cell,
+        frames=0,
+        directions=rows,
+        palette=load_palette(prof),
+        foot_y=spec.foot_y,
+        anchor_x=spec.anchor_x,
+        padding=spec.padding,
+        limits=spec.limits,
+        max_colours=prof.palette.max_colors_per_cell,
+        loop=False,
+        anchor_mode=spec.anchor_mode,
+        fringe_tolerance=prof.alpha.fringe_tolerance,
+    )
+    if not still_report["pass"]:
+        raise ValueError(f"{still_report['failures'][0]}; export refused")
+    prov = json.loads(args.provenance.read_text()) if args.provenance else {}
+    if not isinstance(prov, dict):
+        raise ValueError("provenance must be a JSON object")
+    prov["validator"] = {
+        "pass": True,
+        "report_sha256": hashlib.sha256(report_bytes).hexdigest(),
+        "character": args.character,
+        "animation": clip["name"],
+        "frames_bound": len(report["digests"]),
+        "profile_sha256": profile_sha,
+    }
+    if not write:
+        return {"sheet": sheet, "clips": [clip], "provenance": prov}
+    paths = export_godot(
+        sheet,
+        character=args.character,
+        cell=(args.cell, args.cell),
+        rows=rows,
+        clips=[clip],
+        out_dir=args.out,
+        provenance=prov,
+        forbid_under=[prof.export.godot_project, *([args.forbid_under] if args.forbid_under else [])],
+        anim_name=args.anim_name,
+    )
+    return paths
+
+
+def export_godot_cmd(args: argparse.Namespace) -> int:
+    try:
+        paths = export_godot_checked(args)
     except (OSError, ValueError) as e:  # ValueError covers bad clips, bad JSON, refusals
         print(f"export godot: {e}", file=sys.stderr)
         return 2
     print(json.dumps(paths, indent=2))
     return 0
+
+
+def validation_report(args: argparse.Namespace, *, loaded=None) -> dict:
+    """Validate final-resolution cells, with the CLI's stills and registration checks."""
+    if loaded is None:
+        prof = load_profile(args.profile)
+        spec = prof.character(args.character, cell=args.cell)
+        pal = load_palette(prof)
+        anim = spec.animations.get(args.anim)
+        if anim is None:
+            raise ValueError(f"{args.anim!r} is not a clip of {spec.name} ({', '.join(spec.animations)})")
+    else:
+        prof, spec, pal, anim = loaded
+    kw = {
+        "cell": spec.cell,
+        "frames": anim.frames,
+        "directions": list(prof.directions.generate),
+        "foot_y": spec.foot_y,
+        "anchor_x": spec.anchor_x,
+        "padding": spec.padding,
+        "max_colours": prof.palette.max_colors_per_cell,
+        "loop": anim.loop,
+        "anchor_mode": spec.anchor_mode,
+        "fringe_tolerance": prof.alpha.fringe_tolerance,
+        "mirror": dict(prof.directions.mirror_animations),
+    }
+    clips, files = read_frames(args.frames_dir, prof.directions.order)
+    stills, still_files = read_stills(args.stills, prof.directions.order) if args.stills else ({}, [])
+    if args.stills and not still_files:
+        raise ValueError(f"{args.stills}: no still_<direction>.png cells")
+    files += still_files
+    registration = json.loads(args.registration.read_text()) if args.registration else None
+    if args.registration and (
+        not isinstance(registration, dict)
+        or any(
+            d not in clips
+            or not isinstance(info, dict)
+            or not isinstance(info.get("clipped_px"), list)
+            or len(info["clipped_px"]) != anim.frames
+            or any(type(n) is not int or n < 0 for n in info["clipped_px"])
+            for d, info in registration.items()
+        )
+    ):
+        raise ValueError("registration must map clip directions to per-frame non-negative clipped_px counts")
+    rep = validate(
+        clips,
+        stills=stills,
+        palette=pal,
+        limits=spec.limits,
+        limits_source=spec.limits_source,
+        registration=registration,
+        **kw,
+    )
+    if not args.registration:
+        rep["warnings"].append("registration provenance not supplied: clipping off the cell cannot be checked")
+    rep = {
+        "pass": rep["pass"],
+        "character": spec.name,
+        "animation": args.anim,
+        **rep,
+        "params": {"frames_dir": str(args.frames_dir.resolve()), **kw},
+        "provenance": {
+            "profile": {"path": str(args.profile.resolve()), "sha256": sha256_file(args.profile)},
+            "inputs": {p.name: sha256_file(p) for p in files},
+        },
+    }
+    return rep
 
 
 def validate_frames(args: argparse.Namespace) -> int:
@@ -579,63 +657,11 @@ def validate_frames(args: argparse.Namespace) -> int:
     if args.out and args.out.exists():
         print(f"{args.out}: exists; reports are never overwritten", file=sys.stderr)
         return 2
-    kw = {
-        "cell": spec.cell,
-        "frames": anim.frames,
-        "directions": list(prof.directions.generate),
-        "foot_y": spec.foot_y,
-        "anchor_x": spec.anchor_x,
-        "padding": spec.padding,
-        "max_colours": prof.palette.max_colors_per_cell,
-        "loop": anim.loop,
-        "anchor_mode": spec.anchor_mode,
-        "fringe_tolerance": prof.alpha.fringe_tolerance,
-        "mirror": dict(prof.directions.mirror_animations),
-    }
     try:
-        clips, files = read_frames(args.frames_dir, prof.directions.order)
-        stills, still_files = read_stills(args.stills, prof.directions.order) if args.stills else ({}, [])
-        if args.stills and not still_files:
-            raise ValueError(f"{args.stills}: no still_<direction>.png cells")
-        files += still_files
-        registration = json.loads(args.registration.read_text()) if args.registration else None
-        if args.registration and (
-            not isinstance(registration, dict)
-            or any(
-                d not in clips
-                or not isinstance(info, dict)
-                or not isinstance(info.get("clipped_px"), list)
-                or len(info["clipped_px"]) != anim.frames
-                or any(type(n) is not int or n < 0 for n in info["clipped_px"])
-                for d, info in registration.items()
-            )
-        ):
-            raise ValueError("registration must map clip directions to per-frame non-negative clipped_px counts")
-        rep = validate(
-            clips,
-            stills=stills,
-            palette=pal,
-            limits=spec.limits,
-            limits_source=spec.limits_source,
-            registration=registration,
-            **kw,
-        )
-        if not args.registration:
-            rep["warnings"].append("registration provenance not supplied: clipping off the cell cannot be checked")
+        rep = validation_report(args, loaded=(prof, spec, pal, anim))
     except (ValueError, OSError) as e:
         print(f"validate: {e}", file=sys.stderr)
         return 2
-    rep = {
-        "pass": rep["pass"],
-        "character": spec.name,
-        "animation": args.anim,
-        **rep,
-        "params": {"frames_dir": str(args.frames_dir.resolve()), **kw},
-        "provenance": {
-            "profile": {"path": str(args.profile.resolve()), "sha256": sha256_file(args.profile)},
-            "inputs": {p.name: sha256_file(p) for p in files},
-        },
-    }
     text = json.dumps(rep, indent=1) + "\n"
     if args.out:
         try:
