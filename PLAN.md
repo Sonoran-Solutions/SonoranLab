@@ -153,15 +153,15 @@ and optionally; the editor is not a prerequisite for the core.
 
 Tasks
 - [x] DYL-113: reconcile contract (ADR-0010); registry, envelope, schema validation, path confinement, JSON CLI, official mcp==2.3.0 stdio skeleton; capabilities/list_projects/get_profile and real client parity tests.
-- [ ] Registry-backed reference registration/copies/hashes; owner approval stays CLI-only.
-- [ ] Job model and persistence: immediate job_id for animate/pose_frame/process/export_godot/godot_check/retry_job; cancellation, explicit linked retries and unknown-outcome reconciliation. Execution, technical verdict and disk-recomputed human approval stay separate.
-- [ ] Reuse guarded Track E animate for locomotion; Track C single pose/posed first frame only, no automatic C→E fallback. Keep E ≥40 GiB / C ≥60 GiB plus the guard's 8 GiB margin.
-- [ ] STATE registry/jobs/artifacts/idempotency layout (docs/06); exclusive outputs, atomic writes/locks; game checkout always protected.
-- [ ] Remaining supported read/inspect/validate/contact/compare/export/check tools; bounded artifacts and contact images.
-- [ ] Optional scoped repair handoff only (DYL-118, ADR-0009); advertise only with editor runtime available. Pixel repair is not diffusion inpainting.
-- [ ] Register in a local agent's MCP config and demonstrate the reconciled end-to-end sequence.
+- [x] DYL-114: Registry-backed reference registration/copies/hashes; owner approval stays CLI-only.
+- [x] DYL-115: Job model and persistence: immediate job_id for animate/pose_frame/process/export_godot/godot_check/retry_job; cancellation, explicit linked retries and unknown-outcome reconciliation. Execution, technical verdict and disk-recomputed human approval stay separate.
+- [x] DYL-116 (with DYL-112 guard lease): Reuse guarded Track E animate for locomotion; Track C single pose/posed first frame only, no automatic C→E fallback. Keep E ≥40 GiB / C ≥60 GiB plus the guard's 8 GiB margin.
+- [x] STATE registry/jobs/artifacts/idempotency layout (docs/06); exclusive outputs, atomic writes/locks; game checkout always protected.
+- [x] DYL-117: Remaining supported read/inspect/validate/contact/compare/export/check tools; bounded artifacts and contact images.
+- [x] DYL-118: Optional scoped repair handoff only (DYL-118, ADR-0009); advertise only with editor runtime available. Pixel repair is not diffusion inpainting.
+- [x] DYL-119/120: Register in a local agent's MCP config and demonstrate the reconciled end-to-end sequence.
 
-Exit criterion (open; not demonstrated by the skeleton)
+Exit criterion (demonstrated 2026-10-21 at DYL-120, pending senior review: `benchmark/results/2026-10-21-phase4/phase4-gate.md`)
 - From a fresh local agent session: approved-reference registration → animate (Track E, five generated directions + mirrored animation rows + eight independent stills) → inspect/validate/export/check using tool results and contact sheets. Export stays in STATE; copying into the game and recording artifact-bound human review are owner actions. Report execution, validator/Godot verdicts and human production usability separately.
 - The old generate_character → animate → validate → export_godot / walk_4dir / Track A exit sequence is **superseded, NOT passed** (ADR-0010). Track E leads locomotion; Track A is not default. GitHub issue #40 (Qwen Image 2.1 spike) changes no defaults.
 
