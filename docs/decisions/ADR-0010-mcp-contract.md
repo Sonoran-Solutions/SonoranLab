@@ -34,14 +34,15 @@ not launch/probe). No stubs are advertised.
 | `capabilities` | Supported, implemented | yes / sync | Runtime path presence (same env/default as repair.runtime), shutil.which; `api capabilities` |
 | `list_projects` | Supported, implemented | yes / sync | profiles/*.yaml + profile.load_profile(check_paths=False); `api list_projects` |
 | `get_profile` | Supported, implemented | yes / sync | profile.load_profile + Profile.character; profile show/check semantics without external path checks; `api get_profile` |
-| `list_characters` | Supported, pending | yes / sync | Profile.characters + new STATE registry records; no prior registry CLI, `api list_characters` |
-| `get_character` | Supported, pending | yes / sync | Profile.character + registry/history; `profile show` plus new record lookup |
+| `list_characters` | Supported, implemented (DYL-114) | yes / sync | Profile.characters + new STATE registry records; no prior registry CLI, `api list_characters` |
+| `get_character` | Supported, implemented (DYL-114) | yes / sync | Profile.character + registry/history; `profile show` plus new record lookup |
 | `list_jobs` | Supported, pending | yes / sync | New STATE job records over existing job artifacts; `api list_jobs` |
 | `job_status` | Supported, pending | yes / sync | New job model, existing animate summaries and technical reports; `api job_status` |
 | `job_result` | Supported, pending | yes / sync | Existing manifest/report/contact artifacts, new job record lookup; `api job_result` |
-| `get_artifact` | Supported, pending | yes / sync | artifacts regular-file/hash checks + contact.contact_sheet; bounded metadata, size-capped contact images only |
-| `check_review` | Supported, pending | yes / sync | review.review_errors / production_usable; `review check` |
-| `register_character` | Supported, pending | no / sync | New registry copies/hashes using artifacts patterns; initially unapproved; `api register_character` |
+| `get_artifact` | Supported, implemented (DYL-114) | yes / sync | artifacts regular-file/hash checks + contact.contact_sheet; bounded metadata, size-capped contact images only |
+| `check_review` | Supported, implemented (DYL-114) | yes / sync | review.review_errors / production_usable; `review check` |
+| `import_job` | Supported, implemented (DYL-114) | no / sync | registry.import_job; explicit existing-job indexing, no job modification; `api import_job` |
+| `register_character` | Supported, implemented (DYL-114) | no / sync | New registry copies/hashes using artifacts patterns; initially unapproved; `api register_character` |
 | `validate` | Supported, pending | no / sync | validate.read_frames/read_stills/validate; `validate`, new output directory |
 | `contact_sheet` | Supported, pending | no / sync | contact.contact_sheet; `contact`, new output directory |
 | `compare` | Supported, pending | no / sync | Existing validate + contact primitives, new side-by-side/report orchestration; new output directory |
@@ -68,6 +69,19 @@ not launch/probe). No stubs are advertised.
 | `bake_rig` | Deferred; Track D template production is outside this surface | Existing benchmark/template bake tooling |
 | Automatic C→E fallback | Excluded; no implicit track changes or new budget commitments | Explicit single-pose C and locomotion E only |
 | Arbitrary graphs, shell, Lua, profile overrides | Excluded; bypasses the validated operation/policy boundary | Owner development tools only |
+
+### Registry schemas (DYL-114)
+
+The six registry tools' final required inputs, result records, approval
+states and exact schema discovery are specified in
+[docs/06 registry tool schemas](../06-tool-surface.md#registry-tool-schemas-dyl-114).
+All are sync: list_characters(project), get_character(project, character),
+get_artifact(ref), check_review(job) are read-only; register_character(project,
+character, reference_dir, notes?) and import_job(project, character, job_dir)
+mutate only the STATE registry. Both front ends use the same Tool definitions.
+Owner `registry approve-references` is absent from MCP and must never be run
+by an agent; append-only schema `sonoranlab.ref-approval/1` binds the current
+reference hashes. Neither a successful import nor technical PASS grants approval.
 
 ### Envelope and transport
 

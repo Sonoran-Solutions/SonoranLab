@@ -19,8 +19,8 @@ presence only. An available editor runtime does not establish sandbox health.
 ## Tool inventory
 
 Supported means part of the reconciled Phase 4 contract, not necessarily
-implemented yet. **DYL-113 implements only `capabilities`, `list_projects`
-and `get_profile`.** Other supported tools land in later tickets. There are
+implemented yet. **DYL-113 implements `capabilities`, `list_projects` and `get_profile`;
+DYL-114 adds the six registry tools below.** Other supported tools land in later tickets. There are
 no placeholder tools in discovery. See ADR-0010 for each library/CLI mapping.
 
 | Tool | Access / kind | Availability and purpose |
@@ -28,14 +28,15 @@ no placeholder tools in discovery. See ADR-0010 for each library/CLI mapping.
 | `capabilities` | read-only / sync | Implemented: server version, API schema, tool metadata and capability flags |
 | `list_projects` | read-only / sync | Implemented: `result.projects` = profiles/*.yaml as id, name, relative profile_path |
 | `get_profile` | read-only / sync | Implemented: project id → resolved canvas, cells, directions, animations, limits, autonomy, protected export target; palette path + sha256 only |
-| `list_characters` | read-only / sync | Supported, pending: registry summaries |
-| `get_character` | read-only / sync | Supported, pending: references, history and artifacts |
+| `list_characters` | read-only / sync | Implemented: profile/registry union and verified approvals |
+| `get_character` | read-only / sync | Implemented: references, current review and imported job lineage |
 | `list_jobs` | read-only / sync | Supported, pending: bounded job summaries |
 | `job_status` | read-only / sync | Supported, pending: execution, technical and human status separately |
 | `job_result` | read-only / sync | Supported, pending: result and artifact references |
-| `get_artifact` | read-only / sync | Supported, pending: bounded metadata; images only as size-capped contact sheets |
-| `check_review` | read-only / sync | Supported, pending: recompute artifact-bound human review from disk |
-| `register_character` | mutating / sync | Supported, pending: copy references, initially unapproved |
+| `get_artifact` | read-only / sync | Implemented: bounded metadata only, no image pixels or text bodies |
+| `check_review` | read-only / sync | Implemented: recompute artifact-bound human review from disk |
+| `import_job` | mutating / sync | Implemented: index existing jobs and hashes without modifying them |
+| `register_character` | mutating / sync | Implemented: immutable still copies, initially unapproved |
 | `validate` | mutating / sync | Supported, pending: validator report in a new output directory |
 | `contact_sheet` | mutating / sync | Supported, pending: new review image output directory |
 | `compare` | mutating / sync | Supported, pending: new side-by-side contact and report output directory |
@@ -119,7 +120,66 @@ sha256 over the sorted (direction, file sha256) list. Job IDs are
 absolute paths only in informational fields. Writes use same-directory
 temporary files + fsync + os.replace + directory fsync; exclusive creates
 use O_EXCL/mkdir; record read-modify-write holds an fcntl lock.
-These record writers are later-ticket work, not part of this skeleton.
+Registry record writers implement these rules; job writers are later-ticket work.
+
+## Registry tool schemas (DYL-114)
+
+All six tools are version `1`, kind `sync`, and reject unknown input keys.
+`project` and `character` are strings matching `^[a-z0-9][a-z0-9_-]*$`
+(maximum 128 characters); paths and artifact refs are nonempty strings of at
+most 4096 characters. Paths use the confinement rules above. Required inputs
+are shown without `?`:
+
+| Tool | Input object | Result object |
+|---|---|---|
+| `list_characters` | `{project}` | `{characters: [{id, cell, anchor_mode, animations, registered, reference_sets: [{ref_set_id, approval}], jobs: [job_id]}]}` |
+| `get_character` | `{project, character}` | `{id, cell, anchor_mode, animations, registered, reference_sets, jobs}` |
+| `register_character` | `{project, character, reference_dir, notes?: string}` | `{ref_set_id, approval, created: boolean}` |
+| `import_job` | `{project, character, job_dir}` | `{artifact_id, job_id, created: boolean}` |
+| `get_artifact` | `{ref}` | File: `{ref, size, sha256, media_type, dimensions?: [width,height]}`; imported ID: `{artifact_id, job_id, file_count, size, sha256, media_type}` |
+| `check_review` | `{job}` | `{production_usable: boolean, review_state: none\|pass\|fail\|invalid, problems: [{code,field,message}]}` |
+
+`register_character` and `import_job` are mutating; the other four are
+read-only. The exact JSON Schemas are advertised by `api --list` and MCP
+`list_tools` from `api/tools/registry_tools.py`. `notes` is capped at 65536
+characters. `job` accepts `job-YYYYMMDDThhmmssZ-xxxxxxxx` or an `import-` ID.
+`ref` accepts an imported ID or `<job_id>:<relative path>` after explicit
+import. No discovery scan of arbitrary READ directories is performed.
+Imported IDs are `import-` + 24 SHA256 hex of `project/character/absolute-job-path`.
+Imports are idempotent while the recorded metadata/export hashes match;
+changed evidence is a conflict. Imported-ID metadata describes the indexed
+hash set, with total current file size. No text preview or pixel data is returned.
+
+A full reference set contains `files` keyed by profile direction, each with
+`sha256` and informational `source_path`, plus `registered_at`, `notes`,
+`verification: {hashes, problems}`, and `approval: {state, evidence, problems}`.
+Approval state is `approved`, `unapproved`, or `invalid`, recomputed from
+current hashes. Evidence contains the STATE-relative approval record path,
+its SHA256 and its record. Full jobs include import provenance and hashes,
+`current_hashes`, separate `technical` and `human` states, review problems,
+and `lineage: {parent_job, repair_children}`. Repair children are the imported
+children linked by Phase 3.5 `repair.parent_job` / `upstream.parent_job`.
+Retired profile rows remain readable using their registered spec snapshot.
+
+Registration copies exactly the eight `still_<direction>.png` files,
+checks alpha and cell size with animate's preflight, and never changes source
+files. Reference files are 0444 and their exclusively created set directory
+is 0555. The sorted direction/hash pairs use compact JSON encoding to derive
+the content ID; collisions and existing unindexed set directories are refused.
+Records use schema `sonoranlab.character/1`, one stable `character.lock`,
+and atomic JSON replacement. Corrupt records fail with a named file, never reset.
+
+Owner approval is **CLI only**:
+
+```sh
+sonoranlab registry approve-references --project P --character C --ref-set refs-xxxxxxxxxxxx --reviewer NAME --evidence TEXT
+```
+
+**An agent must never run this command.** It is not an MCP tool. It creates
+`STATE/registry/P/C/approvals/<UTC timestamp>.json` using O_EXCL, with schema
+`sonoranlab.ref-approval/1`, project, character, ref_set_id, direction/hash
+bindings, reviewer, evidence and approved_at. Approval records are append-only;
+registration never infers approval from prior-phase files or profile comments.
 
 ## Execution, technical and human status
 
