@@ -343,3 +343,137 @@ def test_import_refuses_job_containing_game_checkout(setup, job, monkeypatch):
     path.write_text(yaml.safe_dump(profile))
     with pytest.raises(ToolError, match="contains a protected game"):
         records.import_job("toy", "hero", str(job), ctx=ctx)
+
+
+@pytest.mark.parametrize("drift", ["metadata", "export", "added_export", "missing"])
+def test_import_snapshot_drift_rejects_even_fresh_valid_review(imported, drift):
+    ctx, job, entry = imported
+    if drift == "metadata":
+        report = json.loads((job / "report.json").read_text())
+        (job / "report.json").write_text(json.dumps({**report, "note": "new evidence"}))
+    elif drift == "export":
+        exported(job)[0].write_bytes(b"different export")
+    elif drift == "added_export":
+        (exported(job)[0].parent / "extra.txt").write_text("unindexed export")
+    else:
+        (job / "manifest.json").unlink()
+    if drift != "missing":
+        manifest = json.loads((job / "manifest.json").read_text())
+        for relative in manifest["outputs"]:
+            manifest["outputs"][relative] = sha256_file(job / relative)
+        if drift == "added_export":
+            extra = exported(job)[0].parent / "extra.txt"
+            manifest["outputs"][extra.relative_to(job).as_posix()] = sha256_file(extra)
+        (job / "manifest.json").write_text(json.dumps(manifest))
+        # Review can legitimately approve current files, but cannot change the import snapshot.
+        record_review(job, **PASS)
+        from sonoranlab.review import production_usable
+
+        assert production_usable(job)
+    review = records.check_review(entry["job_id"], ctx=ctx)
+    assert not review["production_usable"] and review["review_state"] == "invalid"
+    assert any(p["code"] == "import_drift" for p in review["problems"])
+    summary = records.get_character("toy", "hero", ctx=ctx)["jobs"][0]
+    assert summary["human"] == {"review": "invalid", "production_usable": False}
+
+
+def test_incomplete_animate_import_cannot_acquire_production_approval(setup, job, monkeypatch):
+    ctx, _, _ = setup
+    monkeypatch.setenv("SONORANLAB_READ_ROOTS", str(job.parent.parent))
+    outer = job.parent / "incomplete"
+    outer.mkdir()
+    manifest = json.loads((job / "manifest.json").read_text())
+    animate = {
+        "schema": "sonoranlab.animate/1",
+        "outcome": "no_candidates",
+        "exit": 1,
+        "inputs": {"profile": manifest["profile"], "character": "hero", "anim": "idle"},
+    }
+    (outer / "animate.json").write_text(json.dumps(animate))
+    entry = records.import_job("toy", "hero", str(outer), ctx=ctx)
+    shutil.copytree(job, outer, dirs_exist_ok=True)
+    record_review(outer, **PASS)
+    review = records.check_review(entry["job_id"], ctx=ctx)
+    assert review["review_state"] == "invalid" and not review["production_usable"]
+    assert any(p["code"] == "import_drift" and "absent at import" in p["message"] for p in review["problems"])
+
+
+def test_unindexed_export_is_import_drift_without_metadata_changes(imported):
+    ctx, job, entry = imported
+    record_review(job, **PASS)
+    (exported(job)[0].parent / "unindexed.txt").write_text("added after import")
+    review = records.check_review(entry["job_id"], ctx=ctx)
+    assert review["review_state"] == "invalid" and not review["production_usable"]
+    assert any(p["code"] == "import_drift" and "unindexed.txt" in p["message"] for p in review["problems"])
+
+
+@pytest.mark.parametrize("invalid", ["corrupt", "binding", "metadata"])
+def test_invalid_approval_does_not_block_registration_or_owner_reapproval(setup, invalid):
+    ctx, _, state = setup
+    ref = register(setup)["ref_set_id"]
+    records.approve_references("toy", "hero", ref, "Owner", "first inspection", ctx=ctx)
+    # Keep an older valid record: an invalid newer record must still invalidate approval.
+    records.approve_references("toy", "hero", ref, "Owner", "second inspection", ctx=ctx)
+    approvals = state / "registry/toy/hero/approvals"
+    latest = sorted(approvals.glob("*.json"))[-1]
+    value = json.loads(latest.read_text())
+    latest.chmod(0o644)
+    if invalid == "corrupt":
+        latest.write_text("{")
+    else:
+        value["hashes" if invalid == "binding" else "reviewer"] = {} if invalid == "binding" else ""
+        latest.write_text(json.dumps(value))
+    refs = records.get_character("toy", "hero", ctx=ctx)["reference_sets"][0]
+    assert refs["verification"]["problems"] == []
+    assert refs["approval"]["state"] == "invalid" and refs["approval"]["problems"]
+    assert (
+        records.list_characters("toy", ctx=ctx)["characters"][0]["reference_sets"][0]["approval"]["state"] == "invalid"
+    )
+    assert not register(setup)["created"]
+    records.approve_references("toy", "hero", ref, "Owner", "new inspection supersedes invalid record", ctx=ctx)
+    refs = records.get_character("toy", "hero", ctx=ctx)["reference_sets"][0]
+    assert refs["approval"]["state"] == "approved"
+    assert refs["approval"]["problems"]  # Historical failures remain visible.
+
+
+@pytest.mark.parametrize("failure", ["mkdir", "copy", "check", "write"])
+def test_failed_first_registration_cleans_only_its_partial_set(setup, monkeypatch, failure):
+    _, _, state = setup
+    with monkeypatch.context() as patch:
+        if failure == "mkdir":
+            original = Path.mkdir
+
+            def mkdir(path, *args, **kwargs):
+                if path.name.startswith("refs-"):
+                    raise OSError("set directory creation failed")
+                return original(path, *args, **kwargs)
+
+            patch.setattr(Path, "mkdir", mkdir)
+        elif failure == "copy":
+            original = records.sha256_file
+
+            def sha256(path):
+                if path.is_relative_to(state):
+                    raise OSError("copy failed")
+                return original(path)
+
+            patch.setattr(records, "sha256_file", sha256)
+        elif failure == "check":
+            original = records._check_stills
+
+            def check(profile, character, directory, ctx):
+                if directory.is_relative_to(state):
+                    raise OSError("stored check failed")
+                return original(profile, character, directory, ctx)
+
+            patch.setattr(records, "_check_stills", check)
+        else:
+
+            def atomic(path, value):
+                raise OSError("record write failed")
+
+            patch.setattr(records, "_atomic", atomic)
+        with pytest.raises(OSError):
+            register(setup)
+    assert not (state / "registry/toy/hero/refs").exists()
+    assert register(setup)["created"]

@@ -7,6 +7,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import stat
 import tempfile
 from contextlib import contextmanager, suppress
@@ -250,32 +251,50 @@ def _verify_refs(base: Path, refs: dict, ctx: Context) -> dict:
         except (OSError, ValueError) as exc:
             current[direction] = None
             problems.append(f"{path.name}: {exc}")
+    approval_problems = [*problems]
+    latest_valid = False
     approvals = _state(base / "approvals", ctx)
+    # Filename order is the owner writer's timestamp order. A new valid approval
+    # supersedes earlier invalid evidence; retain every historical problem for inspection.
     for path in sorted(approvals.glob("*.json")):
-        approval = _json(path)
-        if approval.get("ref_set_id") != refs["ref_set_id"]:
-            continue
-        evidence.append(
-            {"path": path.relative_to(paths.state_root()).as_posix(), "sha256": sha256_file(path), "record": approval}
-        )
-        if (
-            approval.get("schema") != "sonoranlab.ref-approval/1"
-            or approval.get("project") != base.parent.name
-            or approval.get("character") != base.name
-            or approval.get("hashes") != current
-            or not all(
-                isinstance(approval.get(k), str) and approval[k].strip()
-                for k in ("reviewer", "evidence", "approved_at")
+        try:
+            approval = _json(path)
+            if approval.get("ref_set_id") not in (None, refs["ref_set_id"]):
+                continue
+            evidence.append(
+                {
+                    "path": path.relative_to(paths.state_root()).as_posix(),
+                    "sha256": sha256_file(path),
+                    "record": approval,
+                }
             )
-        ):
-            problems.append(f"{path.name}: invalid approval binding or metadata")
+            latest_valid = (
+                approval.get("ref_set_id") == refs["ref_set_id"]
+                and approval.get("schema") == "sonoranlab.ref-approval/1"
+                and approval.get("project") == base.parent.name
+                and approval.get("character") == base.name
+                and approval.get("hashes") == current
+                and all(
+                    isinstance(approval.get(k), str) and approval[k].strip()
+                    for k in ("reviewer", "evidence", "approved_at")
+                )
+            )
+            if not latest_valid:
+                approval_problems.append(f"{path.name}: invalid approval binding or metadata")
+        except (ToolError, OSError, ValueError) as exc:
+            latest_valid = False
+            approval_problems.append(f"{path.name}: unreadable approval ({exc})")
     return {
         **refs,
         "verification": {"hashes": current, "problems": problems},
         "approval": {
-            "state": "invalid" if problems else "approved" if evidence else "unapproved",
+            "state": "invalid"
+            if problems or (approval_problems and not latest_valid)
+            else "approved"
+            if latest_valid
+            else "unapproved",
             "evidence": evidence,
-            "problems": problems,
+            "problems": approval_problems,
         },
     }
 
@@ -328,25 +347,44 @@ def register_character(project: str, character: str, reference_dir: str, notes: 
             return {"ref_set_id": ref_id, "approval": verified["approval"], "created": False}
         parent = _state(base / "refs", ctx, create=True)
         destination = paths.resolve_output(parent / ref_id)
-        destination.mkdir()
-        for direction, path in sources.items():
-            target = destination / f"still_{direction}.png"
-            with path.open("rb") as src, target.open("xb") as dst:
-                while chunk := src.read(1 << 20):
-                    dst.write(chunk)
-                dst.flush()
-                os.fsync(dst.fileno())
-            if sha256_file(target) != files[direction]["sha256"]:
-                raise ToolError("conflict", f"{path}: source changed during registration")
-            target.chmod(0o444)
-        _check_stills(profile, character, destination, ctx)
-        destination.chmod(0o555)
-        _sync_dir(destination)
-        _sync_dir(parent)
-        refs = {"ref_set_id": ref_id, "files": files, "registered_at": datetime.now(UTC).isoformat(), "notes": notes}
-        record["spec"] = _spec(profile, character)
-        record["reference_sets"].append(refs)
-        _atomic(base / "character.json", record)
+        created = False
+        try:
+            destination.mkdir()
+            created = True
+            for direction, path in sources.items():
+                target = destination / f"still_{direction}.png"
+                with path.open("rb") as src, target.open("xb") as dst:
+                    while chunk := src.read(1 << 20):
+                        dst.write(chunk)
+                    dst.flush()
+                    os.fsync(dst.fileno())
+                if sha256_file(target) != files[direction]["sha256"]:
+                    raise ToolError("conflict", f"{path}: source changed during registration")
+                target.chmod(0o444)
+            _check_stills(profile, character, destination, ctx)
+            destination.chmod(0o555)
+            _sync_dir(destination)
+            _sync_dir(parent)
+            refs = {
+                "ref_set_id": ref_id,
+                "files": files,
+                "registered_at": datetime.now(UTC).isoformat(),
+                "notes": notes,
+            }
+            record["spec"] = _spec(profile, character)
+            record["reference_sets"].append(refs)
+            _atomic(base / "character.json", record)
+        except BaseException:
+            # Only remove the set this call created, and never discard a committed record's evidence.
+            if not (base / "character.json").exists():
+                if created:
+                    destination.chmod(0o755)
+                    shutil.rmtree(destination)
+                with suppress(OSError):
+                    parent.rmdir()
+                _sync_dir(base)
+            raise
+
     return {"ref_set_id": ref_id, "approval": {"state": "unapproved", "evidence": [], "problems": []}, "created": True}
 
 
@@ -458,8 +496,35 @@ def _job_metadata(job: Path, ctx: Context) -> tuple[Path, dict, dict | None]:
     return job, manifest, animate
 
 
-def _review(job: Path, ctx: Context) -> dict:
+def _review(job: Path, ctx: Context, *, entry: dict | None = None) -> dict:
     from sonoranlab.review import production_usable, review_errors
+
+    if entry is not None:
+        root = _job_directory(entry["job_dir"], ctx)
+        recorded = entry["hashes"]
+        drift = []
+        for relative, expected in recorded.items():
+            if Path(relative).name == "review.json":
+                continue  # The review layer checks current owner evidence, which may be recorded after import.
+            if _current_hash(root, relative) != expected:
+                drift.append(relative)
+        for path in root.rglob("*"):
+            relative = path.relative_to(root).as_posix()
+            if (
+                "export" in Path(relative).parts
+                and relative not in recorded
+                and (not path.is_dir() or path.is_symlink())
+            ):
+                drift.append(relative)
+        review_relative = job.relative_to(root)
+        if any((review_relative / name).as_posix() not in recorded for name in ("report.json", "manifest.json")):
+            drift.append("report/manifest absent at import")
+        if drift:
+            return {
+                "production_usable": False,
+                "review_state": "invalid",
+                "problems": [{"code": "import_drift", "message": "Import snapshot differs: " + ", ".join(drift)}],
+            }
 
     # Locate using the import evidence; callers never follow a newly edited animate pointer.
     manifest_path = job / "manifest.json"
@@ -593,7 +658,7 @@ def _find_job(ref: str, ctx: Context) -> dict:
 
 def check_review(job: str, *, ctx: Context) -> dict:
     entry = _find_job(job, ctx)
-    return _review(_review_directory(entry, ctx), ctx)
+    return _review(_review_directory(entry, ctx), ctx, entry=entry)
 
 
 def _review_directory(entry: dict, ctx: Context) -> Path:
@@ -616,13 +681,14 @@ def _spec(profile, character: str) -> dict:
 def _job_summary(entry: dict, ctx: Context) -> dict:
     job = _job_directory(entry["job_dir"], ctx)
     current = _review_directory(entry, ctx)
-    try:
-        _, manifest, animate = _job_metadata(job, ctx)
-    except (ToolError, FileNotFoundError) as exc:
-        if isinstance(exc, ToolError) and exc.error["code"] != "invalid_params":
-            raise
-        manifest, animate = {}, None
-    review = _review(current, ctx)
+    review = _review(current, ctx, entry=entry)
+    manifest, animate = {}, None
+    if not any(p["code"] == "import_drift" for p in review["problems"]):
+        try:
+            _, manifest, animate = _job_metadata(job, ctx)
+        except (ToolError, FileNotFoundError) as exc:
+            if isinstance(exc, ToolError) and exc.error["code"] != "invalid_params":
+                raise
     result = manifest.get("result", {})
     verdict = result.get("pass")
     godot = (animate or manifest).get("godot_check")
@@ -684,7 +750,7 @@ def list_characters(project: str, *, ctx: Context) -> dict:
 def _current_hash(job: Path, relative: str) -> str | None:
     try:
         return sha256_file(_job_file(job, relative))
-    except FileNotFoundError:
+    except (ToolError, OSError, ValueError):
         return None
 
 
