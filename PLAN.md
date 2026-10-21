@@ -147,19 +147,23 @@ Exit criterion (met 2026-10-20: owner disposition **ADOPT, narrow and optional**
 
 ## Phase 4 — MCP server (1 weekend)
 
-Goal: the tool surface in `docs/06-tool-surface.md`, so an agent can drive the
-pipeline.
+Goal: one operations layer with CLI/MCP parity and the reconciled surface in
+`docs/06-tool-surface.md` / proposed ADR-0010. Phase 3.5 is adopted narrowly
+and optionally; the editor is not a prerequisite for the core.
 
 Tasks
-- [ ] `sonoranlab/mcp/server.py` using the official `mcp` Python SDK. Each tool wraps a CLI verb.
-- [ ] Job model: generation tools return a `job_id` immediately; `job_status` / `job_result` poll. Long jobs do not block the agent.
-- [ ] Artifact store: `artifacts/<project>/<character>/<anim>/<job_id>/{raw,processed,report.json,contact.png}`.
-- [ ] Project state: `list_characters`, `get_character` (approved refs, existing sheets, validator history).
-- [ ] Register the server in Claude Code's MCP config; smoke test from a Claude Code session.
-- [ ] Only if Phase 3.5 is adopted: wrap the scoped repair handoff (DYL-118). Otherwise skip.
+- [x] DYL-113: reconcile contract (ADR-0010); registry, envelope, schema validation, path confinement, JSON CLI, official mcp==2.3.0 stdio skeleton; capabilities/list_projects/get_profile and real client parity tests.
+- [ ] Registry-backed reference registration/copies/hashes; owner approval stays CLI-only.
+- [ ] Job model and persistence: immediate job_id for animate/pose_frame/process/export_godot/godot_check/retry_job; cancellation, explicit linked retries and unknown-outcome reconciliation. Execution, technical verdict and disk-recomputed human approval stay separate.
+- [ ] Reuse guarded Track E animate for locomotion; Track C single pose/posed first frame only, no automatic C→E fallback. Keep E ≥40 GiB / C ≥60 GiB plus the guard's 8 GiB margin.
+- [ ] STATE registry/jobs/artifacts/idempotency layout (docs/06); exclusive outputs, atomic writes/locks; game checkout always protected.
+- [ ] Remaining supported read/inspect/validate/contact/compare/export/check tools; bounded artifacts and contact images.
+- [ ] Optional scoped repair handoff only (DYL-118, ADR-0009); advertise only with editor runtime available. Pixel repair is not diffusion inpainting.
+- [ ] Register in a local agent's MCP config and demonstrate the reconciled end-to-end sequence.
 
-Exit criterion
-- From a fresh Claude Code session, the agent calls `generate_character` → `animate` → `validate` → `export_godot` and a walk cycle lands in a Godot project, with the agent only ever seeing tool results and contact sheets.
+Exit criterion (open; not demonstrated by the skeleton)
+- From a fresh local agent session: approved-reference registration → animate (Track E, five generated directions + mirrored animation rows + eight independent stills) → inspect/validate/export/check using tool results and contact sheets. Export stays in STATE; copying into the game and recording artifact-bound human review are owner actions. Report execution, validator/Godot verdicts and human production usability separately.
+- The old generate_character → animate → validate → export_godot / walk_4dir / Track A exit sequence is **superseded, NOT passed** (ADR-0010). Track E leads locomotion; Track A is not default. GitHub issue #40 (Qwen Image 2.1 spike) changes no defaults.
 
 ---
 

@@ -169,3 +169,17 @@ Repair job layout (`<repair>/`, reserved atomically by `repair prepare`):
 | `session/` | `lease.lock`, lease token, op log, private HOME |
 | `export/` | finalize output used to build the child job |
 | child job | normal `artifacts/` layout plus `repair-manifest.json`; needs its own review, the parent's approval does not transfer |
+
+## Phase 4 — shared API and local MCP
+
+The reconciled contract is [ADR-0010](decisions/ADR-0010-mcp-contract.md) (proposed) and
+[docs/06](06-tool-surface.md): `sonoranlab/api/` owns schemas, confinement and envelopes;
+`sonoranlab api` and `sonoranlab mcp serve` share those operations. DYL-113 exposes only
+capabilities/list_projects/get_profile; jobs and the remaining tools follow. The Phase 4 sequence supersedes the
+historical flow above: approved-reference registration → Track E animate (five generated directions, mirrored
+animation rows, eight independent stills) → inspect/validate/export/check. The old Track A/walk_4dir exit was
+superseded, not passed. Track C is single pose/posed first frame only, with no automatic C→E fallback; issue #40
+changes no defaults. Execution, technical verdict and disk-recomputed human review remain separate. Writes stay
+inside STATE, never the protected game checkout. ADR-0009 pixel repair is optional, capability-gated and distinct
+from diffusion inpainting. Startup/read tools launch no services and import no torch/pixeloe; blocking handlers
+run off the event loop, with protocol-only stdout and logs on stderr.

@@ -12,6 +12,7 @@ dependencies = [
     "torch>=2.4",
     "torchvision>=0.19",  # pixeloe dependency; pinned to the CPU index with torch so the builds match
     "mcp==2.3.0",
+    "jsonschema==4.26.0",
 ]
 
 [project.scripts]
