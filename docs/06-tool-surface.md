@@ -47,15 +47,66 @@ no placeholder tools in discovery. See ADR-0010 for each library/CLI mapping.
 | `godot_check` | mutating / job | Implemented (DYL-117): headless import/playback check in isolated output |
 | `cancel_job` | mutating / sync | Implemented: durable intent, worker TERM, prompt-scoped cancellation and stop confirmation |
 | `retry_job` | mutating / job | Implemented: explicit new attempt from frozen request, linked by parent_job_id |
-| `prepare_repair` | mutating / sync | **Optional**, pending: ADR-0009 scoped workspace handoff |
-| `inspect_repair` | read-only / sync | **Optional**, pending: workspace metadata |
-| `inspect_repair_diff` | read-only / sync | **Optional**, pending: bounded verified pixel diff |
-| `finalize_repair` | mutating / job | **Optional**, pending: new validated child job; new review required |
-| `abort_repair` | mutating / sync | **Optional**, pending: abort the repair workspace |
+| `prepare_repair` | mutating / sync | **Optional**, implemented (DYL-118): ADR-0009 scoped workspace handoff |
+| `inspect_repair` | read-only / sync | **Optional**, implemented: identity, recorded authorization, writer lease, journal summary |
+| `inspect_repair_diff` | read-only / sync | **Optional**, implemented: bounded pixel diff and unauthorized changes |
+| `finalize_repair` | mutating / job | **Optional**, implemented: heavy CPU acceptance into a new child; fresh review required |
+| `abort_repair` | mutating / sync | **Optional**, implemented: abort under the existing writer lease |
 
 Optional repair tools register only when `editor=available`; the core works
 without the editor. This is authorized pixel repair through the contained
 broker, not diffusion inpainting. No arbitrary editor operations or Lua.
+
+## Optional repair handoff (DYL-118)
+
+All five tools share the presence-only check used by `capabilities.editor`:
+`SONORANLAB_EDITOR_RUNTIME`, default `~/sonoranlab-work/phase3.5/runtime`,
+must be a directory. Missing runtime means `editor: "unavailable"`, no repair
+tools in discovery, and `invalid_params: Unknown or disabled tool` for direct
+calls. Core tool discovery remains unchanged. Presence does not prove runtime
+health; prepare/finalize can still report converter unavailability. Startup,
+discovery and disabled calls do not import repair session/runtime code.
+
+Every schema rejects extra keys. `project`, `character`, `anim` use repository
+profile IDs. `repair_id` is the directory basename matching
+`^[a-z0-9][a-z0-9_-]{0,127}$`, never a caller path; every lookup goes through
+`repair.confine.admit_repair` under `repair_root()`. Prepare creates a fresh
+`repair-<32 hex>` directory there. Its basename differs from the manifest's
+internal repair ID; the latter is returned in `identity.manifest_repair_id`.
+
+| Tool | Required input | Result |
+|---|---|---|
+| `prepare_repair` | `{project, character, anim, parent_job}` | `repair_id`, state, identity hashes from the manifest, informational staged source paths, `next_steps` for owner authorization and the contained worker |
+| `inspect_repair` | `{repair_id}` | Workspace state/identity, authorization as recorded plus hash binding, session lease/state, journal event counts/digests; no edit or session launch |
+| `inspect_repair_diff` | `{repair_id}` | Existing `repair.compare.diff` report, coordinates capped at 2000 per frame/list with full `*_count`, palette/alpha problems and `unauthorized_changes` with counts |
+| `finalize_repair` | `{repair_id}` | Immediate durable `job_id`/state, kind `finalize_repair`, sharing the heavy CPU lock; poll `job_result` for child import `artifact_id`, informational `child_path`, validator/export/Godot verdicts, new hashes, and human `awaiting_owner_review` |
+| `abort_repair` | `{repair_id}` | Existing CLI abort result; active writer lease refuses abort; evidence retained |
+
+`parent_job` accepts a durable job ID, imported artifact ID, or their confined
+artifact refs. Prepare uses the repository profile and the CLI's immutable
+workspace builder; it does not launch a GUI/editor session. The converter may
+perform the existing contained batch conversion. Diff reads the latest batch
+snapshot already produced by the worker; it never exports on behalf of MCP.
+
+Finalize uses the same library as `sonoranlab repair finalize`, including
+parent/source/authorization/checkpoint/journal checks and fresh child review.
+Requests freeze input hashes and recheck them in the worker. A durable claim
+refuses a second acceptance after execution starts, including uncertain outcomes;
+prepare a new workspace instead of retrying that acceptance. Technical failures
+retain a failed-verdict child even when job execution succeeds. Human state is
+checked with `registry.check_review` on the child's import ID, never inherited
+from an ancestor.
+
+The unchanged CLI finalizer creates a fresh child at
+`<REPAIR_ROOT>/<repair.name>-child-<job_id>`, which is then indexed by
+`registry.import_job`. Child artifact refs use `<artifact_id>:<relative_path>`
+accepted by `get_artifact`. The durable job output keeps only an exclusively
+written `finalize-result.json` recording child path, import ID, hashes and verdicts.
+The default sibling STATE/REPAIR_ROOT layout works with the default READ root.
+Custom READ roots must admit the child; import refusal fails the job with the
+registry error, without widening roots. See [the repair runbook](runbooks/repair.md).
+No authorization, session, op/read, relay, editor export, Lua or upstream tool
+is exposed by MCP. Editing stays with one contained worker through the broker.
 
 **Deferred / not tools:** approval of references and recording human review
 are owner CLI operations. `generate_character` (Track A), `regenerate_region`
@@ -116,7 +167,8 @@ Copied references are mode 0444 with sha256 recorded. Project = profile id;
 character = profile character key. `ref_set_id = refs-` + first 12 hex of
 sha256 over the sorted (direction, file sha256) list. Job IDs are
 `job-<UTC yyyymmddThhmmssZ>-<8 random hex>`. Artifact refs are
-`<job_id>:<relative path>`; outputs use IDs and STATE-relative refs, with
+`<job_id>:<relative path>` or `<artifact_id>:<relative path>` for imports;
+outputs use IDs and STATE-relative refs, with
 absolute paths only in informational fields. Writes use same-directory
 temporary files + fsync + os.replace + directory fsync; exclusive creates
 use O_EXCL/mkdir; record read-modify-write holds an fcntl lock.
