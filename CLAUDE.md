@@ -62,3 +62,5 @@ were already evaluated and several of them were wrong.
 - Tilesets.
 - Training new base models. (Training a project LoRA is in scope, later.)
 - Running anything on the RTX 3080 that the Strix Halo box can't also run.
+
+Use the [MCP tools](docs/06-tool-surface.md) and [MCP runbook](docs/runbooks/mcp.md) for SonoranLab operations.

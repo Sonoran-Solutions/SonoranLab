@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "sonoranlab": {
+      "command": "uv",
+      "args": ["run", "--project", ".", "--frozen", "--offline", "sonoranlab", "mcp", "serve"]
+    }
+  }
+}

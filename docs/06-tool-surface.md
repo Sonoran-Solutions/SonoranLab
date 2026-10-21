@@ -396,3 +396,8 @@ Godot uses pipeline.check_in_godot in its disposable fixture copy and retains
 run_godot's signature-specific singleton retries and every attempt. Missing
 Godot succeeds with technical.godot=unavailable (no pass); import/content failure
 is fail. Execution success never grants human approval.
+
+## Registering in Claude Code
+
+Use the repository's project-scoped `.mcp.json`; see the
+[MCP operations runbook](runbooks/mcp.md) for approval, preflight and recovery.
