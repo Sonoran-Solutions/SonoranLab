@@ -31,6 +31,11 @@ EXECUTORS: dict[str, Executor] = {}
 
 
 def executor(kind: str) -> Executor:
+    if kind not in EXECUTORS:
+        from sonoranlab.jobs.kinds import MODULES
+
+        for name in MODULES:
+            EXECUTORS.update(importlib.import_module(f"sonoranlab.jobs.kinds.{name}").EXECUTORS)
     # Test-only, just like SONORANLAB_PROC: never accept module names in tool parameters.
     if module := os.environ.get("SONORANLAB_JOB_EXECUTORS"):
         EXECUTORS.update(importlib.import_module(module).EXECUTORS)
