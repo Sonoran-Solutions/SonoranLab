@@ -40,10 +40,12 @@ import argparse
 import fcntl
 import json
 import os
+import secrets
 import shlex
 import signal
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -53,6 +55,7 @@ SYSTEMCTL = shlex.split(os.environ.get("SONORANLAB_SYSTEMCTL", "systemctl --user
 WORK = Path(os.environ.get("SONORANLAB_WORK", Path.home() / "sonoranlab-work"))
 STATE = WORK / "runwindow.state.json"
 LOCK = WORK / "runwindow.lock"
+LEASE = WORK / "runwindow.lease.json"
 
 
 def log(msg: str) -> None:
@@ -415,7 +418,10 @@ def main(argv: list[str] | None = None) -> int:
                 child.wait(30)
             except subprocess.TimeoutExpired:
                 child.kill()
-        restored = restore(paused, a.drain_s)   # drains even with nothing paused: the window owns its prompt
+        try:
+            restored = restore(paused, a.drain_s)   # drains even with nothing paused: the window owns its prompt
+        finally:
+            LEASE.unlink(missing_ok=True)
     if not restored:
         if paused:
             log("WARNING: some units were not restored; run `python3 env/runwindow.py --restore`")
@@ -465,8 +471,23 @@ def run_window(pause: list[str], paused: list[str], cmd: list[str], a: argparse.
                 "freed GTT credit)")
         else:
             log(f"settled: {eff[0] / GIB:.1f} GiB available")
-    # Marks the child as guarded, so env/smoke.sh runs directly instead of re-entering a window.
-    state["child"] = subprocess.Popen(cmd, env={**os.environ, "SONORANLAB_RUNWINDOW": str(os.getpid())})
+    nonce = secrets.token_hex(16)
+    lease = {"schema": "sonoranlab.runwindow-lease/1", "pid": os.getpid(), "need_gib": a.need_gib,
+             "margin_gib": a.margin_gib, "nonce": nonce, "started": time.time(),
+             "boot_id": (PROC / "sys/kernel/random/boot_id").read_text().strip()}
+    # NamedTemporaryFile is mode 0600; replace publishes the complete lease while we hold LOCK.
+    with tempfile.NamedTemporaryFile(mode="w", dir=WORK, delete=False) as f:
+        tmp = Path(f.name)
+        try:
+            json.dump(lease, f)
+            f.flush()
+            os.fsync(f.fileno())
+            tmp.replace(LEASE)
+        finally:
+            tmp.unlink(missing_ok=True)
+    # env/smoke.sh uses the PID marker; Python generation also verifies the nonce, budget, boot and lock.
+    state["child"] = subprocess.Popen(cmd, env={**os.environ, "SONORANLAB_RUNWINDOW": str(os.getpid()),
+                                              "SONORANLAB_RUNWINDOW_NONCE": nonce})
     state["child"].wait()
     return state["rc"] if state["rc"] >= 128 else state["child"].returncode
 

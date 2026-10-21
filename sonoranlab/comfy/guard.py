@@ -1,9 +1,16 @@
-"""Run-window ownership, memory budgets and pending generation attempts (stdlib only)."""
+"""Run-window admission, memory budgets and pending generation attempts (stdlib only).
+
+Local safety against mistakes, not a security boundary against an adversarial same-user process.
+"""
 
 from __future__ import annotations
 
+import fcntl
+import hmac
 import json
+import math
 import os
+import stat
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
@@ -18,9 +25,48 @@ def min_need_gib(track: str) -> float:
         raise ValueError(f"unknown track {track!r}") from e
 
 
-def inside_guard() -> bool:
-    """Only our direct parent may claim the run window (env/smoke.sh)."""
-    return os.environ.get("SONORANLAB_RUNWINDOW") == str(os.getppid())
+def admitted_window() -> dict | None:
+    """Verify the direct parent's lease and live lock; stale or unreadable claims fail closed."""
+    pid = os.getppid()
+    nonce = os.environ.get("SONORANLAB_RUNWINDOW_NONCE")
+    if os.environ.get("SONORANLAB_RUNWINDOW") != str(pid) or not nonce:
+        return None
+    work = Path(os.environ.get("SONORANLAB_WORK", Path.home() / "sonoranlab-work"))
+    proc = Path(os.environ.get("SONORANLAB_PROC", "/proc"))
+    try:
+        with os.fdopen(os.open(work / "runwindow.lease.json", os.O_RDONLY | os.O_NONBLOCK)) as f:
+            info = os.fstat(f.fileno())
+            if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid():
+                return None
+            lease = json.load(f)
+        if (
+            lease["schema"] != "sonoranlab.runwindow-lease/1"
+            or type(lease["pid"]) is not int
+            or lease["pid"] != pid
+            or not hmac.compare_digest(lease["nonce"], nonce)
+            or not lease["boot_id"]
+            or lease["boot_id"] != (proc / "sys/kernel/random/boot_id").read_text().strip()
+            or any(
+                type(lease[k]) not in (int, float) or not math.isfinite(lease[k]) or lease[k] < 0
+                for k in ("need_gib", "margin_gib", "started")
+            )
+        ):
+            return None
+        with (work / "runwindow.lock").open("r") as lock:
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                return lease
+            fcntl.flock(lock, fcntl.LOCK_UN)
+    except (OSError, ValueError, TypeError, KeyError, OverflowError):
+        pass
+    return None
+
+
+def inside_guard(need_gib: float | None = None) -> bool:
+    """True only for a verified window with enough budget for the request."""
+    lease = admitted_window()
+    return lease is not None and (need_gib is None or lease["need_gib"] >= need_gib)
 
 
 def guarded_argv(

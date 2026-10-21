@@ -288,6 +288,8 @@ def _guarded_smoke(tmp_path, avail_gib, leaked_window=None):
     podman.write_text(FAKE_PODMAN_FOR_SMOKE.replace("exec*) cat > /dev/null;", 'exec*) echo exec >> "$CALLS"; cat > /dev/null;'))
     proc = tmp_path / "proc"
     (proc / "pressure").mkdir(parents=True)
+    (proc / "sys/kernel/random").mkdir(parents=True)
+    (proc / "sys/kernel/random/boot_id").write_text("test-boot\n")
     (proc / "meminfo").write_text(f"MemAvailable: {int(avail_gib * (1 << 20))} kB\n")
     (proc / "pressure" / "memory").write_text("some avg10=0.00 avg60=0.00 avg300=0.00 total=1\n")
     wf = tmp_path / "wf.json"

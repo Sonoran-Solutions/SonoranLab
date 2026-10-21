@@ -52,6 +52,8 @@ def meminfo(avail_gib: float) -> str:
 def fake(tmp_path):
     proc = tmp_path / "proc"
     (proc / "pressure").mkdir(parents=True)
+    (proc / "sys/kernel/random").mkdir(parents=True)
+    (proc / "sys/kernel/random/boot_id").write_text("test-boot\n")
     (proc / "meminfo").write_text(meminfo(40))
     (proc / "pressure" / "memory").write_text("some avg10=0.00 avg60=0.00 avg300=0.00 total=1\n")
     (tmp_path / "units").mkdir()
@@ -207,11 +209,14 @@ def test_sigterm_during_run_forwards_and_restores(fake):
         if (fake.root / "started").exists():
             break
         time.sleep(0.1)
+    lease = fake.root / "work" / "runwindow.lease.json"
+    assert json.loads(lease.read_text())["pid"] == p.pid
     p.send_signal(signal.SIGTERM)
     p.wait(20)
     assert p.returncode == 128 + signal.SIGTERM
     assert (fake.root / "child_got_term").exists()
     assert "start llama-gemory.service" in fake.calls()
+    assert not lease.exists()
 
 
 def test_state_from_killed_run_is_restored_first(fake):
@@ -252,10 +257,57 @@ def test_concurrent_window_is_refused(fake):
         if (fake.root / "started").exists():
             break
         time.sleep(0.1)
+    lease = fake.root / "work" / "runwindow.lease.json"
+    original = lease.read_bytes()
+    assert json.loads(original)["pid"] == p.pid
     r = fake.run("--need-gib", "1", *marker_cmd(fake.root / "ran"))
+    assert lease.read_bytes() == original
     p.kill()
     p.wait()
     assert r.returncode == 4 and not (fake.root / "ran").exists()
+
+
+@pytest.mark.parametrize("rc", [0, 5])
+def test_lease_published_before_child_and_removed_on_exit(fake, rc):
+    (fake.root / "proc" / "meminfo").write_text(meminfo(100))
+    work = fake.root / "work"
+    work.mkdir()
+    lease = work / "runwindow.lease.json"
+    lease.write_text("stale lease from a killed window")
+    # This is the direct child: exercise the real reader as well as the writer, with fake /proc and services.
+    child = """
+import json, os, stat, sys, time
+from pathlib import Path
+from sonoranlab.comfy.guard import admitted_window, inside_guard
+path = Path(os.environ['SONORANLAB_WORK']) / 'runwindow.lease.json'
+lease = json.loads(path.read_text())
+assert lease['schema'] == 'sonoranlab.runwindow-lease/1'
+assert lease['pid'] == os.getppid() == int(os.environ['SONORANLAB_RUNWINDOW'])
+assert lease['need_gib'] == 40 and lease['margin_gib'] == 4.5
+assert lease['nonce'] == os.environ['SONORANLAB_RUNWINDOW_NONCE']
+assert len(bytes.fromhex(lease['nonce'])) == 16
+assert lease['boot_id'] == 'test-boot'
+assert 0 <= time.time() - lease['started'] < 30
+assert stat.S_IMODE(path.stat().st_mode) == 0o600
+assert admitted_window() == lease and inside_guard(40) and not inside_guard(60)
+(path.parent.parent / 'observed').write_text(json.dumps(lease))
+sys.exit(int(sys.argv[1]))
+"""
+    r = fake.run("--need-gib", "40", "--margin-gib", "4.5", "--", sys.executable, "-c", child, str(rc))
+    assert r.returncode == rc, r.stderr
+    assert (fake.root / "observed").exists()
+    assert not lease.exists()
+
+
+@pytest.mark.parametrize("mode", ["--dry-run", "--restore"])
+def test_report_and_restore_never_write_a_lease(fake, mode):
+    (fake.root / "proc" / "meminfo").write_text(meminfo(100))
+    lease = fake.root / "work" / "runwindow.lease.json"
+    assert fake.run("--need-gib", "40", mode).returncode == 0
+    assert not lease.exists()
+    lease.write_text("stale lease")
+    assert fake.run("--need-gib", "40", mode).returncode == 0
+    assert lease.read_text() == "stale lease"
 
 
 def test_dry_run_never_pauses_or_runs(fake):

@@ -408,9 +408,8 @@ def test_guarded_argv() -> None:
 
 
 @pytest.fixture
-def cli_env(env, monkeypatch):
-    monkeypatch.setenv("SONORANLAB_RUNWINDOW", "12345")
-    monkeypatch.setattr(os, "getppid", lambda: 12345)
+def cli_env(env, monkeypatch, lease_window):
+    lease_window(env.work, need_gib=60)  # also admits the malformed Track C request checked below
 
     def unexpected_exec(*a):
         pytest.fail("CLI test must remain inside the fake guard")
