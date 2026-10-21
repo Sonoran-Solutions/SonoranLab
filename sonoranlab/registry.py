@@ -572,7 +572,9 @@ def _confine_profile_templates(source: Path) -> None:
         for anim in animations.values() if isinstance(animations, dict) else []:
             template = anim.get("template") if isinstance(anim, dict) else None
             if isinstance(template, str):
-                path = source.resolve().parent / Path(template).expanduser() / "template.yaml"
+                # Profiles use ../templates/... relative to their own directory; normalise lexically, then confine
+                # (paths._confine still checks both the lexical and the symlink-resolved path against the roots).
+                path = Path(os.path.normpath(source.resolve().parent / Path(template).expanduser() / "template.yaml"))
                 paths.resolve_input(path)
                 require_regular_file(path)
 

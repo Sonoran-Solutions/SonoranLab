@@ -61,3 +61,25 @@ def test_repository_profile_templates_remain_trusted(setup, job, monkeypatch):
     manifest["profile"] = {"path": str(profile), "sha256": sha256_file(profile)}
     manifest_path.write_text(json.dumps(manifest))
     assert registry.import_job("toy", "hero", str(job), ctx=ctx)["created"]
+
+
+def test_historical_profile_with_relative_template_is_imported(setup, job, monkeypatch):
+    """Real profiles say `template: ../templates/poses/run`; the `..` is resolved against the profile's directory."""
+    ctx, _, _ = setup
+    monkeypatch.setenv("SONORANLAB_READ_ROOTS", str(job.parent))
+    manifest_path = job / "manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    data = yaml.safe_load(Path(manifest["profile"]["path"]).read_text())
+    data["animations"]["idle"]["template"] = "../templates/idle"
+    checkout = job.parent / "historical-checkout"
+    (checkout / "profiles").mkdir(parents=True)
+    (checkout / "templates/idle").mkdir(parents=True)
+    (checkout / "templates/idle/template.yaml").write_text(
+        yaml.safe_dump({"directions": data["directions"]["generate"], "frame_sets": {2: {}}})
+    )
+    profile = checkout / "profiles/toy.yaml"
+    profile.write_text(yaml.safe_dump(data))
+    manifest["profile"] = {"path": str(profile), "sha256": sha256_file(profile)}
+    manifest_path.write_text(json.dumps(manifest))
+    result = registry.import_job("toy", "hero", str(job), ctx=ctx)
+    assert result["artifact_id"].startswith("import-")
