@@ -519,24 +519,30 @@ def export_godot_checked(args: argparse.Namespace, *, sheet_pixels=None, write: 
         raise ValueError(f"report digest {next(iter(remaining))} has no matching sheet cell; export refused")
     if (sheet[:, cw : clip["start"] * cw, 3] > 0).any():
         raise ValueError("sheet has populated columns outside --clip and still column 0; export refused")
-    still_report = validate(
-        {},
+    # Rows absent from the report are derived mirrors, checked pixel-for-pixel above.
+    checked = validate(
+        {d: fs for d, fs in cells.items() if f"{d}_0" in report["digests"]},
         stills=stills,
         cell=spec.cell,
-        frames=0,
-        directions=rows,
+        frames=anim_spec.frames,
+        directions=list(prof.directions.generate),
         palette=load_palette(prof),
         foot_y=spec.foot_y,
         anchor_x=spec.anchor_x,
         padding=spec.padding,
         limits=spec.limits,
         max_colours=prof.palette.max_colors_per_cell,
-        loop=False,
+        loop=anim_spec.loop,
         anchor_mode=spec.anchor_mode,
         fringe_tolerance=prof.alpha.fringe_tolerance,
+        mirror=dict(prof.directions.mirror_animations),
+        registration=report.get("registration"),
+        limits_source=spec.limits_source,
     )
-    if not still_report["pass"]:
-        raise ValueError(f"{still_report['failures'][0]}; export refused")
+    if not checked["pass"]:
+        raise ValueError(f"{checked['failures'][0]}; export refused")
+    if checked["digests"] != report["digests"]:
+        raise ValueError("revalidated frame digests differ from the report; export refused")
     prov = json.loads(args.provenance.read_text()) if args.provenance else {}
     if not isinstance(prov, dict):
         raise ValueError("provenance must be a JSON object")
