@@ -306,7 +306,13 @@ def test_build_refuses_bad_inputs(world, approved, tmp_path, capsys, over, msg):
 
 def test_godot_uid_text_form():
     uid = deliver.godot_uid("x")
-    assert uid.startswith("uid://") and set(uid[6:]) <= set("abcdefghijklmnopqrstuvwxyz01234567")
+    assert uid.startswith("uid://") and set(uid[6:]) <= set("abcdefghijklmnopqrstuvwxy012345678")
+    alphabet = "abcdefghijklmnopqrstuvwxy012345678"
+    seen = "".join(deliver.godot_uid(str(i))[6:] for i in range(300))
+    assert set(seen) == set(alphabet)  # every digit is used, and never `z` or `9` (Godot rewrites those)
+    # gun's id/sheet seed: the old a-z/0-7 encoder emitted `bdoggxzlhctho`, which Godot 4.7.2 rewrote to this
+    seed = "gun:914dabb93b36fcc9cbc85c72ac02700811384276d1e27d26fd89b190cffefb30"
+    assert deliver.godot_uid(seed) == "uid://bdoggx0lhctho"
     assert uid == deliver.godot_uid("x") != deliver.godot_uid("y")
 
 
