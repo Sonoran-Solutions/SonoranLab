@@ -155,6 +155,50 @@ def build_parser() -> argparse.ArgumentParser:
     cp.add_argument("--out", type=Path, help="write the snippet here (never overwritten)")
     cp.set_defaults(func=classreq_propose_cmd)
 
+    cg = verbs.add_parser("campaign", help="resumable class campaign ledger (DYL-129); prints the API envelope")
+    cga = cg.add_subparsers(dest="action", required=True)
+    for name, help_text in CAMPAIGN_VERBS.items():
+        sub = cga.add_parser(name, help=help_text)
+        if name == "create":
+            sub.add_argument("--project", required=True)
+            sub.add_argument("--request", type=Path, required=True, help="sonoranlab.class_request/1 YAML or JSON")
+            sub.add_argument("--reference", required=True, dest="reference_id", help="approved refs-<12 hex> set")
+            sub.add_argument("--revise", metavar="CAMPAIGN_ID", help="freeze revision N+1 of this campaign")
+            sub.add_argument("--max-seeds", type=int, dest="max_seeds_per_clip", help="stricter owner budget")
+            sub.add_argument("--budget-decision-ref", help="owner decision reference for --max-seeds")
+        else:
+            sub.add_argument("--campaign", required=True, dest="campaign_id")
+        if name in {"submit", "escalate"}:
+            sub.add_argument("--clip", required=True)
+        if name == "submit":
+            sub.add_argument("--seed", type=int)
+        if name == "decide":
+            sub.add_argument("--job", required=True, dest="job_id")
+            sub.add_argument("--decision", required=True, choices=("selected", "rejected"))
+        if name in {"decide", "escalate"}:
+            sub.add_argument("--reason", required=True)
+        if name == "note":
+            sub.add_argument("--text")
+            sub.add_argument("--cost-source")
+            sub.add_argument("--cost-units")
+            sub.add_argument("--cost-amount", type=float)
+        sub.set_defaults(func=campaign_cmd)
+    od = cga.add_parser("owner-decision", help="OWNER ONLY (never an MCP tool); agents must never run this command")
+    od.add_argument("--campaign", required=True, dest="campaign_id")
+    od.add_argument(
+        "--kind",
+        required=True,
+        choices=("budget_grant", "resume", "delivery", "install", "profile_row", "reference_approval", "note"),
+    )
+    od.add_argument("--verbatim", required=True, help="the owner's words, recorded verbatim")
+    od.add_argument("--ref", help="job id / attempt key (resume), bundle (delivery, install), decision reference")
+    od.add_argument("--clip", help="budget_grant clip")
+    od.add_argument("--seeds", type=int, help="budget_grant: seeds ADDED to the clip budget")
+    od.add_argument("--state", choices=("staged_and_engine_verified", "ready_to_install", "installed"))
+    od.add_argument("--activity", choices=("preparation", "cleanup", "review"), help="owner time record")
+    od.add_argument("--seconds", type=float, help="owner time for --activity")
+    od.set_defaults(func=campaign_owner_cmd)
+
     rf = verbs.add_parser("refprep", help="HD turnaround -> candidate stills (deterministic, no model; ADR-0011)")
     rf.add_argument("--profile", type=Path, required=True)
     rf.add_argument("--request", type=Path, required=True)
@@ -1188,6 +1232,56 @@ def deliver_cmd(args: argparse.Namespace) -> int:
         return 2
     print(json.dumps(res, indent=1))
     return 0 if res.get("ok", True) else 1
+
+
+CAMPAIGN_VERBS = {
+    "create": "admit + freeze a campaign; exit 1 when nothing was created (blocking state printed)",
+    "status": "derived states, budgets, candidates and next actions (read-only)",
+    "submit": "the only generation path: one Track E animate job, next unused seed",
+    "decide": "agent candidate recommendation (selected needs technical PASS)",
+    "escalate": "record best two candidates and diagnostics for the owner",
+    "report": "per-clip attempts, failure classes, timings, explicit costs, interventions",
+    "note": "append a note and/or an explicit cost record",
+}
+
+
+def campaign_cmd(args: argparse.Namespace) -> int:
+    """CLI/MCP parity: the same registry call and envelope as `sonoranlab api campaign_<verb>`."""
+    from sonoranlab import classreq
+    from sonoranlab.api import call
+
+    params = {
+        k: v
+        for k, v in vars(args).items()
+        if v is not None and k not in {"verb", "action", "func", "request", "cost_source", "cost_units", "cost_amount"}
+    }
+    if args.action == "create":
+        try:
+            params["request"], _ = classreq.load_request_file(args.request)
+        except (OSError, ValueError) as exc:
+            print(f"campaign create: {exc}", file=sys.stderr)
+            return 2
+    if args.action == "note" and args.cost_source is not None:
+        params["cost"] = {"source": args.cost_source, "units": args.cost_units, "amount": args.cost_amount}
+    envelope = call(f"campaign_{args.action}", params)
+    print(json.dumps(envelope))
+    if not envelope["ok"]:
+        return 2 if envelope["error"]["code"] == "invalid_params" else 1
+    return 1 if args.action == "create" and not envelope["result"]["created"] else 0
+
+
+def campaign_owner_cmd(args: argparse.Namespace) -> int:
+    from sonoranlab import campaign
+    from sonoranlab.api.registry import Context, ToolError
+
+    options = {k: getattr(args, k) for k in ("ref", "clip", "seeds", "state", "activity", "seconds")}
+    try:
+        result = campaign.owner_decision(args.campaign_id, args.kind, args.verbatim, **options, ctx=Context())
+    except ToolError as exc:
+        print(json.dumps({"ok": False, "error": exc.error}))
+        return 2 if exc.error["code"] == "invalid_params" else 1
+    print(json.dumps({"ok": True, "result": result}))
+    return 0
 
 
 def main(argv: list[str] | None = None) -> int:

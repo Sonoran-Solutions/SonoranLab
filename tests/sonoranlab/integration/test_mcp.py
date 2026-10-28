@@ -39,6 +39,14 @@ CORE = {
     "smoke_render",
     "cancel_job",
     "retry_job",
+    # DYL-129 campaign ledger
+    "campaign_create",
+    "campaign_status",
+    "campaign_submit",
+    "campaign_decide",
+    "campaign_escalate",
+    "campaign_report",
+    "campaign_note",
 }
 REPAIR = {"prepare_repair", "inspect_repair", "inspect_repair_diff", "finalize_repair", "abort_repair"}
 READ = {
@@ -54,6 +62,7 @@ READ = {
     "check_review",
     "check_class_request",
 }
+CAMPAIGN_READ = {"campaign_status", "campaign_report"}  # read-only too; exercised in tests/sonoranlab/campaign
 BASE = {"project": "toy", "character": "hero", "anim": "idle"}
 
 
@@ -105,9 +114,9 @@ def test_project_registration_and_editor_discovery(lab):
                     assert tool.input_schema["additionalProperties"] is False
                     assert tool.output_schema == ENVELOPE_SCHEMA
                     assert tool.annotations.model_dump(by_alias=True, exclude_none=True) == {
-                        "readOnlyHint": name in READ or name.startswith("inspect_repair"),
+                        "readOnlyHint": name in READ | CAMPAIGN_READ or name.startswith("inspect_repair"),
                         "destructiveHint": False,
-                        "idempotentHint": name in READ or name.startswith("inspect_repair"),
+                        "idempotentHint": name in READ | CAMPAIGN_READ or name.startswith("inspect_repair"),
                     }
                 discovered.append({k: v.model_dump() for k, v in tools.items()})
                 for name, params in (
