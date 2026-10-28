@@ -24,17 +24,21 @@ def list_jobs(params: dict, ctx: Context) -> dict:
     }
 
 
+def measured_progress(job: dict) -> dict:
+    """Executor.stage must measure files only; it must not probe services or launch processes."""
+    try:
+        return executor(job["kind"]).stage(job)
+    except (ToolError, OSError, ValueError):
+        return {}
+
+
 def job_status(params: dict, ctx: Context) -> dict:
     job = manager.get(params["job_id"])
     progress = {}
     technical = {"validator": None, "godot": "not_run"}
     human = {"review": "none", "production_usable": False}
     if not manager.corrupt(job):
-        # Executor.stage must measure files only; it must not probe services or launch processes.
-        try:
-            progress = executor(job["kind"]).stage(job)
-        except (ToolError, OSError, ValueError):
-            progress = {}
+        progress = measured_progress(job)
         if "human" not in progress:
             from sonoranlab.registry import _native_review
 

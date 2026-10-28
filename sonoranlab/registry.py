@@ -782,7 +782,7 @@ def _job_summary(entry: dict, ctx: Context) -> dict:
         }
 
 
-def get_character(project: str, character: str, *, ctx: Context) -> dict:
+def _header(project: str, character: str, ctx: Context) -> tuple[Path, dict, dict]:
     profile = _profile(project, ctx)
     base = _base(project, character, ctx)
     record = _record(base, project, character)
@@ -791,17 +791,284 @@ def get_character(project: str, character: str, *, ctx: Context) -> dict:
     spec = _spec(profile, character) if character in profile.characters else record.get("spec")
     if not isinstance(spec, dict):
         raise ToolError("internal", f"{base / 'character.json'}: missing character spec")
-    jobs = [_job_summary(job, ctx) for job in record["jobs"]]
-    for job in jobs:
-        job["lineage"]["repair_children"] = [
-            child["job_id"] for child in jobs if child["lineage"]["parent_job"] in (job["job_dir"], job["review_job"])
-        ]
-    return {
+    header = {
         "id": character,
         **spec,
         "registered": bool(record["reference_sets"]),
         "reference_sets": [_verify_refs(base, refs, ctx) for refs in record["reference_sets"]],
-        "jobs": jobs,
+    }
+    return base, record, header
+
+
+def _resolved(value) -> Path | None:
+    try:
+        return Path(value).resolve() if isinstance(value, str) and value else None
+    except (OSError, RuntimeError, ValueError):
+        return None
+
+
+def _native_records() -> list[tuple[str, dict, dict | None]]:
+    """Pure reads of every durable record (no lock, no reconciliation): (job_id, record, raw corrupt JSON)."""
+    from sonoranlab.jobs import manager, store
+
+    try:
+        root = store.directory("jobs")
+    except FileNotFoundError:
+        return []
+    found = []
+    for path in sorted(root.iterdir()):
+        if not (re.fullmatch(store.JOB_ID, path.name) and path.is_dir() and not path.is_symlink()):
+            continue
+        job, raw = store.read(path), None
+        if manager.corrupt(job):
+            # Best-effort attribution only; the corrupt record itself is never repaired or rewritten.
+            with suppress(OSError, ValueError):
+                raw = store.load(path / "job.json")
+        found.append((path.name, job, raw if isinstance(raw, dict) else None))
+    return found
+
+
+def _native_root(job: dict) -> Path | None:
+    """The validated output root (store.output refuses symlinks/escapes), or None: invalid jobs claim nothing."""
+    from sonoranlab.jobs import manager, store
+
+    if manager.corrupt(job):
+        return None
+    try:
+        return store.output(job)
+    except (ToolError, OSError, ValueError):
+        return None
+
+
+def _history(project: str, character: str, record: dict, natives) -> tuple[list, int]:
+    """Merge durable jobs and imports by exact (project, character) and exact resolved directory identity.
+
+    Cheap metadata only (records already read, path resolution): no manifests, reviews or reconciliation.
+    An import is the same logical job as a native one when its resolved job_dir equals or lies inside that job's
+    validated output root, or when it is the child a finalize_repair job imported (same artifact_id, a hash of the
+    exact path). Import-only entries merge only on exactly the same resolved directory.
+    Returns (items sorted by created_at then id, unattributed corrupt record count).
+    """
+    from sonoranlab.jobs import manager
+
+    items, unattributed, by_artifact = [], 0, {}
+    for job_id, job, raw in natives:
+        source = raw if manager.corrupt(job) else job
+        if source is None:
+            unattributed += 1
+            continue
+        if (source.get("project"), source.get("character")) != (project, character):
+            continue
+        root = _native_root(job)
+        created = source.get("created_at")
+        item = {
+            "id": job_id,
+            "native": job,
+            "root": root,
+            "imports": [],
+            "created_at": created if isinstance(created, str) else "",
+        }
+        items.append(item)
+        result = job.get("result")
+        if root and job.get("kind") == "finalize_repair" and isinstance(result, dict):
+            by_artifact.setdefault(result.get("artifact_id"), item)
+    roots = {item["root"]: item for item in items if item["root"]}
+    exact = {}
+    for entry in record["jobs"]:
+        directory = _resolved(entry["job_dir"])
+        owner = by_artifact.get(entry["artifact_id"])
+        if owner is None and directory:
+            # Most specific validated native root at or above the import directory.
+            owner = next((roots[d] for d in (directory, *directory.parents) if d in roots), None)
+        if owner is None and directory:
+            owner = exact.get(directory)
+        if owner is None:
+            created = entry.get("imported_at")
+            owner = {
+                "id": entry["artifact_id"],
+                "native": None,
+                "root": None,
+                "imports": [],
+                "created_at": created if isinstance(created, str) else "",
+            }
+            items.append(owner)
+            if directory:
+                exact[directory] = owner
+        owner["imports"].append(entry)
+    items.sort(key=lambda item: (item["created_at"], item["id"]))
+    retries = {}
+    for item in items:
+        native = item["native"]
+        if native and not manager.corrupt(native):
+            retries.setdefault(native.get("parent_job_id"), []).append(item["id"])
+    for item in items:
+        item["retries"] = retries.get(item["id"], [])
+    return items, unattributed
+
+
+def _directories(items: list) -> dict[Path, dict]:
+    """Every job directory a repair parent path may name, mapped to its logical entry (resolution only)."""
+    found = {}
+    for item in items:
+        for path in (item["root"], *(_resolved(e[k]) for e in item["imports"] for k in ("job_dir", "review_job"))):
+            if path:
+                found.setdefault(path, item)
+    return found
+
+
+def _lineage(page: list, directories: dict[Path, dict], ctx: Context) -> None:
+    """Repair parents for the page only (one manifest read per page import); children are page-local."""
+    for item in page:
+        item["parent_job"] = next(filter(None, (_repair_parent(e, ctx) for e in item["imports"])), None)
+        item["parent_id"] = None
+        if parent := _resolved(item["parent_job"]):
+            owner = next((directories[d] for d in (parent, *parent.parents) if d in directories), None)
+            item["parent_id"] = owner["id"] if owner and owner is not item else None
+    for item in page:
+        item["children"] = [child for child in page if child["parent_id"] == item["id"]]
+
+
+def _repair_parent(entry: dict, ctx: Context) -> str | None:
+    try:
+        manifest = _json(_job_file(_review_directory(entry, ctx), "manifest.json"), code="invalid_params")
+    except (ToolError, OSError, ValueError):
+        return None
+    links = manifest.get("repair") or manifest.get("upstream") or {}
+    parent = links.get("parent_job") if isinstance(links, dict) else None
+    return parent if isinstance(parent, str) else None
+
+
+_REVIEW_RANK = ("pass", "none", "fail", "invalid")
+_TECHNICAL = ("pass", "fail", "unavailable", "not_run", "invalid", None)
+
+
+def _technical(value) -> dict | None:
+    """Recorded technical verdicts are untrusted shapes: a malformed one invalidates its entry, never the response."""
+    if value is None:
+        return None
+    if isinstance(value, dict) and value.get("validator") in _TECHNICAL and value.get("godot") in _TECHNICAL:
+        return value
+    raise ToolError("internal", "Malformed recorded technical verdict")
+
+
+def _history_entry(item: dict, ctx: Context) -> dict:
+    """Any failure to recompute one logical job makes only that entry invalid."""
+    try:
+        return _merged_entry(item, ctx)
+    except Exception as exc:  # Per-entry isolation is the contract: the response must survive any one job.
+        code = exc.error["code"] if isinstance(exc, ToolError) else "internal"
+        message = exc.error["message"] if isinstance(exc, ToolError) else f"{type(exc).__name__}: {exc}"
+        return {
+            "id": item["id"],
+            "aliases": [],
+            "source": "native+import"
+            if item["native"] and item["imports"]
+            else "native"
+            if item["native"]
+            else "import",
+            "created_at": item["created_at"] or None,
+            "technical": {"validator": "invalid", "godot": "invalid"},
+            "human": {"review": "invalid", "production_usable": False},
+            "review_problems": [{"code": code, "message": message}],
+            "status": "invalid",
+            "problems": [{"code": code, "message": message, "source": item["id"]}],
+        }
+
+
+def _merged_entry(item: dict, ctx: Context) -> dict:
+    """Recompute one logical job's verdicts from current files; expected failures stay inside this entry."""
+    from sonoranlab.api.tools.jobs import measured_progress
+    from sonoranlab.jobs import manager
+
+    imports = [_job_summary(entry, ctx) for entry in item["imports"]]
+    problems = []
+    for summary in imports:
+        if summary["technical"]["validator"] == "invalid" or any(
+            p["code"] == "import_drift" for p in summary["review_problems"]
+        ):
+            problems += [{**p, "source": summary["artifact_id"]} for p in summary["review_problems"]]
+    entry = {**imports[0]} if imports else {}  # Import-backed entries keep the DYL-114 import fields.
+    ids = {item["id"]} | {i["artifact_id"] for i in imports} | {i["job_id"] for i in imports}
+    entry.update(
+        id=item["id"],
+        aliases=sorted(ids - {item["id"]}),
+        source="native+import" if item["native"] and imports else "native" if item["native"] else "import",
+        kind="import",
+        anim=None,
+        created_at=item["created_at"] or None,
+        state=None,
+        stage=None,
+        error=None,
+        attempt={"number": None, "parent_job_id": None, "retries": item["retries"]},
+        imports=[
+            {
+                k: i.get(k)
+                for k in ("artifact_id", "job_id", "job_dir", "review_job", "imported_at", "technical", "human")
+            }
+            for i in imports
+        ],
+        lineage={
+            "parent_job": item["parent_job"],
+            "parent_id": item["parent_id"],
+            # DYL-114 callers read repair_children as each child's job_id.
+            "repair_children": [c["id"] if c["native"] else c["imports"][0]["job_id"] for c in item["children"]],
+            "child_ids": [child["id"] for child in item["children"]],
+        },
+    )
+    reviews = [i["human"] for i in imports]
+    technical = imports[0]["technical"] if imports else None
+    if item["native"] is not None:
+        entry["job_id"] = item["id"]
+        try:
+            job = manager.get(item["id"])  # The same reconciliation list_jobs/job_status already perform.
+            if manager.corrupt(job):
+                raise ToolError("internal", job["error"]["message"])
+            if item["root"] is None:
+                raise ToolError("path_refused", "Job output directory is missing, escaping or a symlink")
+            entry.update(
+                {key: job[key] for key in ("kind", "anim", "state", "stage", "error", "output_dir")},
+                attempt={"number": job["attempt"], "parent_job_id": job["parent_job_id"], "retries": item["retries"]},
+            )
+            measured = _technical(measured_progress(job).get("technical")) or _technical(
+                (job["result"] or {}).get("technical")
+            )
+            if measured and (measured.get("validator") is not None or measured.get("godot") != "not_run"):
+                technical = measured
+            technical = technical or measured or {"validator": None, "godot": "not_run"}
+            review = _native_review(job, ctx)
+            reviews.append({"review": review["review_state"], "production_usable": review["production_usable"]})
+            if not imports:
+                entry["review_problems"] = review["problems"]
+        except (ToolError, OSError, ValueError, KeyError, TypeError, AttributeError) as exc:
+            code = exc.error["code"] if isinstance(exc, ToolError) else "internal"
+            message = exc.error["message"] if isinstance(exc, ToolError) else str(exc)
+            problems.append({"code": code, "message": message, "source": item["id"]})
+            technical = {"validator": "invalid", "godot": "invalid"}
+            reviews.append({"review": "invalid", "production_usable": False})
+            entry.setdefault("review_problems", [{"code": code, "message": message}])
+    # Every bound review must agree: the most conservative state wins and approval needs all of them.
+    entry["technical"] = technical
+    entry["human"] = {
+        "review": max((r["review"] for r in reviews), key=_REVIEW_RANK.index),
+        "production_usable": all(r["production_usable"] for r in reviews),
+    }
+    entry["status"] = "invalid" if problems else "ok"
+    entry["problems"] = problems
+    return entry
+
+
+def get_character(project: str, character: str, *, jobs_offset: int = 0, jobs_limit: int = 50, ctx: Context) -> dict:
+    _, record, header = _header(project, character, ctx)
+    items, unattributed = _history(project, character, record, _native_records())
+    page = items[jobs_offset : jobs_offset + jobs_limit]
+    _lineage(page, _directories(items), ctx)
+    return {
+        **header,
+        "jobs": [_history_entry(item, ctx) for item in page],
+        "job_count": len(items),
+        "jobs_offset": jobs_offset,
+        "jobs_truncated": jobs_offset + len(page) < len(items),
+        "unattributed_invalid_jobs": unattributed,
     }
 
 
@@ -810,14 +1077,17 @@ def list_characters(project: str, *, ctx: Context) -> dict:
     names = set(profile.characters)
     root = _state(paths.state_root() / "registry" / project, ctx)
     names.update(p.parent.name for p in root.glob("*/character.json"))
+    natives = _native_records()
     characters = []
     for name in sorted(names):
-        record = get_character(project, name, ctx=ctx)
-        record["reference_sets"] = [
-            {"ref_set_id": r["ref_set_id"], "approval": r["approval"]} for r in record["reference_sets"]
+        _, record, header = _header(project, name, ctx)
+        header["reference_sets"] = [
+            {"ref_set_id": r["ref_set_id"], "approval": r["approval"]} for r in header["reference_sets"]
         ]
-        record["jobs"] = [job["job_id"] for job in record["jobs"]]
-        characters.append(record)
+        # Lightweight: imported IDs from the record and a merged history count; no manifests or reviews.
+        header["jobs"] = [job["job_id"] for job in record["jobs"]]
+        header["job_count"] = len(_history(project, name, record, natives)[0])
+        characters.append(header)
     return {"characters": characters}
 
 
