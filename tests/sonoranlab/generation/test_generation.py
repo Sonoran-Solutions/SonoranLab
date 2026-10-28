@@ -87,6 +87,7 @@ def setup(tmp_path, monkeypatch):
     target = repo / "templates/poses/idle/east"
     target.mkdir(parents=True)
     shutil.copyfile(repo / "templates/poses/run/east/pose_000.png", target / "pose_000.png")
+    shutil.copyfile(repo / "templates/poses/run/template.yaml", target.parent / "template.yaml")
     return ctx, animate, pose, approval
 
 

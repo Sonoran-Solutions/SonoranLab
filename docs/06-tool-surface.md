@@ -330,7 +330,7 @@ Reference approval is recomputed and all eight registered still hashes verified
 at submission and again before generation. Unapproved/invalid references return
 `refused` with `owner must run sonoranlab registry approve-references`; no job or
 output directory is created. Frozen input hashes bind stills, profile and workflow
-source; pose_frame also binds the template PNG. Explicit retries revalidate them.
+source; pose_frame also binds the template PNG, template.yaml and the rendered control image. Explicit retries revalidate them.
 
 `animate` calls the existing animate library, creates its required new `animate/`
 subdirectory, and uses its guarded generation runner. Track E requires at least
@@ -349,7 +349,8 @@ Template IDs are `anim/direction/pose_NNN` (for example `run/east/pose_000`), wi
 no extension or caller paths. Only regular PNGs under repository templates/poses
 are admitted, with matching generated direction and a profile animation. The
 request uses Track C's documented POSE_PROMPTS, the registered direction still
-and the template control image. The child runs `generate --request ... --exec ...`
+and a control image rendered for the character's cell from the template's joints
+(`sonoranlab/posetemplate.py`, cell x 4 px, written to the job's `control.png`; the shipped PNG is cell-136 only). The child runs `generate --request ... --exec ...`
 through guarded_argv with **60 GiB**, retaining the runwindow lease and worker
 TERM propagation. Result summaries include RawResult status/timing/error and paged artifact refs;
 adapter failures retain their structured code/stage/message/retryable fields.
