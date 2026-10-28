@@ -48,6 +48,10 @@ no placeholder tools in discovery. See ADR-0010 for each library/CLI mapping.
 | `export_godot` | mutating / job | Implemented (DYL-117): guarded export into STATE, never the game checkout |
 | `godot_check` | mutating / job | Implemented (DYL-117): headless import/playback check in isolated output |
 | `smoke_render` | mutating / job | Implemented (DYL-131): isolated side-by-side Godot render of a candidate beside up to 3 approved siblings |
+| `view_artifact` | read-only / sync | Implemented (DYL-130): one allowlisted PNG in STATE as bounded MCP image content, nearest only |
+| `compose_sheet` | mutating / job | Implemented (DYL-130): selected clip jobs + approved stills → one re-validated class sheet |
+| `build_delivery` | mutating / job | Implemented (DYL-130): staged delivery bundle from an owner-reviewed composed sheet; no apply/install tool |
+| `delivery_status` | read-only / sync | Implemented (DYL-130): bundle states, integrity rechecked |
 | `cancel_job` | mutating / sync | Implemented: durable intent, worker TERM, prompt-scoped cancellation and stop confirmation |
 | `retry_job` | mutating / job | Implemented: explicit new attempt from frozen request, linked by parent_job_id |
 | `prepare_repair` | mutating / sync | **Optional**, implemented (DYL-118): ADR-0009 scoped workspace handoff |
@@ -527,6 +531,36 @@ Submission always uses Track E `animate` with the guard's default 40 GiB; no tra
 
 Owner decisions (`budget_grant` adds seeds, `resume` clears a non-artistic block, `install`, `delivery`) are
 **CLI only**: `sonoranlab campaign owner-decision`. There is no MCP tool for them.
+
+## `/new-class` support tools (DYL-130)
+
+The project skill `.claude/skills/new-class/SKILL.md` drives the ADR-0011 loop with an allowlist of 23 tools; see
+[the new-class runbook](runbooks/new-class.md). These four tools close its gaps.
+
+| Tool | Access / kind | Input | Result |
+|---|---|---|---|
+| `view_artifact` | read-only / sync | `{ref, zoom?: 1-8 (default 1), max_edge?: 1-2048 (default 2048)}` | structured `{ref, sha256, size, dimensions, zoom, downscale, mime_type, source: {sha256, size, dimensions}, delivery}` describing the delivered PNG, plus one MCP `ImageContent` block (base64 PNG) over MCP only |
+| `compose_sheet` | mutating / job | `{project, character, clips: [{name, job}] (sheet order, 1-8), reference_id, idempotency_key?}` | `job_result.result`: `{pass, exit, failures, warnings, report, technical, artifact_id, export, summary: {sheet_sha256, dimensions, clips, owner_review_dir}}` |
+| `build_delivery` | mutating / job | `{project, campaign_id, composed: compose job id, target_rev: 40 hex, base_manifest, import_template, idempotency_key?}` | `job_result.result`: `{ok, ref: <job>:bundle/bundle.json, summary: {state: BUILT, files, known_missing_clips, playable_class, next}}` |
+| `delivery_status` | read-only / sync | `{bundle?: build job id, character?}` | `{bundles: [{bundle, character, state, states, target_revision, known_missing_clips, playable_class}], count}`; a tampered bundle is `state: INVALID` with its problem |
+
+- `view_artifact` refs: `<job id>:<relative>` (native jobs, compose/delivery jobs, sync-tool outputs), imported
+  artifact ids, `refs-<12 hex>:still_<direction>.png`. Refused: paths (`invalid_params`), traversal, any symlink,
+  game-checkout targets (`path_refused`), non-PNG content (`refused`), files outside STATE unless they are
+  hash-bound files of an imported artifact, sources over 16 MiB or 64 Mpx. `zoom > 1` past `max_edge` is refused;
+  a zoom-1 source past `max_edge` is downscaled only by an exact integer factor (nearest), otherwise refused with a
+  `contact_sheet` hint. The delivered PNG is at most 4 MiB. The CLI twin (`sonoranlab api view_artifact`) prints the
+  structured part only and writes nothing; the image travels only as MCP content.
+- `compose_sheet` wraps `sonoranlab compose` (docs/runbooks/delivery.md): each `job` is a succeeded native job id
+  (animate: its `sweep/final/job`) or an import id; the reference set must be owner-approved. Output:
+  `<job output>/composed/`, imported into the registry on PASS (`artifact_id`, usable as `smoke_render` candidate).
+  The owner reviews that directory with `sonoranlab review record`.
+- `build_delivery` wraps `sonoranlab deliver build`: the composed job must be production usable (`not_ready`
+  otherwise, at submit), the request is the campaign's frozen admitted request, and `base_manifest` /
+  `import_template` are paths relative to `STATE/staged/` (regular files, no symlink, never the game checkout).
+  Output: `<job output>/{request.json,bundle/}`. It writes nothing outside STATE.
+- There is no apply, verify, rollback or install tool: snapshot apply/verify is a coordinator/owner CLI action and
+  installation is owner-only (ADR-0011). `INSTALLED` is never set by a tool.
 
 ## Registering in Claude Code
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import json
 import logging
 
@@ -13,6 +14,7 @@ from mcp.server.stdio import stdio_server
 
 from sonoranlab.api import call, registry
 from sonoranlab.api.registry import ENVELOPE_SCHEMA, SERVER_VERSION
+from sonoranlab.api.tools import view
 
 
 async def list_tools(ctx: ServerRequestContext, params: types.PaginatedRequestParams | None) -> types.ListToolsResult:
@@ -32,12 +34,20 @@ async def list_tools(ctx: ServerRequestContext, params: types.PaginatedRequestPa
 
 
 async def call_tool(ctx: ServerRequestContext, params: types.CallToolRequestParams) -> types.CallToolResult:
+    def run(name: str, arguments: dict) -> tuple[dict, list[bytes]]:
+        with view.capture() as images:  # view_artifact's PNG travels as ImageContent, never inside the envelope
+            return call(name, arguments), images
+
     # Even read tools touch disk. Keeping every handler in a worker also covers future slow/mutating tools.
-    envelope = await anyio.to_thread.run_sync(
-        call, params.name, params.arguments if params.arguments is not None else {}
+    envelope, images = await anyio.to_thread.run_sync(
+        run, params.name, params.arguments if params.arguments is not None else {}
     )
+    pictures = [
+        types.ImageContent(type="image", data=base64.b64encode(image).decode(), mime_type="image/png")
+        for image in (images if envelope["ok"] else [])
+    ]
     return types.CallToolResult(
-        content=[types.TextContent(type="text", text=json.dumps(envelope))],
+        content=[types.TextContent(type="text", text=json.dumps(envelope)), *pictures],
         structured_content=envelope,
         is_error=not envelope["ok"],
     )
