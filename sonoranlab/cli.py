@@ -148,6 +148,7 @@ def build_parser() -> argparse.ArgumentParser:
     rf.add_argument("--out", type=Path, required=True, help="new directory; refuses to exist")
     rf.add_argument("--cell", type=int, help="cell size (default: profile row, else the smallest fitting)")
     rf.add_argument("--bg-key", help="#rrggbb background key (default: profile alpha.bg_key)")
+    rf.add_argument("--despill-px", type=int, help="magenta despill band in HD px (default: profile processing)")
     rf.set_defaults(func=refprep_cmd)
 
     pr = verbs.add_parser(
@@ -1036,6 +1037,7 @@ def refprep_cmd(args: argparse.Namespace) -> int:
             views=views,
             cell=args.cell,
             bg_key=args.bg_key,
+            despill_px=args.despill_px,
         )
     except (OSError, ValueError) as e:
         print(f"refprep: {e}", file=sys.stderr)

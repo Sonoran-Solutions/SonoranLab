@@ -68,15 +68,22 @@ Owner-directed external HD turnaround art (ADR-0011 route b) becomes candidate s
 ```sh
 uv run sonoranlab refprep --profile profiles/twos-are-up.yaml --request REQUEST \
     --turnaround turnaround.png --grid 4x2 [--order north,north-west,...] \
-    [--view south-west=sw_regenerated.png ...] --out DIR [--cell N] [--bg-key '#ff00ff']
+    [--view south-west=sw_regenerated.png ...] --out DIR [--cell N] [--bg-key '#ff00ff'] [--despill-px N]
 ```
 
 - Cells are split row-major in `--order` (default: profile `directions.order`). `--view DIRECTION=IMG` replaces
   one view with a separate HD image (a regenerated wrong-facing view); `--turnaround` may be omitted only when all
   eight are given as views. Overrides are recorded with their sha256.
-- Matte: chroma key with the profile `key_tol` (tolerates near-#ff00ff noise) + despill; matte islands smaller
-  than 0.5% of the largest component are dropped and listed. Opaque pixels still within 2 x key_tol of the key
-  after matting are reported as a `residual_key` warning: inspect `DIR/crops/`.
+- Matte: chroma key with the profile `key_tol` (tolerates near-#ff00ff noise) + despill (`--despill-px`, default
+  the profile's `processing.despill_px`; both values are recorded). Segmentation runs over the **whole** source
+  image, not grid crops, so a long prop crossing a grid line stays with its figure: components >= 10% of the
+  largest are figures, and each grid cell (in `--order`) must contain exactly one figure centroid (zero or several
+  is an error naming the direction). Specks < 0.5% of the largest are dropped; other detached parts join the
+  nearest figure by pixel distance within 5% of the median figure height (>= 8 HD px), else they are dropped and
+  listed under `segmentation`. Each figure is cropped from its own pixels only.
+- Opaque pixels still within 2 x key_tol of the key after matting are a `residual_key` warning; final pixels
+  palette-locked from key-tinted HD pixels (min(R, B) - G > 24 after despill, e.g. magenta spill on metal) are a
+  `key_tinted` warning with a per-view count: raise `--despill-px` or fix the art. Inspect `DIR/crops/`.
 - One common scale for the turnaround views (median of target height / view height); an `--view` override comes
   from another canvas, so its own standing height is normalised to the target (with only overrides, their median
   is the common scale). refprep.json records each view's source, scale and scale basis. Views more than 4% off the

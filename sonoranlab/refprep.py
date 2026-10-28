@@ -1,7 +1,8 @@
 """`sonoranlab refprep`: deterministic conversion of owner-directed HD turnaround art into CANDIDATE stills (ADR-0011).
 
-Pixel math only, no model. Per view: split the turnaround grid (or take a `--view DIRECTION=IMG` override) -> chroma
-matte with the profile's key_tol + despill (alpha.py) -> keep components >= MIN_COMPONENT_SHARE of the largest ->
+Pixel math only, no model. Per source image (the turnaround, or a `--view DIRECTION=IMG` override): chroma matte with
+the profile's key_tol + despill (alpha.py) -> segment the WHOLE image into figures (one per grid cell, by centroid;
+detached parts join the nearest figure within a bound) and crop each from its own pixels ->
 ONE common scale for the turnaround views (median of target height / view height, target = height_m x density;
 an override view from another canvas is normalised to the target height on its own) ->
 Lanczos to gen_scale x the target size -> the processing-v1 chain (pipeline.process_frame: PixelOE, palette lock,
@@ -25,6 +26,9 @@ from sonoranlab.profile import load_palette, load_profile, sha256_file
 MIN_COMPONENT_SHARE = 0.005  # drop matte islands smaller than 0.5% of the largest component (key noise, specks)
 HEIGHT_DEVIATION_WARN = 0.04  # a view whose height differs > 4% from the target after scaling
 RESIDUAL_KEY_FACTOR = 2  # opaque pixels within this x key_tol of the key after matting are reported as residual key
+FIGURE_SHARE = 0.1  # components >= 10% of the largest are figures (exactly one per grid cell / override image)
+ATTACH_FRACTION = 0.05  # a detached part joins the nearest figure within 5% of the median figure height (>= 8 HD px)
+KEY_TINT = 24  # HD pixel is key-tinted when min(R, B) - G > this after despill (magenta spill on metal)
 MARGIN = 2  # transparent final px around a view while it is processed
 MAX_EDGE = 16384
 
@@ -34,7 +38,8 @@ class RefprepError(ValueError):
 
 
 def components(mask: np.ndarray) -> list[dict]:
-    """8-connected components of a boolean mask (row runs + union-find): [{runs, pixels, bbox}], largest first."""
+    """8-connected components of a boolean mask (row runs + union-find): [{runs, pixels, bbox, centroid [x, y]}],
+    largest first."""
     h, _ = mask.shape
     parent: list[int] = []
 
@@ -64,26 +69,16 @@ def components(mask: np.ndarray) -> list[dict]:
         prev = cur
     comps: dict[int, dict] = {}
     for i, (y, s, e) in enumerate(runs):
-        c = comps.setdefault(find(i), {"runs": [], "pixels": 0, "bbox": [s, y, e - 1, y]})
+        c = comps.setdefault(find(i), {"runs": [], "pixels": 0, "bbox": [s, y, e - 1, y], "sx": 0.0, "sy": 0.0})
         c["runs"].append((y, s, e))
         c["pixels"] += e - s
+        c["sx"] += (s + e - 1) / 2 * (e - s)
+        c["sy"] += y * (e - s)
         b = c["bbox"]
         c["bbox"] = [min(b[0], s), min(b[1], y), max(b[2], e - 1), max(b[3], y)]
+    for c in comps.values():
+        c["centroid"] = [c.pop("sx") / c["pixels"], c.pop("sy") / c["pixels"]]
     return sorted(comps.values(), key=lambda c: (-c["pixels"], c["bbox"]))
-
-
-def keep_components(mask: np.ndarray, share: float = MIN_COMPONENT_SHARE) -> tuple[np.ndarray, list[dict]]:
-    """(mask of the components >= share x the largest, [{pixels, bbox}] of the dropped ones)."""
-    comps = components(mask)
-    out = np.zeros_like(mask, dtype=bool)
-    dropped = []
-    for c in comps:
-        if c["pixels"] >= share * comps[0]["pixels"]:
-            for y, s, e in c["runs"]:
-                out[y, s:e] = True
-        else:
-            dropped.append({"pixels": c["pixels"], "bbox_hd": c["bbox"]})
-    return out, dropped
 
 
 def _hex(c: str) -> tuple[int, int, int]:
@@ -99,35 +94,116 @@ def _open(path: Path) -> Image.Image:
         return im.convert("RGBA")
 
 
-def _matte(im: Image.Image, d: str, key: tuple[int, int, int], key_tol: float, despill_px: int) -> dict:
-    """Matted HD crop of one view: RGBA crop, dropped components and residual key-coloured pixels."""
+def _mask(runs: list[tuple[int, int, int]], shape: tuple[int, int]) -> np.ndarray:
+    m = np.zeros(shape, bool)
+    for y, a, b in runs:
+        m[y, a:b] = True
+    return m
+
+
+def _wave(seeds: np.ndarray, steps: int) -> tuple[np.ndarray, np.ndarray]:
+    """Multi-source Chebyshev growth of a label image for `steps` px: (labels, distance; -1 where unreached).
+    Ties go to the first neighbour in a fixed order, so the result is deterministic."""
+    lab = seeds.copy()
+    dist = np.where(lab > 0, 0, -1)
+    h, w = lab.shape
+    shifts = [(dy, dx) for dy in (-1, 0, 1) for dx in (-1, 0, 1) if dy or dx]
+    for step in range(1, steps + 1):
+        p = np.pad(lab, 1)
+        new = np.zeros_like(lab)
+        for dy, dx in shifts:
+            nb = p[1 + dy : 1 + dy + h, 1 + dx : 1 + dx + w]
+            new = np.where(new == 0, nb, new)
+        grow = (lab == 0) & (new > 0)
+        if not grow.any():
+            break
+        lab[grow], dist[grow] = new[grow], step
+    return lab, dist
+
+
+def _segment(
+    im: Image.Image, cells: dict[str, tuple[int, int, int, int]], key, key_tol: float, despill_px: int, what: str
+) -> tuple[dict[str, dict], dict]:
+    """Matte one source image and split it into figures over the WHOLE image (no grid cropping, so a prop crossing
+    a grid line stays with its figure). Figures are the components >= FIGURE_SHARE of the largest; each wanted cell
+    must contain exactly one figure centroid. Specks < MIN_COMPONENT_SHARE are dropped; other detached parts join
+    the nearest figure by pixel distance within a bound, else they are dropped and reported. Each figure is cropped
+    from its own pixel set."""
     rgb, alpha = extract_alpha(im, key, key_tol)
     rgb, _ = despill(rgb, alpha, despill_px, key)
     mask = alpha >= 128
-    if not mask.any():
-        raise RefprepError(
-            f"view {d}: no opaque pixels after the chroma key (blank grid cell?); views are never synthesised"
-        )
-    mask, dropped = keep_components(mask)
-    ys, xs = np.nonzero(mask)
-    x0, y0, x1, y1 = int(xs.min()), int(ys.min()), int(xs.max()), int(ys.max())
-    crop = np.zeros((y1 - y0 + 1, x1 - x0 + 1, 4), np.uint8)
-    m = mask[y0 : y1 + 1, x0 : x1 + 1]
-    crop[m, :3] = rgb[y0 : y1 + 1, x0 : x1 + 1][m]
-    crop[m, 3] = 255
-    dist = np.linalg.norm(crop[..., :3].astype(np.float32) - np.array(key, np.float32), axis=-1)
-    residual = int((m & (dist <= RESIDUAL_KEY_FACTOR * key_tol)).sum())
-    return {"crop": crop, "bbox_hd": [x0, y0, x1, y1], "dropped": dropped, "residual_key_px": residual}
+    comps = components(mask)
+    if not comps:
+        raise RefprepError(f"{what}: no opaque pixels after the chroma key; views are never synthesised")
+    biggest = comps[0]["pixels"]
+    figs = [c for c in comps if c["pixels"] >= FIGURE_SHARE * biggest]
+    owner: dict[str, dict] = {}
+    for d, (x0, y0, x1, y1) in cells.items():
+        inside = [c for c in figs if x0 <= c["centroid"][0] < x1 and y0 <= c["centroid"][1] < y1]
+        if not inside:
+            raise RefprepError(f"view {d}: no figure in its {what} cell (blank?); views are never synthesised")
+        if len(inside) > 1:
+            raise RefprepError(
+                f"view {d}: {len(inside)} figure-sized components in its {what} cell (ambiguous; sizes "
+                f"{[c['pixels'] for c in inside]} HD px); prepare that view separately with --view"
+            )
+        owner[d] = inside[0]
+    seeds = np.zeros(mask.shape, np.int32)
+    for k, c in enumerate(figs, 1):
+        for y, a, b in c["runs"]:
+            seeds[y, a:b] = k
+    bound = max(8, round(ATTACH_FRACTION * float(np.median([c["bbox"][3] - c["bbox"][1] + 1 for c in figs]))))
+    lab, dist = _wave(seeds, bound)
+    attached: dict[int, list[dict]] = {k: [] for k in range(1, len(figs) + 1)}
+    dropped: list[dict] = []
+    fig_ids = {id(c) for c in figs}
+    for c in comps:
+        if id(c) in fig_ids:
+            continue
+        info = {"pixels": c["pixels"], "bbox_hd": c["bbox"]}
+        if c["pixels"] < MIN_COMPONENT_SHARE * biggest:
+            dropped.append(info | {"reason": "speck"})
+            continue
+        best = None
+        for y, a, b in c["runs"]:
+            row = dist[y, a:b]
+            ok = np.flatnonzero(row >= 0)
+            if len(ok):
+                i = ok[np.argmin(row[ok])]
+                if best is None or row[i] < best[0]:
+                    best = (int(row[i]), int(lab[y, a + i]))
+        if best is None:
+            dropped.append(info | {"reason": f"farther than {bound} HD px from every figure"})
+        else:
+            attached[best[1]].append(info | {"distance_hd": best[0], "c": c})
+    views = {}
+    for d, c in owner.items():
+        k = next(i for i, f in enumerate(figs, 1) if f is c)
+        runs = c["runs"] + [r for a in attached[k] for r in a["c"]["runs"]]
+        m = _mask(runs, mask.shape)
+        ys, xs = np.nonzero(m)
+        x0, y0, x1, y1 = int(xs.min()), int(ys.min()), int(xs.max()), int(ys.max())
+        crop = np.zeros((y1 - y0 + 1, x1 - x0 + 1, 4), np.uint8)
+        mc = m[y0 : y1 + 1, x0 : x1 + 1]
+        crop[mc, :3] = rgb[y0 : y1 + 1, x0 : x1 + 1][mc]
+        crop[mc, 3] = 255
+        far = np.linalg.norm(crop[..., :3].astype(np.float32) - np.array(key, np.float32), axis=-1)
+        views[d] = {
+            "crop": crop,
+            "bbox_hd": [x0, y0, x1, y1],
+            "attached": [{k2: v for k2, v in a.items() if k2 != "c"} for a in attached[k]],
+            "residual_key_px": int((mc & (far <= RESIDUAL_KEY_FACTOR * key_tol)).sum()),
+        }
+    summary = {"figures": len(figs), "attach_bound_hd": bound, "dropped": dropped}
+    return views, summary
 
 
-def _grid_cells(img: Image.Image, cols: int, rows: int, order: list[str]) -> dict[str, tuple[Image.Image, list[int]]]:
-    w, h = img.size
-    out = {}
-    for i, d in enumerate(order):
-        c, r = i % cols, i // cols
-        box = (c * w // cols, r * h // rows, (c + 1) * w // cols, (r + 1) * h // rows)
-        out[d] = (img.crop(box), [c, r])
-    return out
+def _grid_boxes(size: tuple[int, int], cols: int, rows: int, order: list[str]) -> dict[str, tuple[int, ...]]:
+    w, h = size
+    return {
+        d: (i % cols * w // cols, i // cols * h // rows, (i % cols + 1) * w // cols, (i // cols + 1) * h // rows)
+        for i, d in enumerate(order)
+    }
 
 
 def refprep(
@@ -141,6 +217,7 @@ def refprep(
     views: dict[str, Path] | None = None,
     cell: int | None = None,
     bg_key: str | None = None,
+    despill_px: int | None = None,
 ) -> dict:
     """Write candidate stills, crops, contact and refprep.json into the new directory `out`; return refprep.json."""
     from sonoranlab.pipeline import _pixeloe_logs_to_stderr, process_frame
@@ -178,16 +255,28 @@ def refprep(
     pr, gen = prof.processing, prof.canvas.gen_scale
     target_h = round(req["height_m"] * prof.canvas.density_px_per_m)
 
-    # ---- matte every view (grid cell or override), in profile order
+    despill_px = pr.despill_px if despill_px is None else despill_px
+    if isinstance(despill_px, bool) or not isinstance(despill_px, int) or despill_px < 0:
+        raise RefprepError(f"--despill-px {despill_px!r}: expected a non-negative integer")
+
+    # ---- matte and segment every source image (the turnaround as a whole, each override alone)
     sources: dict[str, dict] = {}
-    images: dict[str, Image.Image] = {}
+    matted: dict[str, dict] = {}
+    segmentation: dict[str, dict] = {}
     if turnaround is not None:
-        for d, (im, at) in _grid_cells(_open(turnaround), cols, rows, order).items():
-            images[d], sources[d] = im, {"source": "turnaround", "grid_cell": at}
+        img = _open(turnaround)
+        boxes = _grid_boxes(img.size, cols, rows, order)
+        wanted = {d: b for d, b in boxes.items() if d not in views}
+        found, segmentation["turnaround"] = _segment(img, wanted, key, pr.key_tol, despill_px, "turnaround grid")
+        matted |= found
+        for d in wanted:
+            i = order.index(d)
+            sources[d] = {"source": "turnaround", "grid_cell": [i % cols, i // cols]}
     for d, p in views.items():
-        images[d] = _open(p)
+        img = _open(p)
+        found, segmentation[d] = _segment(img, {d: (0, 0, *img.size)}, key, pr.key_tol, despill_px, "override image")
+        matted |= found
         sources[d] = {"source": "view_override", "path": str(p), "sha256": sha256_file(p)}
-    matted = {d: _matte(images[d], d, key, pr.key_tol, pr.despill_px) for d in profile_order}
 
     # ---- scale (final px per HD px) per source image: the turnaround views share ONE common scale (median of target
     # height / view height) so their proportions stay consistent; an override comes from another canvas, so its own
@@ -210,10 +299,11 @@ def refprep(
                 f"residual_key: {d} keeps {n} opaque HD px within {RESIDUAL_KEY_FACTOR}x key_tol of the key after "
                 "matting (uneven background or key-coloured art); inspect crops/"
             )
-        if matted[d]["dropped"]:
-            warnings.append(f"dropped_components: {d} dropped {len(matted[d]['dropped'])} small matte islands")
 
     # ---- resize, process (processing-v1 chain), measure
+    for name, seg in segmentation.items():
+        if seg["dropped"]:
+            warnings.append(f"dropped_components: {name} dropped {len(seg['dropped'])} detached matte islands")
     _pixeloe_logs_to_stderr()
     small: dict[str, np.ndarray] = {}
     stats: dict[str, dict] = {}
@@ -229,7 +319,7 @@ def refprep(
             palette=pal,
             bg_key=key,
             key_tol=pr.key_tol,
-            despill_px=pr.despill_px,
+            despill_px=despill_px,
             downscaler=pr.downscaler,
             thickness=pr.thickness,
             threshold=prof.alpha.threshold,
@@ -237,6 +327,16 @@ def refprep(
             max_colours=prof.palette.max_colors_per_cell,
         )
         f = stages["04_clean"]
+        hd_px = stages["01_alpha"].astype(np.int16)
+        tint = (hd_px[..., 3] >= 128) & (np.minimum(hd_px[..., 0], hd_px[..., 2]) - hd_px[..., 1] > KEY_TINT)
+        h, w = f.shape[:2]
+        tinted = int((tint.reshape(h, gen, w, gen).any((1, 3)) & (f[..., 3] > 0)).sum())
+        st = st | {"key_tinted_px": tinted}
+        if tinted:
+            warnings.append(
+                f"key_tinted: {d} has {tinted} opaque px palette-locked from key-tinted HD pixels (magenta spill; "
+                f"raise --despill-px, now {despill_px}, or fix the art)"
+            )
         if not f[..., 3].any():
             raise RefprepError(f"view {d}: empty after pixelization (view too small for the target height?)")
         small[d], stats[d] = f, st | {"target_size": [sw, sh]}
@@ -300,7 +400,11 @@ def refprep(
             "order": order,
             "bg_key": "#" + bytes(key).hex(),
             "key_tol": pr.key_tol,
-            "despill_px": pr.despill_px,
+            "despill_px": despill_px,
+            "despill_px_profile": pr.despill_px,
+            "figure_share": FIGURE_SHARE,
+            "attach_fraction": ATTACH_FRACTION,
+            "key_tint": KEY_TINT,
             "min_component_share": MIN_COMPONENT_SHARE,
             "processing_version": pr.version,
             "downscaler": pr.downscaler,
@@ -325,7 +429,7 @@ def refprep(
             | {
                 "bbox_hd": matted[d]["bbox_hd"],
                 "height_hd": heights[d],
-                "dropped_components": matted[d]["dropped"],
+                "attached_components": matted[d]["attached"],
                 "residual_key_px": matted[d]["residual_key_px"],
                 "chain": stats[d],
                 "final_bbox": _bbox(stills[d]),
@@ -333,6 +437,7 @@ def refprep(
             }
             for d in profile_order
         },
+        "segmentation": segmentation,
         "warnings": warnings,
         "outputs": hashes,
         "check": result,

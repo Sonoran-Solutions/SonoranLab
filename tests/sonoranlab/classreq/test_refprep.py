@@ -136,3 +136,56 @@ def test_override_from_a_3x_canvas_is_normalised_to_the_target_height(tmp_path, 
     assert ys.max() == CELL - 4 and ys.max() - ys.min() + 1 == 43 and xs.max() - xs.min() + 1 == 16
     assert doc["check"]["status"] == "ready", doc["check"]["findings"]
     capsys.readouterr()
+
+
+def test_prop_across_the_grid_line_stays_with_its_figure(tmp_path, profile, capsys):
+    """Regression (real data): a rifle crossing a grid line was cut by fixed grid cropping. Segmentation runs over
+    the whole image: the prop stays whole and the neighbour cell gets no fragment. A detached part near a figure
+    joins it; a detached part far from every figure is dropped and reported."""
+    arr = np.asarray(Image.open(turnaround(tmp_path / "turn.png"))).copy()
+    dark = PALETTE[0]
+    # north-west figure spans x 353..416, y 64..235; a 4 px thin prop runs left across x = 256 into the north cell
+    arr[152:156, 201:353] = dark
+    # south figure spans x 100..163, y 320..491: a detached 8x8 part 4 px to its right, and a far 8x8 island
+    arr[356:364, 168:176] = dark
+    arr[260:268, 4:12] = dark
+    Image.fromarray(arr).save(tmp_path / "prop.png")
+    code, out = refprep(tmp_path, profile, "--turnaround", tmp_path / "prop.png")
+    assert code == 0, capsys.readouterr().err
+    doc = json.loads((out / "refprep.json").read_text())
+    got = stills(out)
+
+    def crop(f):
+        ys, xs = np.nonzero(f[..., 3])
+        return f[ys.min() : ys.max() + 1, xs.min() : xs.max() + 1]
+
+    assert np.array_equal(crop(got["north"]), figure("north", height=43))  # no rifle-tip fragment
+    nw = crop(got["north-west"])
+    assert nw.shape[:2] == (43, 16 + 38)  # the whole prop (152 HD px = 38 px) is kept
+    assert np.array_equal(nw[:, 38:], figure("north-west", height=43))
+    assert (nw[22, :38, :3] == dark).all() and (nw[22, :38, 3] == 255).all()
+    south = crop(got["south"])
+    assert south.shape[:2] == (43, 19) and np.array_equal(south[:, :16], figure("south", height=43))
+    assert doc["views"]["south"]["attached_components"][0]["distance_hd"] == 5
+    dropped = doc["segmentation"]["turnaround"]["dropped"]
+    assert [d["bbox_hd"] for d in dropped] == [[4, 260, 11, 267]] and "farther" in dropped[0]["reason"]
+    assert any(w.startswith("dropped_components: turnaround") for w in doc["warnings"])
+    assert doc["check"]["status"] == "ready", doc["check"]["findings"]
+    capsys.readouterr()
+
+
+def test_key_tinted_pixels_are_reported_and_despill_px_is_an_override(tmp_path, profile, capsys):
+    arr = np.asarray(Image.open(turnaround(tmp_path / "turn.png"))).copy()
+    arr[64:236, 96:98] = (180, 60, 180)  # magenta spill on the outer 2 HD px of the north figure's left outline
+    Image.fromarray(arr).save(tmp_path / "tint.png")
+    _, raw = refprep(tmp_path, profile, "--turnaround", tmp_path / "tint.png", "--despill-px", 0, name="raw")
+    doc = json.loads((raw / "refprep.json").read_text())
+    assert doc["parameters"]["despill_px"] == 0 and doc["parameters"]["despill_px_profile"] == 2
+    assert doc["views"]["north"]["chain"]["key_tinted_px"] > 0
+    assert any(w.startswith("key_tinted: north") for w in doc["warnings"])
+    _, fixed = refprep(tmp_path, profile, "--turnaround", tmp_path / "tint.png", name="fixed")
+    doc = json.loads((fixed / "refprep.json").read_text())
+    assert doc["parameters"]["despill_px"] == 2
+    assert all(v["chain"]["key_tinted_px"] == 0 for v in doc["views"].values())
+    assert refprep(tmp_path, profile, "--turnaround", tmp_path / "tint.png", "--despill-px", -1, name="neg")[0] == 2
+    capsys.readouterr()
