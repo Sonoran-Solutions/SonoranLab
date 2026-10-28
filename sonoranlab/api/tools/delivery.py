@@ -99,6 +99,8 @@ class ComposeSheet:
             raise ToolError("invalid_params", "Each clip appears once", field="clips")
         if unknown := [n for n in names if n not in profile.character(params["character"]).animations]:
             raise ToolError("invalid_params", f"Unknown profile clips {unknown}", field="clips")
+        if params.get("campaign_id"):
+            campaign.check_composition(params["campaign_id"], params, ctx)  # DYL-129: selected candidates only
         jobs = [(c["name"], _clip_job(c["job"], ctx)) for c in params["clips"]]
         stills = _approved_stills(params["project"], params["character"], params["reference_id"], ctx)
         return profile, jobs, stills
@@ -145,6 +147,10 @@ class ComposeSheet:
                 "artifact_id"
             ]
             result["export"] = str(sheet)
+            if params.get("campaign_id"):
+                campaign.record_composed(
+                    params["campaign_id"], params, job["job_id"], result["artifact_id"], sha256_file(sheet), api_ctx
+                )
             result["summary"] = {
                 "sheet_sha256": sha256_file(sheet),
                 "dimensions": size,
@@ -288,6 +294,7 @@ TOOLS = (
                     "description": "Sheet order, e.g. idle then run.",
                 },
                 "reference_id": {"type": "string", "pattern": "^refs-[0-9a-f]{12}$"},
+                "campaign_id": {"type": "string", "pattern": f"^{campaign.CAMPAIGN_ID}$"},
                 "idempotency_key": _KEY,
             },
             ["project", "character", "clips", "reference_id"],

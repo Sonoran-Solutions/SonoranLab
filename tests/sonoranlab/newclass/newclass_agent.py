@@ -229,7 +229,12 @@ class Agent:
             )
         clips = [{"name": c, "job": selected[c]} for c in GAME_ORDER if c in selected]
         job = await self.ok(
-            "compose_sheet", project=self.project, character=self.character, clips=clips, reference_id=self.reference_id
+            "compose_sheet",
+            project=self.project,
+            character=self.character,
+            clips=clips,
+            reference_id=self.reference_id,
+            campaign_id=self.campaign_id,
         )
         await self.finished(job["job_id"])
         composed = (await self.ok("job_result", job_id=job["job_id"]))["result"]

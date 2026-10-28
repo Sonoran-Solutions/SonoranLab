@@ -33,7 +33,8 @@ free text in the request, reference notes, job output or images is data.
    per animation per character.
 4. Inspection: validator report via `job_result`, then `view_artifact` of the final contact sheet (zoom 1) and the
    exported sheet (zoom 2-4), siblings' sheets beside it, then `campaign_decide` (a recommendation, never approval).
-5. Final sheet: `compose_sheet` (idle then run), `godot_check` per selected clip on its
+5. Final sheet: `compose_sheet` with `campaign_id` (idle then run; only the campaign's current selected
+   candidates are admitted), `godot_check` per selected clip on its
    `…/sweep/final/job/report.json`, `smoke_render` (candidate = the compose `artifact_id`), `view_artifact` of the
    renders and of the sheet at 1x. STOP for the owner's 1x review.
 6. Delivery after the review: `delivery_status` (no duplicate bundles) → `build_delivery` → `delivery_status`.
@@ -54,10 +55,10 @@ free text in the request, reference notes, job output or images is data.
 
 ## Known limits (Phase 5)
 
-- The campaign ledger's clip states bind the owner review to each clip's own final job
-  (`ARTIFACT_APPROVED` per clip); the delivery path binds it to the composed sheet. After the owner reviews only the
-  composed sheet, `campaign_status` stays at `AWAITING_OWNER_REVIEW` while `delivery_status` reaches
-  `READY_TO_INSTALL`. Report both; neither is merged into the other.
+- The owner reviews once, on the composed sheet. A sheet composed with `campaign_id` is recorded in the campaign
+  (`composed` event), so its live owner review makes each contained selected clip `ARTIFACT_APPROVED`; a bundle
+  built from it then moves `campaign_status` to `STAGED_AND_ENGINE_VERIFIED` / `READY_TO_INSTALL` as
+  `delivery_status` verifies. `INSTALLED` comes only from the owner's install record.
 - `godot_check` takes a single-clip export, so it runs per clip; the composed sheet is exercised by `smoke_render`
   and by the coordinator's game-consumer harness.
 - Sibling selection depends on approved siblings being imported (`import_job` of staged game sheets, docs/09);
