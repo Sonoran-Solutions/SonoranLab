@@ -38,6 +38,7 @@ no placeholder tools in discovery. See ADR-0010 for each library/CLI mapping.
 | `import_job` | mutating / sync | Implemented: index existing jobs and hashes without modifying them |
 | `register_character` | mutating / sync | Implemented: immutable still copies, initially unapproved |
 | `check_class_request` | read-only / sync | Implemented (DYL-128): class request + registered stills admission |
+| `campaign_*` (7) | mixed / sync, `campaign_submit` job | Implemented (DYL-129): resumable class campaign ledger, see below |
 | `validate` | mutating / sync | Implemented (DYL-117): validator report in a new output directory |
 | `contact_sheet` | mutating / sync | Implemented (DYL-117): new review image output directory |
 | `compare` | mutating / sync | Implemented (DYL-117): new side-by-side contact and report output directory |
@@ -477,6 +478,41 @@ with `request_invalid` findings; nothing in it is interpreted. `request_sha256` 
 for the CLI file and the MCP object. Finding codes and the CLI usage are in
 [the new-class references runbook](runbooks/new-class-references.md). `refprep` and `classreq propose-row` are
 CLI-only owner preparation steps, not tools.
+
+## Class campaigns (DYL-129)
+
+A resumable ledger over the durable job manager (ADR-0011 states, budgets and escalation); see
+[the campaigns runbook](runbooks/campaigns.md). `campaign_submit` is a campaign's only generation path. Every
+tool has a `sonoranlab campaign <verb>` CLI form printing the same envelope.
+
+| Tool | Access / kind | Input | Result |
+|---|---|---|---|
+| `campaign_create` | mutating / sync | `{project, request: object, reference_id: refs-<12 hex>, revise?: campaign_id, max_seeds_per_clip?: 1-1000, budget_decision_ref?}` | `{created, campaign_id, revision, state, frozen_sha256, budget}`; not admitted: `{created: false, state, findings, request_sha256}` and nothing written |
+| `campaign_status` | read-only / sync | `{campaign_id}` | `{state, gate, clips: {clip: {state, reason, budget: {base, granted, consumed, remaining, not_consumed}, attempt_limit, seeds_used, candidates, selected, attempts}}, next_actions, problems, ledger}` |
+| `campaign_submit` | mutating / job | `{campaign_id, clip, seed?}` | `{job_id, job_state, seed, idempotency_key, budget}` |
+| `campaign_decide` | mutating / sync | `{campaign_id, job_id, decision: selected\|rejected, reason}` | `{decision, clip_state}`; selected requires technical PASS; a recommendation, not approval |
+| `campaign_escalate` | mutating / sync | `{campaign_id, clip, reason}` | best two candidates (pass, then fewest validator failures/warnings) with diagnostics |
+| `campaign_report` | read-only / sync | `{campaign_id}` | per-clip attempts, outcome classes, timings, memory, explicit costs, interventions, null-aware totals |
+| `campaign_note` | mutating / sync | `{campaign_id, text?, cost?: {source, units, amount}}` | appended event sequence numbers |
+
+`campaign_id` is `camp-<UTC yyyymmddThhmmssZ>-<8 hex>`; records live under
+`STATE/campaigns/<project>/<character>/<campaign_id>/` (`frozen-r<N>.json`, hash-chained `events.jsonl`,
+`head.json`, `campaign.lock`). State is derived on every read from events, the job store (`job_status`
+reconciliation) and registry approval/review checks; it is never stored. Gate states: `NEEDS_OWNER_INPUT`,
+`NEEDS_REFERENCE_PREPARATION`, `AWAITING_REFERENCE_APPROVAL`, `AWAITING_PROFILE_ROW`, then `READY`. Clip states:
+`BLOCKED` > `GENERATING` > `ARTIFACT_APPROVED` > `AWAITING_OWNER_REVIEW` > `TECHNICAL_PASS` > `HOLD_BUDGET` >
+`READY`; the campaign takes the gate state, else BLOCKED/GENERATING if any attempt is, else the least advanced
+planned clip; all clips approved plus an owner delivery record gives `STAGED_AND_ENGINE_VERIFIED`,
+`READY_TO_INSTALL` or `INSTALLED`. Submission is refused while any attempt is in flight (`conflict`, GENERATING) or
+blocked (`refused`, BLOCKED), when the clip's budget or the profile attempt limit is spent (`refused`, HOLD_BUDGET),
+or when a selected candidate awaits owner review. A concurrent writer gets `conflict` with message `campaign_busy`.
+Submission always uses Track E `animate` with the guard's default 40 GiB; no track switch, no memory change.
+Plain `animate` and `retry_job` are `refused` for a clip owned by a campaign (animate admission check). A revision
+carries each clip's cap; candidates, selections, reviews and delivery count only for the current frozen inputs.
+Owner events count only when the owner CLI committed them in `head.json`.
+
+Owner decisions (`budget_grant` adds seeds, `resume` clears a non-artistic block, `install`, `delivery`) are
+**CLI only**: `sonoranlab campaign owner-decision`. There is no MCP tool for them.
 
 ## Registering in Claude Code
 
