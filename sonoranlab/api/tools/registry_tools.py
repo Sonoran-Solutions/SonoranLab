@@ -22,8 +22,16 @@ TOOLS = (
     ),
     Tool(
         "get_character",
-        "Read reference hashes, approval evidence, imported jobs and current human review.",
-        _schema({"project": _ID, "character": _ID}, ["project", "character"]),
+        "Read references, approval evidence and one bounded page of merged native and imported job history.",
+        _schema(
+            {
+                "project": _ID,
+                "character": _ID,
+                "jobs_offset": {"type": "integer", "minimum": 0, "default": 0},
+                "jobs_limit": {"type": "integer", "minimum": 1, "maximum": 200, "default": 50},
+            },
+            ["project", "character"],
+        ),
         True,
         "sync",
         lambda p, c: operations.get_character(**p, ctx=c),
