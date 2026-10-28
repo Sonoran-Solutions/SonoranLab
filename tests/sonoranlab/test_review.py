@@ -1,14 +1,17 @@
 """Production review is bound to the exact reviewed artifact; it cannot make a failed or altered job usable."""
 
 import builtins
+import hashlib
 import io
 import json
 import os
 import shutil
 import stat
+import subprocess
 from pathlib import Path
 
 import pytest
+import yaml
 from test_pipeline import process, raw_set, toy_profile
 
 from sonoranlab.artifacts import sha256_file
@@ -668,3 +671,60 @@ def test_shared_hasher_and_writer_stay_permissive_for_the_pipeline(tmp_path):
 def test_invisible_reviewer_is_refused(job, name):
     with pytest.raises(ValueError, match="REVIEW_REVIEWER_INVALID"):
         record_review(job, **{**PASS, "reviewer": name})
+
+
+def _git_profile(job, edit):
+    """Move the job's profile into a git repo, bind the manifest to that commit, then apply `edit` to the file."""
+    manifest_path = job / "manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    repo = job.parent / "profile-repo"
+    repo.mkdir()
+    doc = yaml.safe_load(Path(manifest["profile"]["path"]).read_text())
+    doc["characters"]["villain"] = dict(doc["characters"][manifest["character"]])
+    profile = repo / "toy.yaml"
+    profile.write_text(yaml.safe_dump(doc, sort_keys=False))
+    git = ["git", "-C", str(repo), "-c", "user.name=t", "-c", "user.email=t@t"]
+    subprocess.run([*git, "init", "-q"], check=True)
+    subprocess.run([*git, "add", "toy.yaml"], check=True)
+    subprocess.run([*git, "commit", "-qm", "p"], check=True)
+    rev = subprocess.run([*git, "rev-parse", "HEAD"], check=True, capture_output=True, text=True).stdout.strip()
+    manifest["profile"] = {"path": str(profile), "sha256": hashlib.sha256(profile.read_bytes()).hexdigest()}
+    manifest["git"] = rev
+    manifest_path.write_text(json.dumps(manifest))
+    record_review(job, **PASS)
+    assert production_usable(job)
+    edit(doc, manifest["character"])
+    profile.write_text(yaml.safe_dump(doc, sort_keys=False))
+    return manifest_path, manifest
+
+
+def test_other_characters_row_change_keeps_binding(job):
+    _git_profile(job, lambda doc, me: doc["characters"]["villain"].update(max_attempts_per_animation=6))
+    assert review_errors(job) == [] and production_usable(job)
+
+
+@pytest.mark.parametrize(
+    "edit",
+    [
+        lambda doc, me: doc["characters"][me].update(cell=doc["characters"][me]["cell"] + 1),
+        lambda doc, me: doc["autonomy"].update(max_attempts_per_animation=6),
+        lambda doc, me: doc["characters"].pop(me),
+    ],
+    ids=["own-row", "shared-setting", "own-row-removed"],
+)
+def test_own_row_or_shared_setting_change_breaks_binding(job, edit):
+    _git_profile(job, edit)
+    assert not production_usable(job)
+
+
+@pytest.mark.parametrize("field", ["git", "sha256"])
+def test_unverifiable_recorded_profile_breaks_binding(job, field):
+    manifest_path, manifest = _git_profile(
+        job, lambda doc, me: doc["characters"]["villain"].update(max_attempts_per_animation=6)
+    )
+    if field == "git":
+        manifest["git"] = "0" * 40
+    else:
+        manifest["profile"]["sha256"] = "0" * 64
+    manifest_path.write_text(json.dumps(manifest))
+    assert not production_usable(job)
