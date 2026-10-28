@@ -34,5 +34,7 @@ def test_real_render_of_synthetic_sheets(lab, tmp_path, monkeypatch):
         timeout=600,
     )
     print(json.dumps({k: doc[k] for k in ("status", "engine", "godot", "border", "supervision")}, indent=1))
-    print("failed checks:", {k: v for k, v in doc["checks"].items() if not v["pass"]}, "->", out / "smoke.json")
+    for name, check in doc["checks"].items():
+        print(("PASS " if check["pass"] else "FAIL "), name, json.dumps(check, sort_keys=True)[:1500])
+    print("->", out / "smoke.json")
     assert doc["exit"] == 0 and doc["status"] == "pass"

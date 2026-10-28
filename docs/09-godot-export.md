@@ -150,8 +150,7 @@ planned pixels (refused before anything is written) and 32 MiB of PNG (extra ren
 **Objective checks** (`smoke.json` `checks`; every one must pass): `alpha_binary` and `no_baked_border` per sheet (no
 semi-transparent source pixel; no near-white silhouette ring), `frames_and_timing_match_manifest` (candidate clips vs the
 profile's animations), `mirrored_rows_exact`, `cells_uncropped`, `render_complete`, `all_stills_and_clip_frames_rendered`,
-`nearest_filtering` (every opaque source pixel equals its block in each render within `color_tolerance` 2; the observed
-maximum is recorded) and `alpha_and_border` (render alpha binary; outside the sprite only the background, or with the
+`nearest_filtering` (every opaque source pixel equals its block in each render within 2 codes, dark channels below 48 within 6, and each source colour renders as exactly one colour everywhere; the first real run, Godot 4.7.2 + llvmpipe + the game's shader, showed dark channels 1-5 codes darker, e.g. (17,13,12) -> (13,8,7), 34 -> 32, 40 -> 39, >= 60 exact; the changed colours are listed in `colour_map_changed`) and `alpha_and_border` (render alpha binary; outside the sprite only the background, or with the
 shader a flat keyline ring then a flat outer ring of two different colours, observed colours recorded). The tolerance and
 the border-colour handling were chosen without a real run: confirm them on the first real render. `agent_recommendation`
 and `owner_style_acceptance` are always empty; style acceptance is the owner's.

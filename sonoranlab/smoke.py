@@ -41,9 +41,12 @@ MARGIN, GAP, GROUP_GAP = 8, 8, 16  # 1x pixels: canvas margin, between character
 MAX_EDGE = 12288  # render pixels per image edge (llvmpipe textures are safe up to 16384)
 MAX_TOTAL_PIXELS = 300_000_000
 MAX_TOTAL_BYTES = 32 << 20
-COLOR_TOL = (
-    2  # max channel deviation accepted between source and render (sRGB round trip); the observed max is recorded
-)
+COLOR_TOL = 2  # max channel deviation for source channels >= DARK_BELOW (sRGB round trip); observed max is recorded
+# Measured on the first real run (Godot 4.7.2, llvmpipe, the game's shader): dark sRGB channels come out darker by 1-5
+# codes ((17,13,12) -> (13,8,7), 34 -> 32, 40 -> 39, >= 60 exact), a fixed offset of about 0.0016 in linear light,
+# consistently for every pixel of a colour. It is the engine's colour path, not filtering, so dark channels get
+# DARK_TOL; filtering is judged separately by requiring one render colour per source colour (see `colour_map`).
+DARK_BELOW, DARK_TOL = 48, 6
 REQUIRED_UNIFORMS = ("sheet", "grid", "cell", "cell_pixels")
 LABEL = re.compile(r"^[a-z0-9][a-z0-9_]*$")
 SHADER_NAME = "PixelStandee.gdshader"
@@ -512,6 +515,7 @@ def check_render(img: np.ndarray, spec: RenderSpec, parts: list[Sheet], bg: np.n
     img = img.astype(np.int16)
     covered = np.zeros(img.shape[:2], bool)
     max_dev = bad_opaque = bad_bg = bad_cell = 0
+    colour_pairs: set[tuple] = set()
     ring1: list[np.ndarray] = []
     ring2: list[np.ndarray] = []
     for q in spec.quads:
@@ -525,10 +529,14 @@ def check_render(img: np.ndarray, spec: RenderSpec, parts: list[Sheet], bg: np.n
         src = parts[q.part].cell_at(q.row, q.col)
         opaque, z1, z2 = zones(src)
         op, m1, m2 = _up(opaque, s), _up(z1, s), _up(z2, s)
-        dev = np.abs(region - _up(src[..., :3].astype(np.int16), s)).max(-1)
+        want = _up(src[..., :3].astype(np.int16), s)
+        diff = np.abs(region - want)
+        limit = np.where(want >= DARK_BELOW, tol, DARK_TOL)
         if op.any():
-            max_dev = max(max_dev, int(dev[op].max()))
-            bad_opaque += int((dev[op] > tol).sum())
+            max_dev = max(max_dev, int(diff[op].max()))
+            bad_opaque += int((diff[op] > limit[op]).any(-1).sum())
+            pairs = np.unique(np.concatenate([want[op], region[op]], axis=1), axis=0)
+            colour_pairs.update(map(tuple, pairs.tolist()))
         rest = ~op & ~m1 & ~m2 if border else ~op
         bad_bg += int((np.abs(region - bg).max(-1)[rest] > tol).sum())
         if border:
@@ -541,6 +549,7 @@ def check_render(img: np.ndarray, spec: RenderSpec, parts: list[Sheet], bg: np.n
         "bad_opaque_pixels": bad_opaque,
         "bad_background_pixels": bad_bg,
         "bad_cells": bad_cell,
+        "colour_pairs": colour_pairs,
     }
     if border:
         meds, bad = [], 0
@@ -750,9 +759,19 @@ def run_smoke(
         "expected_renders": len(expected),
     }
     devs = list(per_render.values())
+    colour_map: dict[tuple, set] = {}
+    for d in devs:
+        for pair in d.pop("colour_pairs"):
+            colour_map.setdefault(pair[:3], set()).add(pair[3:])
+    split = {k: sorted(v) for k, v in colour_map.items() if len(v) > 1}
     checks["nearest_filtering"] = {
-        "pass": bool(devs) and all(d["bad_opaque_pixels"] == 0 and d["bad_cells"] == 0 for d in devs),
-        "method": "every opaque source pixel compared with its nearest-upscaled block in each render",
+        "pass": bool(devs) and not split and all(d["bad_opaque_pixels"] == 0 and d["bad_cells"] == 0 for d in devs),
+        "method": "every opaque source pixel vs its nearest-upscaled block; dark channels (< 48) may shift up to 6, "
+        "and one source colour must render as exactly one colour in every render (blending would split it)",
+        "colour_map_changed": {str(list(k)): list(next(iter(v))) for k, v in colour_map.items() if k not in v},
+        "colours_rendered_as_several": {str(list(k)): v for k, v in split.items()},
+        "dark_below": DARK_BELOW,
+        "dark_tolerance": DARK_TOL,
         "max_deviation_observed": max((d["max_opaque_deviation"] for d in devs), default=None),
         "tolerance": COLOR_TOL,
         "bad_pixels": sum(d["bad_opaque_pixels"] for d in devs),
