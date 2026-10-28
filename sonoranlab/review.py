@@ -163,7 +163,17 @@ def _same_character_profile(path: Path, sha: object, rev: object, character: obj
     old_rows, new_rows = old.pop("characters", None), new.pop("characters", None)
     if not (isinstance(old_rows, dict) and isinstance(new_rows, dict) and character in old_rows):
         return False
-    return _canonical(old) == _canonical(new) and _canonical(old_rows[character]) == _canonical(new_rows.get(character))
+    old_row, new_row = old_rows[character], new_rows.get(character)
+    if not (isinstance(old_row, dict) and isinstance(new_row, dict)):
+        return False
+    old_row, new_row = (
+        {k: v for k, v in row.items() if k not in _ADMISSION_ONLY_ROW_KEYS} for row in (old_row, new_row)
+    )
+    return _canonical(old) == _canonical(new) and _canonical(old_row) == _canonical(new_row)
+
+
+# Row keys read only by job admission (how many attempts may be submitted), never by processing or validation.
+_ADMISSION_ONLY_ROW_KEYS = frozenset({"max_attempts_per_animation"})
 
 
 def _canonical(value: object) -> str:
