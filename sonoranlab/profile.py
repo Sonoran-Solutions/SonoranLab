@@ -156,6 +156,7 @@ class CharacterRow:
     limits: Limits
     animations: dict[str, Animation]
     locomotion: str | None
+    max_attempts_per_animation: int | None = None  # owner-approved per-character override of autonomy's limit
 
 
 @dataclass(frozen=True)
@@ -218,6 +219,13 @@ class Profile:
     export: Export
     autonomy: Autonomy
     processing: Processing | None = None  # optional for the schema; `sonoranlab process` refuses a profile without it
+
+    def attempt_limit(self, name: str) -> int:
+        """Animate attempts per clip for `name`: its row override, else autonomy.max_attempts_per_animation."""
+        row = self.characters.get(name)
+        if row and row.max_attempts_per_animation is not None:
+            return row.max_attempts_per_animation
+        return self.autonomy.max_attempts_per_animation
 
     def character(self, name: str, *, cell: int | list[int] | tuple[int, int] | None = None) -> CharacterSpec:
         """Resolve `name`. A character without a row gets the validator defaults (and says so); it needs `cell`
@@ -575,7 +583,7 @@ def _characters(
         errs.append(f"characters: expected a mapping of name -> row, got {chars!r}")
         return {}
     out = {}
-    keys = ("cell", "anchor_mode", "animations", "locomotion", *LIMIT_KEYS, *HOVER_KEYS)
+    keys = ("cell", "anchor_mode", "animations", "locomotion", "max_attempts_per_animation", *LIMIT_KEYS, *HOVER_KEYS)
     for name, row in chars.items():
         where = f"characters.{name}"
         if not (isinstance(name, str) and NAME_RE.match(name)):
@@ -617,6 +625,9 @@ def _characters(
             limits=_limits(row, where, errs, hover=(mode or (anchor.mode if anchor else None)) == "bbox_bottom"),
             animations=anims,
             locomotion=loco,
+            max_attempts_per_animation=_val(
+                row, where, "max_attempts_per_animation", "int", errs, lo=1, required=False
+            ),
         )
     return out
 

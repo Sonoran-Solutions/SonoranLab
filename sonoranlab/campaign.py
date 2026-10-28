@@ -777,7 +777,7 @@ def _view(path: Path, ctx: Context) -> dict:
         granted = sum(d.get("seeds", 0) for d in owner if d.get("kind") == "budget_grant" and d.get("clip") == clip)
         consumed = sum(a["consumed"] for a in mine)
         used = _attempt_usage(project, character, clip, jobs)
-        limit = registry._profile(project, ctx).autonomy.max_attempts_per_animation
+        limit = registry._profile(project, ctx).attempt_limit(character)
         candidates = [
             {
                 "job_id": a["job_id"],
