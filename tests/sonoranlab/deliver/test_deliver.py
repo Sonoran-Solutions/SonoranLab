@@ -484,19 +484,26 @@ def test_cli_round_trip(world, bundle, snap, capsys):
 CONSUMER = Path(__file__).resolve().parents[3] / "tools" / "game_consumer"
 
 
-def fake_consumer_run(out: Path, *, tests_executed: int = 3, godot_pass: bool = True) -> None:
-    """What run.sh's supervised steps leave behind, without running the game: statuses, a .trx, godot_result.json."""
-    for step in ("dotnet_test", "game_build", "godot_import", "godot_render"):
-        (out / "logs").mkdir(parents=True, exist_ok=True)
-        (out / "logs" / f"{step}.status").write_text(json.dumps({"exit": 0, "timed_out": False, "flooded": False}))
+def fake_consumer_run(out: Path, *, tests_executed: int = 3, pixel_check: str = "known", gallery: bool = True) -> None:
+    """What run.sh's supervised steps leave behind, without running the game: statuses, logs, a .trx, gallery PNGs."""
+    logs = out / "logs"
+    logs.mkdir(parents=True, exist_ok=True)
+    for step in ("dotnet_test", "game_build", "godot_import", "pixel_check", "gallery_capture"):
+        (logs / f"{step}.status").write_text(json.dumps({"exit": 0, "timed_out": False, "flooded": False}))
+    if pixel_check != "pass":
+        (logs / "pixel_check.status").write_text(json.dumps({"exit": 1, "timed_out": False, "flooded": False}))
+        who = "hero" if pixel_check == "known" else "knight"
+        (logs / "pixel_check.head.log").write_text(f"ERROR: System.InvalidOperationException: {who}: clip table\n")
+    if gallery:
+        (logs / "gallery_capture.tail.log").write_text("V0 Phase 2 gallery captures complete (20 standees): x\n")
+        (out / "gallery").mkdir(exist_ok=True)
+        (out / "gallery" / "gallery-overview.png").write_bytes(b"png")
     (out / "dotnet").mkdir(exist_ok=True)
     (out / "dotnet" / "tests.trx").write_text(
         '<TestRun xmlns="http://microsoft.com/schemas/VisualStudio/TeamTest/2010"><ResultSummary outcome="Completed">'
         f'<Counters total="{tests_executed}" executed="{tests_executed}" passed="{tests_executed}" failed="0"/>'
         "</ResultSummary></TestRun>"
     )
-    (out / "render").mkdir(exist_ok=True)
-    (out / "render" / "godot_result.json").write_text(json.dumps({"pass": godot_pass, "failures": []}))
 
 
 def summarize(mode: str, bundle: Path, snap: Path, out: Path) -> subprocess.CompletedProcess:
@@ -512,17 +519,25 @@ def test_consumer_result_feeds_verify(world, bundle, snap, tmp_path):
     fake_consumer_run(out)
     run = summarize("final", bundle, snap, out)
     assert run.returncode == 0, run.stdout + run.stderr
+    result = json.loads((out / "result.json").read_text())
+    assert result["game_pixel_check"]["verdict"] == "known_missing_clip"  # reported, not hidden
+    assert result["fallback_render_non_consumer"] is None
     v = deliver.verify(bundle, snap, out / "result.json")
     assert v["ok"] and bundle_doc(bundle)["state"] == "READY_TO_INSTALL"
 
 
-@pytest.mark.parametrize("case", ["no_tests", "godot_fail", "engine_rewrite"])
+@pytest.mark.parametrize("case", ["no_tests", "pixel_check_other", "no_gallery", "engine_rewrite"])
 def test_consumer_result_fails_honestly(world, bundle, snap, tmp_path, case):
     deliver.apply(bundle, snap)
     out = tmp_path / "consumer"
     out.mkdir()
     assert summarize("pre", bundle, snap, out).returncode == 0
-    fake_consumer_run(out, tests_executed=0 if case == "no_tests" else 3, godot_pass=case != "godot_fail")
+    fake_consumer_run(
+        out,
+        tests_executed=0 if case == "no_tests" else 3,
+        pixel_check="other" if case == "pixel_check_other" else "known",
+        gallery=case != "no_gallery",
+    )
     if case == "engine_rewrite":
         (snap / "sprites" / "hero.png.import").write_text("uid regenerated\n")
     assert summarize("final", bundle, snap, out).returncode == 1
@@ -538,8 +553,10 @@ def test_run_sh_refuses_before_running_anything(world, bundle, snap, tmp_path):
         return subprocess.run(["bash", str(CONSUMER / "run.sh"), *args], capture_output=True, text=True, env=e)
 
     base = ["--snapshot", str(snap), "--bundle", str(bundle), "--out", str(tmp_path / "o")]
-    r = run(*base, "--sibling", "a", "--sibling", "b")
+    r = run(*base)
     assert r.returncode == 2 and "zero selected tests" in r.stderr
+    r = run(*base, "--test-class", "X", "--fallback-render", "--sibling", "a")
+    assert r.returncode == 2 and "two --sibling" in r.stderr
     r = run(*base, "--test-class", "X", "--sibling", "a", "--sibling", "b", SONORANLAB_PROTECTED=str(snap))
     assert r.returncode == 2 and "protected game checkout" in r.stderr
     r = run(*base[:-1], str(snap / "o"), "--test-class", "X", "--sibling", "a", "--sibling", "b")

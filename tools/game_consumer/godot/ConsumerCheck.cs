@@ -1,5 +1,6 @@
-// SonoranLab game-consumer check (DYL-131/133). Copied by tools/game_consumer/run.sh into a DISPOSABLE game snapshot
-// only (never the real checkout) and removed afterwards. It contains no game source: it calls the game's own consumer
+// SonoranLab FALLBACK render (DYL-131/133), NOT a game consumer check: run.sh prefers the game's own --pixel-check and
+// --pixel-gallery-capture; this runs only with --fallback-render and is reported as fallback_render_non_consumer.
+// Copied by tools/game_consumer/run.sh into a DISPOSABLE game snapshot only (never the real checkout) and removed after. It contains no game source: it calls the game's own consumer
 // code (PixelCharacter.LoadAll, PixelGallery.Check, PixelStandee.LoadCharacter/PresentClip with the real
 // PixelStandee.gdshader) and renders the new character beside two siblings at 1x and 4x (nearest).
 // Args after `--`: --character ID --siblings A,B --out DIR [--max-bytes N]. Prints one line

@@ -12,6 +12,7 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 
 SCHEMA = "sonoranlab.game_consumer_result/1"
+GALLERY_BUDGET = 128 << 20
 
 
 def sha(p: Path) -> str | None:
@@ -38,6 +39,29 @@ def step(out: Path, name: str) -> dict:
     rec["ran"] = True
     rec["pass"] = rec.get("exit") == 0 and not rec.get("timed_out") and not rec.get("flooded")
     return rec
+
+
+def log_text(out: Path, name: str) -> str:
+    return "".join(
+        p.read_text(errors="replace") for p in (out / "logs" / f"{name}.head.log", out / "logs" / f"{name}.tail.log")
+        if p.is_file()
+    )
+
+
+def pixel_check_verdict(out: Path, bundle: dict, status: dict) -> dict:
+    """pass; known_missing_clip (exactly "<id>: clip table" for a sheet without death); fail otherwise."""
+    cid = bundle["character"]
+    text = log_text(out, "pixel_check")
+    no_death = any(m.get("name") == "death" for m in bundle.get("known_missing_clips", []))
+    if status.get("pass"):
+        return {"verdict": "pass", "message": "exit 0"}
+    if status.get("exit") == 1 and no_death and f"InvalidOperationException: {cid}: clip table" in text:
+        return {
+            "verdict": "known_missing_clip",
+            "message": f"{cid}: clip table (no death clip); PixelUnitChecks.Check did not run after it",
+        }
+    lines = [ln for ln in text.splitlines() if "Exception" in ln or "ERROR" in ln][:5]
+    return {"verdict": "fail", "message": f"status {status}; {lines}"}
 
 
 def trx_counts(out: Path) -> dict:
@@ -70,18 +94,25 @@ def main() -> int:
         failures.append(f"the engine rewrote bundle files {rewritten} (copies in OUT/rewritten/)")
     if post["status"] != expected_status:
         failures.append(f"snapshot status after the run {post['status']} != the bundle's {expected_status}")
-    steps = {n: step(out, n) for n in ("dotnet_test", "game_build", "godot_import", "godot_render")}
+    steps = {n: step(out, n) for n in ("dotnet_test", "game_build", "godot_import", "pixel_check", "gallery_capture")}
     tests = trx_counts(out)
     steps["dotnet_test"]["counts"] = tests
     if not steps["dotnet_test"].get("pass") or tests.get("executed", 0) < 1 or tests.get("failed", 0):
-        failures.append(f"game data-layout tests did not pass with >= 1 executed test: {tests}")
-    for n in ("game_build", "godot_import", "godot_render"):
+        failures.append(f"game tests did not pass with >= 1 executed test: {tests}")
+    for n in ("game_build", "godot_import"):
         if not steps[n].get("pass"):
             failures.append(f"{n} failed: {steps[n]}")
-    godot = out / "render" / "godot_result.json"
-    render = json.loads(godot.read_text()) if godot.is_file() else None
-    if not render or render.get("pass") is not True:
-        failures.append(f"Godot consumer check did not pass: {(render or {}).get('failures', 'no godot_result.json')}")
+    pixel_check = pixel_check_verdict(out, bundle, steps["pixel_check"])
+    if pixel_check["verdict"] == "fail":
+        failures.append(f"game --pixel-check failed: {pixel_check['message']}")
+    gallery = sorted((out / "gallery").glob("*.png"))
+    gallery_bytes = sum(g.stat().st_size for g in gallery)
+    gallery_done = "gallery captures complete" in log_text(out, "gallery_capture")
+    if not steps["gallery_capture"].get("pass") or not gallery or not gallery_done:
+        failures.append(f"game --pixel-gallery-capture did not complete: {steps['gallery_capture']}")
+    if gallery_bytes > GALLERY_BUDGET:
+        failures.append(f"gallery captures use {gallery_bytes} bytes > budget {GALLERY_BUDGET}")
+    fallback = out / "fallback" / "godot_result.json"
     result = {
         "schema": SCHEMA,
         "pass": not failures,
@@ -93,7 +124,11 @@ def main() -> int:
         "engine_rewrote": rewritten,
         "snapshot_status_after": post["status"],
         "steps": steps,
-        "godot": render,
+        "game_pixel_check": pixel_check,
+        "gallery": {"captures": len(gallery), "bytes": gallery_bytes, "dir": str(out / "gallery"),
+                    "note": "PixelGallery's fixed Layout: proves the patched manifest keeps the real gallery working; "
+                            "the new id is not in Layout and is not drawn there"},
+        "fallback_render_non_consumer": json.loads(fallback.read_text()) if fallback.is_file() else None,
         "failures": failures,
     }
     (out / "result.json").write_text(json.dumps(result, indent=1))

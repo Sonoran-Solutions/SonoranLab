@@ -68,8 +68,8 @@ PixelStandee selects `cast` while casting or shooting (no fallback), and the gam
 ```sh
 git -C ~/sonoranlab-work/phase5/game-snapshot rev-parse HEAD     # must equal the bundle's target revision
 sonoranlab deliver apply  WORK/gun-bundle --target SNAP
-GODOT=... tools/game_consumer/run.sh --snapshot SNAP --bundle WORK/gun-bundle --out WORK/gun-consumer \
-  --test-class <game data-layout test class> --sibling pyromancer --sibling samurai
+GODOT=<godot 4.7 mono> SMOKE_DISPLAY=:N tools/game_consumer/run.sh --snapshot SNAP --bundle WORK/gun-bundle \
+  --out WORK/gun-consumer --test-class SamuraiPresentationTests [--fallback-render --sibling pyromancer --sibling samurai]
 sonoranlab deliver verify WORK/gun-bundle --target SNAP --consumer-result WORK/gun-consumer/result.json
 sonoranlab deliver rollback WORK/gun-bundle --target SNAP
 ```
@@ -91,11 +91,21 @@ READY_TO_INSTALL). INSTALLED is never set by any command: the owner installs wit
 
 ## 4. The game-consumer harness
 
-`tools/game_consumer/run.sh` (read its header) runs, each step supervised (own process group, deadline, bounded
-logs, group kill): the game's data-layout tests (`dotnet test SNAP/tests/TwosAreUp.Combat.Tests --filter
-FullyQualifiedName~CLASS`, zero executed tests is a failure), a build of the game with the harness script added, a
-headless import, and a render in a private headless compositor that calls `PixelCharacter.LoadAll()`,
-`PixelGallery.Check()` and `PixelStandee` with the real shader for all 8 rows x (still + every clip frame) beside two
-siblings, saving 1x and 4x PNGs under `OUT/render` (64 MiB budget). The harness holds no game source and no art; it is
-copied into the snapshot only for the run and removed afterwards. It needs the .NET (mono) Godot binary and must be run
-under the host's heavy-job lock.
+`tools/game_consumer/run.sh` (read its header) prefers the game's own entry points. Each step is supervised (own
+process group, deadline, bounded logs, group kill):
+
+1. `dotnet test SNAP/tests/TwosAreUp.Combat.Tests --filter FullyQualifiedName~CLASS` (zero executed is a failure;
+   `SamuraiPresentationTests` is the C# test that reads characters.json, `DataLayoutTests` does not);
+2. `dotnet build SNAP/TwosAreUp.csproj -c Debug` (the assembly the Godot .NET editor binary loads for a project run);
+3. `godot --headless --import`;
+4. the game's `--pixel-check` (`PixelArtLab.Check` + `PixelUnitChecks.Check`). With idle + run only it stops at
+   `<id>: clip table` (no death clip); that exact message is reported as `known_missing_clip`, anything else fails;
+5. the game's `--pixel-gallery-capture=OUT/gallery` on the nested X display `$SMOKE_DISPLAY` (hold the game's
+   display lock). The gallery's `Layout` is fixed, so this proves the patched manifest keeps the real gallery
+   working; it does not draw the new id.
+
+`--fallback-render` adds SonoranLab's own scene (`godot/ConsumerCheck.cs`: `PixelCharacter.LoadAll`,
+`PixelStandee` + the real shader, all 8 rows x every frame beside two siblings, 1x/4x). It is recorded as
+`fallback_render_non_consumer` and never gates the result; the script is copied into the snapshot only for that run,
+then removed and the game rebuilt without it. No game source or art is in the harness. Run it under the host's
+heavy-job lock.

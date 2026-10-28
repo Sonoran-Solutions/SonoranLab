@@ -1,27 +1,37 @@
 #!/usr/bin/env bash
-# DYL-131/133 actual game-consumer check: runs the GAME's own code against a DISPOSABLE snapshot that has a SonoranLab
-# delivery bundle applied (`sonoranlab deliver apply BUNDLE --target SNAPSHOT`). Never point it at the real checkout.
+# DYL-131/133 actual game-consumer check: runs the GAME's OWN entry points against a DISPOSABLE snapshot that has a
+# SonoranLab delivery bundle applied (`sonoranlab deliver apply BUNDLE --target SNAPSHOT`). Never the real checkout.
 #
-#   GODOT=/path/to/godot-4.7-mono tools/game_consumer/run.sh --snapshot SNAP --bundle BUNDLE --out OUT \
-#       --test-class CLASS [--test-class CLASS ...] --sibling ID --sibling ID
+#   GODOT=/path/to/godot-4.7-mono SMOKE_DISPLAY=:N tools/game_consumer/run.sh --snapshot SNAP --bundle BUNDLE \
+#       --out OUT --test-class SamuraiPresentationTests [--test-class ...] [--fallback-render --sibling A --sibling B]
 #
-# Steps, each supervised (own process group, wall-clock deadline, TERM -> 5 s -> KILL of the whole group, output
-# drained into OUT/logs/<step>.{head,tail}.log: first 1 MiB + rolling 4 MiB tail, stopped at 64 MiB produced):
-#   1 dotnet_test   dotnet test SNAP/tests/TwosAreUp.Combat.Tests -c Release --filter FullyQualifiedName~CLASS|...  600 s
-#   2 game_build    dotnet build SNAP/<the one root *.csproj> -c Debug (with the harness script added)            600 s
-#   3 godot_import  godot --headless --path SNAP --import (one re-run only on Godot 4.7.2's singleton crash)       300 s
-#   4 godot_render  the harness scene in a private headless compositor: PixelCharacter.LoadAll, PixelGallery.Check,
-#                   PixelStandee + the real shader for all 8 rows x (still + every clip frame), 1x and 4x PNGs in
-#                   OUT/render (budget 64 MiB)                                                                    900 s
-# The harness (godot/ConsumerCheck.cs + .tscn) is copied into SNAP/sonoranlab_consumer_check/ for steps 2-4 and removed
-# afterwards. Godot runs with XDG_{DATA,CONFIG,CACHE}_HOME in a private dir under OUT (its user:// logs included), which is
-# measured and deleted at the end. Result: OUT/result.json (`sonoranlab.game_consumer_result/1`), exit 0 iff pass.
-# Feed it to `sonoranlab deliver verify BUNDLE --target SNAP --consumer-result OUT/result.json`.
+# Consumer steps (all required for a pass), each supervised: own process group, wall-clock deadline, TERM -> 5 s ->
+# KILL of the whole group, output drained into OUT/logs/<step>.{head,tail}.log (first 1 MiB + rolling 4 MiB tail,
+# stopped at 64 MiB produced), OUT/logs/<step>.status:
+#   1 dotnet_test      dotnet test SNAP/tests/TwosAreUp.Combat.Tests -c Release --filter FullyQualifiedName~CLASS|...
+#                      (>= 1 executed test required; SamuraiPresentationTests is the one that reads characters.json)  600 s
+#   2 game_build       dotnet build SNAP/TwosAreUp.csproj -c Debug: the assembly the Godot .NET editor binary loads
+#                      when it runs a project (.godot/mono/temp/bin/Debug)                                            600 s
+#   3 godot_import     godot --headless --path SNAP --import (one re-run only on Godot 4.7.2's singleton crash)       300 s
+#   4 pixel_check      godot --headless --path SNAP -- --pixel-check (RotationLab -> PixelArtLab.Check +
+#                      PixelUnitChecks.Check). A failure whose message is exactly "<id>: clip table" for a sheet
+#                      without a death clip is the known missing clip, reported as such; anything else fails.       600 s
+#   5 gallery_capture  godot --path SNAP --display-driver x11 -- --pixel-gallery-capture=OUT/gallery on the nested X
+#                      display $SMOKE_DISPLAY (hold the game's nested-display lock, as for its own smokes). The
+#                      gallery shows PixelGallery's fixed Layout, so this proves the patched manifest does not break
+#                      the real gallery; it does NOT draw the new id (it is not in Layout). Budget 128 MiB of PNGs. 900 s
+# Optional, NOT a consumer check (labelled `fallback_render_non_consumer`, never gates the result):
+#   6 fallback_render  --fallback-render: godot/ConsumerCheck.cs + .tscn copied into SNAP/sonoranlab_consumer_check/,
+#                      game rebuilt, then PixelStandee + the real shader for the new id beside two siblings, every
+#                      row x (still + every clip frame) at 1x/4x into OUT/fallback (64 MiB). Removed afterwards.  600+900 s
+# Godot runs with XDG_{DATA,CONFIG,CACHE}_HOME in a private dir under OUT (its user:// logs included), which is measured
+# and deleted at the end. Result: OUT/result.json (`sonoranlab.game_consumer_result/1`), exit 0 iff pass. Then:
+#   sonoranlab deliver verify BUNDLE --target SNAP --consumer-result OUT/result.json
 set -uo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
 die() { echo "run.sh: $*" >&2; exit 2; }
 
-snap="" bundle="" out="" tests=() sibs=()
+snap="" bundle="" out="" tests=() sibs=() fallback=false
 while (($#)); do
   case "$1" in
     --snapshot) snap="$2"; shift 2 ;;
@@ -29,12 +39,13 @@ while (($#)); do
     --out) out="$2"; shift 2 ;;
     --test-class) tests+=("$2"); shift 2 ;;
     --sibling) sibs+=("$2"); shift 2 ;;
+    --fallback-render) fallback=true; shift ;;
     *) die "unknown argument $1" ;;
   esac
 done
 [[ -n "$snap" && -n "$bundle" && -n "$out" ]] || die "--snapshot, --bundle and --out are required"
 ((${#tests[@]} >= 1)) || die "at least one --test-class (zero selected tests is not a pass)"
-((${#sibs[@]} == 2)) || die "exactly two --sibling ids"
+! $fallback || ((${#sibs[@]} == 2)) || die "--fallback-render needs exactly two --sibling ids"
 
 snap="$(realpath -e "$snap")" || die "--snapshot does not exist"
 bundle="$(realpath -e "$bundle")" || die "--bundle does not exist"
@@ -51,17 +62,19 @@ harness="$snap/sonoranlab_consumer_check"
 [[ -e "$harness" ]] && die "$harness exists (another run in progress or a leftover)"
 avail=$(df -P --output=avail -B1 "$(dirname "$out")" | tail -n 1)
 ((avail >= 20 * 1024 ** 3)) || die "less than 20 GiB free under $(dirname "$out")"
-csprojs=("$snap"/*.csproj)
-((${#csprojs[@]} == 1)) && [[ -f "${csprojs[0]}" ]] || die "expected exactly one *.csproj at the snapshot root"
+csproj="$snap/TwosAreUp.csproj"
+[[ -f "$csproj" ]] || die "$csproj missing"
+[[ -n "${SMOKE_DISPLAY:-}" ]] || die "set SMOKE_DISPLAY to the nested X display (held under the game's display lock)"
 godot="${GODOT:-}"; [[ -n "$godot" ]] || die "set GODOT to the Godot 4.7 .NET (mono) editor binary"
 "$godot" --version 2>/dev/null | grep -qi mono || die "$godot is not a Godot .NET (mono) build"
 command -v dotnet >/dev/null || die "dotnet not on PATH"
 character="$(python3 -I -c 'import json,sys; print(json.load(open(sys.argv[1]))["character"])' "$bundle/bundle.json")"
 
-mkdir -p "$out"/{logs,dotnet,render} && priv="$out/priv" && mkdir -p "$priv"/{cfg,data,cache,run} && chmod 700 "$priv/run"
+mkdir -p "$out"/{logs,dotnet,gallery} && priv="$out/priv" && mkdir -p "$priv"/{cfg,data,cache} || die "cannot create $out"
 python3 -I "$here/summarize.py" pre "$bundle" "$snap" "$out" || die "cannot read the snapshot state"
 export DOTNET_CLI_TELEMETRY_OPTOUT=1 DOTNET_NOLOGO=1 MSBUILDDISABLENODEREUSE=1 DOTNET_CLI_DO_NOT_USE_MSBUILD_SERVER=1
 export XDG_CONFIG_HOME="$priv/cfg" XDG_DATA_HOME="$priv/data" XDG_CACHE_HOME="$priv/cache"
+build=(-nodeReuse:false -p:UseSharedCompilation=false)
 
 cleanup() {
   rm -rf -- "$harness"
@@ -98,49 +111,34 @@ supervise() {
 
 filter="$(printf 'FullyQualifiedName~%s|' "${tests[@]}")"; filter="${filter%|}"
 supervise dotnet_test 600 dotnet test "$snap/tests/TwosAreUp.Combat.Tests" -c Release --filter "$filter" \
-  --logger "trx;LogFileName=tests.trx" --results-directory "$out/dotnet" -nodeReuse:false -p:UseSharedCompilation=false
+  --logger "trx;LogFileName=tests.trx" --results-directory "$out/dotnet" "${build[@]}"
 
-mkdir "$harness" && cp "$here/godot/ConsumerCheck.cs" "$here/godot/consumer_check.tscn" "$harness/"
-if supervise game_build 600 dotnet build "${csprojs[0]}" -c Debug -nodeReuse:false -p:UseSharedCompilation=false; then
+if supervise game_build 600 dotnet build "$csproj" -c Debug "${build[@]}"; then
   supervise godot_import 300 "$godot" --headless --path "$snap" --import
-  st=$?
-  if ((st == 134)) && grep -q 'Parameter "singleton" is null' "$out/logs/godot_import".*.log \
+  if (($? == 134)) && grep -q 'Parameter "singleton" is null' "$out/logs/godot_import".*.log \
       && grep -q is_cmdline_mode "$out/logs/godot_import".*.log; then   # DYL-101, exact signature only
     mv "$out/logs/godot_import.status" "$out/logs/godot_import.attempt1.status"
     supervise godot_import 300 "$godot" --headless --path "$snap" --import
   fi
-  cat > "$priv/bus.conf" <<'CONF'
-<!DOCTYPE busconfig PUBLIC "-//freedesktop//DTD D-Bus Bus Configuration 1.0//EN"
- "http://www.freedesktop.org/standards/dbus/1.0/busconfig.dtd">
-<busconfig><type>session</type><listen>unix:tmpdir=/tmp</listen>
-<policy context="default"><allow send_destination="*" eavesdrop="true"/><allow eavesdrop="true"/>
-<allow own="*"/></policy></busconfig>
-CONF
-  inner='
-gnome-shell --headless --wayland --no-x11 --wayland-display=slconsumer --virtual-monitor 1280x720 \
-  >"$SLC_PRIV/shell.log" 2>&1 & shell=$!
-for _ in $(seq 100); do [[ -S "$XDG_RUNTIME_DIR/slconsumer" ]] && break; sleep 0.1; done
-[[ -S "$XDG_RUNTIME_DIR/slconsumer" ]] || { echo "compositor did not start" >&2; tail -n 20 "$SLC_PRIV/shell.log" >&2; exit 3; }
-rc=0
-WAYLAND_DISPLAY=slconsumer "$SLC_GODOT" --path "$SLC_SNAP" --display-driver wayland --rendering-driver opengl3 \
-  --audio-driver Dummy --scene res://sonoranlab_consumer_check/consumer_check.tscn -- "$@" || rc=$?
-kill "$shell" 2>/dev/null; wait "$shell" 2>/dev/null || true
-exit $rc'
-  supervise godot_render 900 env -i HOME="$HOME" PATH="$PATH" LANG="${LANG:-C.UTF-8}" USER="$USER" \
-    ${DOTNET_ROOT:+DOTNET_ROOT="$DOTNET_ROOT"} \
-    XDG_RUNTIME_DIR="$priv/run" XDG_CONFIG_HOME="$priv/cfg" XDG_DATA_HOME="$priv/data" XDG_CACHE_HOME="$priv/cache" \
-    GSETTINGS_BACKEND=memory LIBGL_ALWAYS_SOFTWARE=1 SLC_PRIV="$priv" SLC_GODOT="$godot" SLC_SNAP="$snap" \
-    dbus-run-session --config-file="$priv/bus.conf" -- bash -c "$inner" render \
-    --character "$character" --siblings "${sibs[0]},${sibs[1]}" --out "$out/render" --max-bytes $((64 * 1024 * 1024))
+  supervise pixel_check 600 "$godot" --headless --path "$snap" -- --pixel-check
+  supervise gallery_capture 900 env DISPLAY="$SMOKE_DISPLAY" "$godot" --path "$snap" --display-driver x11 \
+    --rendering-driver opengl3 --audio-driver Dummy -- "--pixel-gallery-capture=$out/gallery"
+  if $fallback; then   # NOT a consumer check: SonoranLab's own scene, labelled as such in result.json
+    mkdir -p "$out/fallback" "$harness" && cp "$here/godot/ConsumerCheck.cs" "$here/godot/consumer_check.tscn" "$harness/"
+    supervise fallback_build 600 dotnet build "$csproj" -c Debug "${build[@]}" \
+      && supervise fallback_render 900 env DISPLAY="$SMOKE_DISPLAY" "$godot" --path "$snap" --display-driver x11 \
+        --rendering-driver opengl3 --audio-driver Dummy --scene res://sonoranlab_consumer_check/consumer_check.tscn \
+        -- --character "$character" --siblings "${sibs[0]},${sibs[1]}" --out "$out/fallback" --max-bytes $((64 << 20))
+    rm -rf -- "$harness"
+    supervise fallback_unbuild 600 dotnet build "$csproj" -c Debug "${build[@]}"   # drop the harness from the assembly
+  fi
 fi
 rm -rf -- "$harness"
-python3 -I - "$bundle" "$snap" "$out" <<'PY'   # keep a copy of any bundle file the engine rewrote (evidence)
-import json, shutil, sys
+python3 -I - "$snap" "$out" <<'PY'   # keep a copy of any bundle file the engine rewrote (evidence)
+import hashlib, json, shutil, sys
 from pathlib import Path
-bundle, snap, out = (Path(a) for a in sys.argv[1:])
-pre = json.loads((out / "pre.json").read_text())["files_sha256"]
-import hashlib
-for rel, sha in pre.items():
+snap, out = (Path(a) for a in sys.argv[1:])
+for rel, sha in json.loads((out / "pre.json").read_text())["files_sha256"].items():
     p = snap / rel
     if p.is_file() and hashlib.sha256(p.read_bytes()).hexdigest() != sha:
         (out / "rewritten" / rel).parent.mkdir(parents=True, exist_ok=True)
