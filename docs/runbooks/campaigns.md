@@ -26,8 +26,11 @@ invalid request, `NEEDS_REFERENCE_PREPARATION`, `AWAITING_REFERENCE_APPROVAL`, `
 findings. A character has at most one campaign; changed inputs are a new revision (`--revise ID`).
 
 **Revisions.** A changed request, profile or reference set is revision N+1 (`frozen-r<N+1>.json`, linked to N).
-Consumed budget, used seeds and every earlier job stay visible and keep counting. An unchanged revise writes
-nothing. If the profile file or the character row changes under a live campaign, status reports
+Consumed budget, used seeds and every earlier job stay visible and keep counting. Each clip keeps the last frozen
+cap (a revise may only make it stricter; more seeds come only from an owner `budget_grant`). Candidates,
+selections, reviews and delivery records count only for revisions bound to the current frozen inputs (reference
+hashes, character row, request hash): an approval of an earlier revision's job does not satisfy a changed one. An
+unchanged revise writes nothing. If the profile file or the character row changes under a live campaign, status reports
 `NEEDS_OWNER_INPUT` (`revision_required`) and submission is refused until a revision is frozen.
 
 ## Budget
@@ -48,14 +51,21 @@ adds seeds.
 Each submission is one Track E `animate` job with one seed: the next seed never used for that clip (failed and
 refused seeds are never reused). The manager's own `max_attempts_per_animation` admission still applies; when it is
 reached the clip is `HOLD_BUDGET` even if seeds remain. **Ceiling:** with one seed per job the profile's 3-attempt
-limit is reached before the 12-seed budget; a `budget_grant` cannot lift a profile limit.
+limit is reached before the 12-seed budget; a `budget_grant` cannot lift a profile limit. Submission checks the
+numeric remaining budget and attempt limit itself, so a passing candidate never hides a spent budget.
+
+**Campaign-owned clips.** While a campaign's latest clip plan includes a clip, the animate executor's admission
+(`jobs/kinds/generation.py` `admit`, under the manager's submit lock) refuses any animate job for that
+project/character/clip that is not issued by `campaign_submit` (key prefix `campaign/<id>/`, set in-process only
+around the campaign's manager call). Plain `animate` and `retry_job` of a campaign job are `refused`.
 
 ## Crash recovery
 
 `submit` writes a `submitting` intent (key `campaign/<id>/r<rev>/<clip>/seed-<n>`) before calling the manager, then
 `submitted` with the job ID. The next mutating call that finds an intent without a job looks the key up in the
-manager's idempotency claims (then job records): found → the job is adopted; not found → `unknown`, BLOCKED, never
-resubmitted. Status shows such an intent as `submitting` (GENERATING) and resolves nothing. Terminal jobs not yet
+manager's idempotency claims (then job records): found and its full request matches the intent (kind, track E,
+clip, seed, ref set, still hashes, profile hash) → the job is adopted; mismatched or not found → `unknown`,
+BLOCKED with the reason, never resubmitted. A recorded job whose request differs is `foreign`. Status shows such an intent as `submitting` (GENERATING) and resolves nothing. Terminal jobs not yet
 recorded are appended as `job_observed` by the next mutating call; derived state never waits for that.
 
 ## Owner decisions (CLI only, never MCP)
@@ -88,6 +98,16 @@ A second writer gets `conflict` with message `campaign_busy: ...` (retryable) na
 ignored on read and moved to `events.torn-*` before the next append. A broken chain, a changed frozen file, or a
 head that disagrees with the lines (truncation, rewritten last line) makes status `BLOCKED` (`ledger_invalid`) and
 every write refuses; preserve the directory for inspection.
+
+Privileged events (`owner_decision`, `delivery`) count only if the owner CLI committed their sequence number in
+`head.json` in the same append; any other privileged line, even with a valid chain, is ignored and reported as
+`uncommitted_privileged_event`. A crash between the owner's append and the head update leaves the decision ignored;
+re-run it.
+
+**Same-user caveat.** The chain and head detect damage and accidental or tool-level edits; they do not
+authenticate a writer. Anything running as the same Unix user can rewrite the ledger and `head.json` consistently
+(as with Phase 3.5 repair workspaces). Owner authority rests on agents not running owner commands and on the
+filesystem, not on cryptography.
 
 ## Report
 

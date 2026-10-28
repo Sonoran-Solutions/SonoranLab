@@ -507,6 +507,9 @@ planned clip; all clips approved plus an owner delivery record gives `STAGED_AND
 blocked (`refused`, BLOCKED), when the clip's budget or the profile attempt limit is spent (`refused`, HOLD_BUDGET),
 or when a selected candidate awaits owner review. A concurrent writer gets `conflict` with message `campaign_busy`.
 Submission always uses Track E `animate` with the guard's default 40 GiB; no track switch, no memory change.
+Plain `animate` and `retry_job` are `refused` for a clip owned by a campaign (animate admission check). A revision
+carries each clip's cap; candidates, selections, reviews and delivery count only for the current frozen inputs.
+Owner events count only when the owner CLI committed them in `head.json`.
 
 Owner decisions (`budget_grant` adds seeds, `resume` clears a non-artistic block, `install`, `delivery`) are
 **CLI only**: `sonoranlab campaign owner-decision`. There is no MCP tool for them.
