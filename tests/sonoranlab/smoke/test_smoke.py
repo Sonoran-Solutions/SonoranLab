@@ -368,3 +368,12 @@ def test_render_script_and_shell_wrapper_are_pinned():
     sh = (smoke.TOOL / "render.sh").read_text()
     assert "ulimit -f" in sh and 'XDG_DATA_HOME="$SLR_PRIV/data"' in sh and "env -i" in sh
     assert os.access(smoke.TOOL / "render.sh", os.X_OK)
+
+
+def test_consistent_dark_shift_passes_and_is_reported(lab, monkeypatch):
+    synth.patch_engine(monkeypatch, "dark")
+    doc = run(lab)
+    check = doc["checks"]["nearest_filtering"]
+    assert doc["status"] == "pass" and check["max_deviation_observed"] == 5
+    assert check["colour_map_changed"]["[17, 13, 12]"] == [12, 8, 7]
+    assert check["colours_rendered_as_several"] == {}
