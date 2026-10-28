@@ -95,8 +95,9 @@ details, schemas and examples: `docs/runbooks/new-class.md`.
 
 ## 5. Final sheet (both clips selected: clip states `AWAITING_OWNER_REVIEW`)
 
-1. `compose_sheet(project, character, clips=[{name: idle, job}, {name: run, job}], reference_id)` (game order:
-   idle then run) → a job; poll; `job_result`. `pass: false` or a failed job → report its failures; STOP.
+1. `compose_sheet(project, character, clips=[{name: idle, job}, {name: run, job}], reference_id, campaign_id)`
+   (game order: idle then run; the jobs must be the campaign's current selected candidates) → a job; poll;
+   `job_result`. `pass: false` or a failed job → report its failures; STOP.
 2. `godot_check(project, character, anim=clip, source="<job_id>:<…/sweep/final/job/report.json>")` per clip (take
    the ref from `job_result` artifacts); poll as in 3.2. Any failed CPU/engine job is reported, never retried.
 3. `smoke_render(project, character, candidate=<compose artifact_id>, siblings=[up to 3 approved sibling import
@@ -109,8 +110,8 @@ details, schemas and examples: `docs/runbooks/new-class.md`.
 ## 6. Delivery (resume after the owner's review)
 
 1. Needs `composed` (the compose job id) and the owner's `target_rev`, `base_manifest`, `import_template`; missing
-   → ask; STOP. `campaign_status` clips stay `AWAITING_OWNER_REVIEW` here (the review binds the composed sheet,
-   not the clip jobs); that is expected, report it as is.
+   → ask; STOP. After the owner's review of the composed sheet, `campaign_status` reports `ARTIFACT_APPROVED`
+   (the sheet was composed with `campaign_id`); still `AWAITING_OWNER_REVIEW` → the review is missing or stale.
 2. `delivery_status(character=…)` first: an existing bundle for this sheet is reported, not rebuilt.
 3. `build_delivery(project, campaign_id, composed, target_rev, base_manifest, import_template)` → a job; poll.
    `not_ready` at submit → the owner review is missing or no longer binds the sheet; report; STOP.

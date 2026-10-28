@@ -25,6 +25,7 @@ import re
 import secrets
 import socket
 import stat
+import time
 from contextlib import ExitStack, contextmanager
 from contextvars import ContextVar
 from datetime import UTC, datetime
@@ -60,6 +61,7 @@ EVENTS = {
     "escalation",
     "owner_decision",
     "review_observed",
+    "composed",
     "delivery",
     "note",
     "cost",
@@ -626,6 +628,96 @@ def _binding(frozen: dict) -> tuple:
     return frozen["references"]["hashes"], frozen["profile"]["character_row"], frozen["request_sha256"]
 
 
+def _composed_approvals(events: list[dict], current: set, campaign_id: str, ctx: Context) -> dict[str, dict]:
+    """{composed job id: {clip: input job}} for recorded current-revision compose_sheet jobs of this campaign whose
+    owner review is production usable now (recomputed via the import's review) and whose sheet is unchanged."""
+    out = {}
+    for event in events:
+        data = event["data"]
+        if event["type"] != "composed" or data.get("revision") not in current:
+            continue
+        try:
+            job = manager.get(data["job_id"])
+            result = job.get("result") or {}
+            if (
+                manager.corrupt(job)
+                or (job["kind"], job["state"]) != ("compose_sheet", "succeeded")
+                or job["params"].get("campaign_id") != campaign_id
+                or result.get("artifact_id") != data["artifact_id"]
+                or sha256_file(Path(result["export"])) != data["sheet_sha256"]
+                or not registry.check_review(data["artifact_id"], ctx=ctx)["production_usable"]
+            ):
+                continue
+            out[data["job_id"]] = {c["name"]: c["job"] for c in job["params"]["clips"]}
+        except (ToolError, OSError, ValueError, KeyError, TypeError):
+            continue
+    return out
+
+
+def _bundle_state(campaign_id: str, composed: set, jobs: list[dict], ctx: Context) -> str | None:
+    """Most advanced verified state of an intact bundle built from an approved composed job (delivery_status logic)."""
+    from sonoranlab.api.tools.delivery import delivery_status  # the delivery tools import this module
+
+    best = None
+    for job in jobs:
+        params = job.get("params") or {}
+        if not (
+            job.get("kind") == "build_delivery"
+            and job["state"] == "succeeded"
+            and params.get("campaign_id") == campaign_id
+            and params.get("composed") in composed
+        ):
+            continue
+        for bundle in delivery_status(bundle=job["job_id"], ctx=ctx)["bundles"]:
+            states = bundle.get("states") or {}  # INVALID bundles carry none
+            state = next((s for s in ("READY_TO_INSTALL", "STAGED_AND_ENGINE_VERIFIED") if states.get(s)), None)
+            if state and (best is None or state == "READY_TO_INSTALL"):
+                best = state
+    return best
+
+
+def check_composition(campaign_id: str, params: dict, ctx: Context) -> int:
+    """compose_sheet with campaign_id: every input clip job must be the campaign's current-revision selected
+    candidate for that clip. Returns the current revision."""
+    view = _view(_find(campaign_id), ctx)
+    if "_events" not in view:
+        raise ToolError("conflict", "Campaign ledger is damaged", field="campaign_id")
+    frozen = view["_revisions"][-1]
+    if (frozen["project"], frozen["character"]) != (params["project"], params["character"]):
+        raise ToolError("refused", "Campaign names a different project/character", field="campaign_id")
+    if params["reference_id"] != frozen["references"]["ref_set_id"]:
+        raise ToolError("refused", "reference_id is not the campaign's frozen reference set", field="reference_id")
+    if view["gate"]["state"] != "READY":
+        raise ToolError("refused", f"{view['gate']['state']}: {view['gate']['detail']}", field="campaign_id")
+    for clip in params["clips"]:
+        info = view["clips"].get(clip["name"])
+        if not info or not info["in_plan"] or info["selected"] != clip["job"]:
+            raise ToolError(
+                "refused",
+                f"{clip['job']} is not the current-revision selected candidate for {clip['name']}",
+                field="clips",
+                hint="campaign_decide selected on a current-revision passing job first",
+            )
+    return frozen["revision"]
+
+
+def record_composed(campaign_id: str, params: dict, job_id: str, artifact_id: str, sheet_sha256: str, ctx: Context):
+    """Append the `composed` event under the writer lock (waits briefly if another writer holds it)."""
+    path = _find(campaign_id)
+    for _ in range(120):
+        try:
+            with _writer(path):
+                revision = check_composition(campaign_id, params, ctx)
+                data = {"job_id": job_id, "artifact_id": artifact_id, "sheet_sha256": sheet_sha256}
+                inputs = {c["name"]: c["job"] for c in params["clips"]}
+                return _append(path, "composed", data | {"inputs": inputs, "revision": revision})
+        except ToolError as exc:
+            if not exc.error["message"].startswith("campaign_busy"):
+                raise
+            time.sleep(0.5)
+    raise ToolError("conflict", "campaign_busy: could not record the composed sheet", field="campaign_id")
+
+
 def _gate(frozen: dict, ctx: Context) -> tuple[str, str]:
     project, character = frozen["project"], frozen["character"]
     refs = frozen["references"]
@@ -678,6 +770,7 @@ def _view(path: Path, ctx: Context) -> dict:
     gate, gate_detail = _gate(frozen, ctx)
     clips = {}
     plan = frozen["clips"]
+    composed = _composed_approvals(events, current, frozen["campaign_id"], ctx)
     for clip in [*plan, *sorted({a["clip"] for a in attempts} - set(plan))]:
         mine = [a for a in attempts if a["clip"] == clip]
         base = frozen["budget"].get(clip, {}).get("max_seeds", 0)
@@ -707,6 +800,11 @@ def _view(path: Path, ctx: Context) -> dict:
             state, reason = "GENERATING", "a job is in flight"
         elif selected and selected["human"]["production_usable"]:
             state, reason = "ARTIFACT_APPROVED", f"owner review of {selected['job_id']} is production usable"
+        elif selected and (sheet := next((j for j, ins in composed.items() if ins.get(clip) == selected["job_id"]), 0)):
+            state, reason = (
+                "ARTIFACT_APPROVED",
+                f"owner review of composed sheet {sheet} (contains {selected['job_id']})",
+            )
         elif selected:
             state, reason = "AWAITING_OWNER_REVIEW", f"{selected['job_id']} recommended; owner 1x review pending"
         elif live:
@@ -747,8 +845,12 @@ def _view(path: Path, ctx: Context) -> dict:
         delivered = [
             e["data"]["state"] for e in events if e["type"] == "delivery" and e["data"].get("revision") in current
         ]
-        if state == "ARTIFACT_APPROVED" and delivered:
-            state = DELIVERY[delivered[-1]]
+        if state == "ARTIFACT_APPROVED":
+            # Bundles give STAGED/READY only; INSTALLED comes only from an owner CLI record.
+            found = [_bundle_state(frozen["campaign_id"], set(composed), jobs, ctx)]
+            found += [DELIVERY[d] for d in delivered[-1:]]
+            order = list(DELIVERY.values())
+            state = max((f for f in found if f), key=order.index, default=state)
     view = {
         "schema": "sonoranlab.campaign_status/1",
         "campaign_id": frozen["campaign_id"],

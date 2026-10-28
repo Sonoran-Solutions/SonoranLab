@@ -68,6 +68,18 @@ clip, seed, ref set, still hashes, profile hash) → the job is adopted; mismatc
 BLOCKED with the reason, never resubmitted. A recorded job whose request differs is `foreign`. Status shows such an intent as `submitting` (GENERATING) and resolves nothing. Terminal jobs not yet
 recorded are appended as `job_observed` by the next mutating call; derived state never waits for that.
 
+## Composed sheet and delivery (DYL-130)
+
+`compose_sheet` with `campaign_id` admits only clip jobs that are the campaign's current-revision selected
+candidates and, on success, appends a `composed` event (job id, import artifact id, sheet sha256, input jobs,
+revision) under the writer lock. A clip is `ARTIFACT_APPROVED` when its own job has a production-usable owner
+review, or a recorded current-revision composed job containing exactly that selected job does: the composed
+review is recomputed live (import snapshot + review binding) and the sheet hash must still match; a stale or
+changed review is not approved. With every clip approved, intact bundles built (`build_delivery`) from such a
+composed job set the campaign to `STAGED_AND_ENGINE_VERIFIED` or `READY_TO_INSTALL` from their verified states
+(`BUILT` stays `ARTIFACT_APPROVED`). `INSTALLED` never comes from a bundle, only from the owner's
+`delivery --state installed` record after an `install` decision.
+
 ## Owner decisions (CLI only, never MCP)
 
 ```sh
