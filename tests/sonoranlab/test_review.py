@@ -703,6 +703,11 @@ def test_other_characters_row_change_keeps_binding(job):
     assert review_errors(job) == [] and production_usable(job)
 
 
+def test_own_admission_only_attempt_limit_keeps_binding(job):
+    _git_profile(job, lambda doc, me: doc["characters"][me].update(max_attempts_per_animation=6))
+    assert review_errors(job) == [] and production_usable(job)
+
+
 @pytest.mark.parametrize(
     "edit",
     [
