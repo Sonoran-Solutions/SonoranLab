@@ -45,6 +45,7 @@ no placeholder tools in discovery. See ADR-0010 for each library/CLI mapping.
 | `process` | mutating / job | Implemented (DYL-117): deterministic pixel chain |
 | `export_godot` | mutating / job | Implemented (DYL-117): guarded export into STATE, never the game checkout |
 | `godot_check` | mutating / job | Implemented (DYL-117): headless import/playback check in isolated output |
+| `smoke_render` | mutating / job | Implemented (DYL-131): isolated side-by-side Godot render of a candidate beside up to 3 approved siblings |
 | `cancel_job` | mutating / sync | Implemented: durable intent, worker TERM, prompt-scoped cancellation and stop confirmation |
 | `retry_job` | mutating / job | Implemented: explicit new attempt from frozen request, linked by parent_job_id |
 | `prepare_repair` | mutating / sync | **Optional**, implemented (DYL-118): ADR-0009 scoped workspace handoff |
@@ -423,6 +424,21 @@ Godot uses pipeline.check_in_godot in its disposable fixture copy and retains
 run_godot's signature-specific singleton retries and every attempt. Missing
 Godot succeeds with technical.godot=unavailable (no pass); import/content failure
 is fail. Execution success never grants human approval.
+
+## `smoke_render` (DYL-131)
+
+Typed async job, same manager, heavy-CPU lock and technical/human split as `godot_check`; the CLI is
+`sonoranlab smoke-render` (docs/09 "Smoke render"). Input `{project, character, candidate, siblings, idempotency_key?}`;
+the schema is closed (no scene, script, shader, output or path field). `candidate` and every `siblings` entry must be a
+job, import or artifact ref that resolves through the registry/STATE (`_reference`): a bare path, an unknown id or a
+game-checkout path is refused. Each ref resolves to an export folder holding one `<id>.sonoranlab.json` sidecar and its
+PNG (hash-checked); at most 3 distinct siblings, none equal to the candidate. Sibling game sheets are imported through
+`import_job` after `python -m sonoranlab.smoke stage` (see docs/09). The owner's private `PixelStandee.gdshader`, if
+present at `STATE/smoke/PixelStandee.gdshader` (regular file, never a symlink), is hashed into the frozen inputs and used;
+otherwise the result says `border: not_rendered`. Execution `succeeded` with `technical.godot` = `pass`, `fail` or
+`unavailable` (no Godot or compositor: never a pass); `agent_recommendation` and `owner_style_acceptance` are always
+empty strings, the owner decides style. Output: `<job>/smoke/{smoke.json,render/*.png,project/,engine.log}`; `ref` names
+`smoke/smoke.json`. The job is stored under the fixed clip slot `smoke` (`anim` is injected by validation).
 
 ## Registering in Claude Code
 
