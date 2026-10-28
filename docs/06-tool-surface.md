@@ -37,6 +37,7 @@ no placeholder tools in discovery. See ADR-0010 for each library/CLI mapping.
 | `check_review` | read-only / sync | Implemented: recompute artifact-bound human review from disk |
 | `import_job` | mutating / sync | Implemented: index existing jobs and hashes without modifying them |
 | `register_character` | mutating / sync | Implemented: immutable still copies, initially unapproved |
+| `check_class_request` | read-only / sync | Implemented (DYL-128): class request + registered stills admission |
 | `validate` | mutating / sync | Implemented (DYL-117): validator report in a new output directory |
 | `contact_sheet` | mutating / sync | Implemented (DYL-117): new review image output directory |
 | `compare` | mutating / sync | Implemented (DYL-117): new side-by-side contact and report output directory |
@@ -423,6 +424,24 @@ Godot uses pipeline.check_in_godot in its disposable fixture copy and retains
 run_godot's signature-specific singleton retries and every attempt. Missing
 Godot succeeds with technical.godot=unavailable (no pass); import/content failure
 is fail. Execution success never grants human approval.
+
+## Class-request admission (DYL-128)
+
+`check_class_request` (read-only / sync) is the MCP form of `sonoranlab classreq check` (ADR-0011 entrance).
+
+| Input | Result |
+|---|---|
+| `{project, request: object (sonoranlab.class_request/1, parsed), stills_ref?: "refs-<12 hex>"}` | `{schema: sonoranlab.class_request_check/1, status, findings: [{code, blocks, detail, direction?}], request_sha256, character, cell, foot_y, profile_row, stills: {source, files: {direction: sha256\|null}, measurements}, registry, proposed_row}` |
+
+`status` is `ready`, `needs_profile_row`, `needs_reference_preparation` or `invalid` (precedence
+invalid > needs_reference_preparation > needs_profile_row > ready). Stills come only from a registered reference
+set of the request's character (`stills_ref`); `references.stills_dir` inside the request is never followed by the
+tool. No contact image is written (the CLI's `--contact` renders one). The request is untrusted data: unknown
+keys, over-long text (4096 characters per field, 64 list items) and control/bidi characters make it `invalid`
+with `request_invalid` findings; nothing in it is interpreted. `request_sha256` is the canonical-JSON hash, equal
+for the CLI file and the MCP object. Finding codes and the CLI usage are in
+[the new-class references runbook](runbooks/new-class-references.md). `refprep` and `classreq propose-row` are
+CLI-only owner preparation steps, not tools.
 
 ## Registering in Claude Code
 
