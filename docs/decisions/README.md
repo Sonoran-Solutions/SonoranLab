@@ -15,3 +15,4 @@ with a new one). Format: Context → Decision → Consequences → Status.
 | 0008 | Validator semantics for weapon-bearing runs and floating subjects | accepted 2026-10-19: H0 + H4 + diagnostics, F2 (DYL-83) |
 | 0009 | Aseprite targeted-repair pilot (optional editor companion) | accepted 2026-10-20: ADOPT, narrow and optional (DYL-111) |
 | [0010](ADR-0010-mcp-contract.md) | Phase 4 MCP contract | proposed (DYL-113) |
+| [0011](ADR-0011-phase5-new-class-contract.md) | Phase 5 new-class contract | proposed (DYL-123) |
