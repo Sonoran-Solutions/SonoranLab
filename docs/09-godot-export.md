@@ -116,7 +116,7 @@ on the desktop) and saves a PNG per frame. It draws into a SubViewport sized fro
 fit 16 px cells and cropped real ones (DYL-86). Both scales were pixel-exact against the source cells (no blended
 colours at 4x) on the synthetic fixture and on the 136 px relay_sentinel export (2026-10-19).
 
-## Smoke render (Phase 5)
+## Smoke render (Phase 5, DYL-131)
 
 A later step: load the new SpriteFrames and one existing character side by side at 1x and 4x, play one cycle, and
 look at the screenshot. `render_animation.gd` is the starting point. Pixel-level problems are already gone by then;
@@ -131,3 +131,60 @@ paths re-pointed, deterministic uid; the earlier "no `.import` is written" rule 
 the patched `characters.json` with the full game entry (`standing_pixels` measured from the south still and checked
 against `round(height_m x 62)`, `height_m` from the class request, never guessed). Apply/verify/rollback run only in a
 disposable snapshot; the real checkout is the owner's (INSTALL.md). Runbook: `docs/runbooks/delivery.md`.
+
+`sonoranlab smoke-render --profile P --candidate JOBDIR --sibling ID=JOBDIR_OR_SHEET [...] --out OUT [--shader PATH]
+[--godot BIN] [--timeout S]` loads the candidate's exact export and up to three approved siblings in a disposable Godot
+project under `OUT/project/` (refused inside the repo or the game checkout) and renders them side by side. Exit 0 pass,
+1 an objective check or the engine failed, 2 bad input (nothing written), 3 engine unavailable (`engine: unavailable`,
+never a pass). Code: `sonoranlab/smoke.py`; engine side: `tools/godot/side_by_side/` (project template, `render_plan.gd`,
+`plain.gdshader`, `render.sh`). `render_animation.gd` stays the single-animation tool.
+
+**Inputs.** A candidate is an export dir (`<id>.sonoranlab.json` + PNG, sha256 re-checked). A sibling is an export dir, a
+dir holding the game's `characters.json` plus its sheet, or the sheet PNG beside `characters.json`. `smoke.json` records
+each sheet's sha256 and its sidecar / `characters.json` sha256. Paths must be inside the read roots / STATE, never the game
+checkout; symlinks (leaf, ancestors escaping the root) are refused. Rows must equal the profile's order.
+
+**Layout.** One baseline, 62 px/m (`canvas.density_px_per_m`): each character keeps its own square cell (never cropped),
+cell bottoms aligned (feet at `cell - 4` for everyone), `#3a3a3a` background, 8/8/16 px margin/gap/group gap, groups wrap
+below 12288 render px. The quad is a `QuadMesh` of `cell / 62` m under an orthographic camera, so 1 sheet pixel is exactly
+1 (or 4) render pixels. The camera and quads are driven like `PixelStandee.cs`: `ShaderMaterial` with `sheet`, `grid`
+(`columns`, 8), `cell` (column, row) and `cell_pixels` only (`border_color` stays at the shader default, `hit_flash` 0, no
+dye). With `--shader` (the owner's staged private `PixelStandee.gdshader`; copied into `OUT/project/`, only its sha256 is
+recorded, never commit it) the sticker border is drawn by that shader; without it `plain.gdshader` (same UV math, no
+border) is used and the result says `border: not_rendered`. Sheets are read with `Image.load_from_file` (lossless, no
+import step); the game imports the same pixels (`compress/mode=0`).
+
+**Renders** (`OUT/render/`, 1x and 4x, plus `overview_{1x,4x}.png` = all 8 stills): `<row>_still_Nx.png` and
+`<row>_<clip>_Nx.png` for every clip of the candidate, one group per frame, candidate first then siblings. The longest
+clip sets the number of groups; shorter clips wrap, a sibling without the clip shows its still (recorded under
+`frames_per_character`). Clip timing (start, frames, fps, loop, loop_from, seconds) is in `smoke.json`. Mirrored rows are
+the sheet's own pixels. Godot saves transparent PNGs; Python composites the background, so it is exact. Budgets: 300 M
+planned pixels (refused before anything is written) and 32 MiB of PNG (extra renders are not written, the check fails).
+
+**Objective checks** (`smoke.json` `checks`; every one must pass): `alpha_binary` and `no_baked_border` per sheet (no
+semi-transparent source pixel; no near-white silhouette ring), `frames_and_timing_match_manifest` (candidate clips vs the
+profile's animations), `mirrored_rows_exact`, `cells_uncropped`, `render_complete`, `all_stills_and_clip_frames_rendered`,
+`nearest_filtering` (every opaque source pixel equals its block in each render within `color_tolerance` 2; the observed
+maximum is recorded) and `alpha_and_border` (render alpha binary; outside the sprite only the background, or with the
+shader a flat keyline ring then a flat outer ring of two different colours, observed colours recorded). The tolerance and
+the border-colour handling were chosen without a real run: confirm them on the first real render. `agent_recommendation`
+and `owner_style_acceptance` are always empty; style acceptance is the owner's.
+
+**Supervision.** The render runs `render.sh` (private headless GNOME Shell + llvmpipe, as `spriteframes_check/render.sh`)
+in its own process group: wall-clock `--timeout` (default 600 s), output kept as 64 KiB head + 64 KiB rolling tail
+(`OUT/engine.log`; a flood above 16 MiB is killed), `ulimit -f` 64 MiB, XDG config/data/cache/runtime dirs and the Godot
+log under `OUT/xdg`, TERM, 5 s grace, KILL of the group and reaping on every exit; cancellation from the job worker does the
+same. Nothing is matched by process name. Missing godot, gnome-shell or dbus-run-session is `engine: unavailable`.
+
+**Siblings for the MCP job.** The MCP job accepts registry refs only. To use a staged game sheet, wrap it and import it:
+
+```
+uv run python -m sonoranlab.smoke stage --profile profiles/twos-are-up.yaml \
+  --characters-json ~/sonoranlab-work/phase5/staged/game-<rev>/characters/characters.json --id pyromancer \
+  --out ~/sonoranlab-work/phase5/staged-jobs/pyromancer
+# then the MCP/API tool: import_job {project, character: "pyromancer", job_dir: <that dir>} -> artifact_id
+```
+
+The staged job holds the game's PNG and its `characters.json` entry as a sidecar, `report.pass: false` and a note that
+SonoranLab neither made nor validated it. The artifact id is the `siblings` entry. Copy the owner's private shader to
+`STATE/smoke/PixelStandee.gdshader` to get the border in MCP runs.

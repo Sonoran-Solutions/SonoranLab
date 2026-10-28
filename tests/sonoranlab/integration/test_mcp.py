@@ -36,6 +36,7 @@ CORE = {
     "process",
     "export_godot",
     "godot_check",
+    "smoke_render",
     "cancel_job",
     "retry_job",
 }
