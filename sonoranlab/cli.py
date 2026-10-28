@@ -248,6 +248,41 @@ def build_parser() -> argparse.ArgumentParser:
     rc.add_argument("job", type=Path)
     rc.set_defaults(func=review_check_cmd)
 
+    co = verbs.add_parser(
+        "compose", help="per-clip exported jobs + approved stills -> one validated class sheet job (exit 0/1/2)"
+    )
+    co.add_argument("--profile", type=Path, required=True)
+    co.add_argument("--character", required=True)
+    co.add_argument(
+        "--clips", type=_clip_jobs, required=True, help="NAME=JOBDIR,... in sheet order, e.g. idle=J1,run=J2"
+    )
+    co.add_argument("--stills", type=Path, required=True, help="dir with the eight approved still_<direction>.png")
+    co.add_argument("--out", type=Path, required=True, help="new job dir (created exclusively)")
+    co.set_defaults(func=compose_cmd)
+
+    dl = verbs.add_parser("deliver", help="owner-gated delivery bundle; apply/verify/rollback in a disposable snapshot")
+    dla = dl.add_subparsers(dest="action", required=True)
+    db = dla.add_parser("build", help="stage BUNDLE from an owner-approved composed job (never touches the game)")
+    db.add_argument("--profile", type=Path, required=True)
+    db.add_argument("--composed", type=Path, required=True, help="`sonoranlab compose` job; review check must pass")
+    db.add_argument("--request", type=Path, required=True, help="class request (height_m, clips)")
+    db.add_argument("--target-rev", required=True, help="full commit of the game revision the bundle targets")
+    db.add_argument("--base-manifest", type=Path, required=True, help="characters.json at that revision")
+    db.add_argument("--import-template", type=Path, required=True, help="a sibling sheet's .png.import")
+    db.add_argument("--out", type=Path, required=True, help="new bundle dir (created exclusively)")
+    db.set_defaults(func=deliver_cmd)
+    for action, text in (
+        ("apply", "install into a disposable snapshot (refuses the real checkout)"),
+        ("verify", "check the applied snapshot (+ game-consumer result) and record the bundle state"),
+        ("rollback", "restore the snapshot's exact pre-apply bytes"),
+    ):
+        da = dla.add_parser(action, help=text)
+        da.add_argument("bundle", type=Path)
+        da.add_argument("--target", type=Path, required=True, help="snapshot: clean git worktree at the target rev")
+        if action == "verify":
+            da.add_argument("--consumer-result", type=Path, help="result.json from tools/game_consumer/run.sh")
+        da.set_defaults(func=deliver_cmd)
+
     rp = verbs.add_parser("repair", help="isolated repair workspace and lossless Aseprite interchange")
 
     def repair_error(message: str) -> None:
@@ -1049,6 +1084,59 @@ def refprep_cmd(args: argparse.Namespace) -> int:
         )
     )
     return 0 if status in ("ready", "needs_profile_row") else 1
+
+
+def _clip_jobs(text: str) -> list[tuple[str, Path]]:
+    pairs = [part.split("=", 1) for part in text.split(",")]
+    if any(len(p) != 2 or not p[0] or not p[1] for p in pairs):
+        raise argparse.ArgumentTypeError(f"{text!r}: expected NAME=JOBDIR[,NAME=JOBDIR...]")
+    return [(name, Path(job)) for name, job in pairs]
+
+
+def compose_cmd(args: argparse.Namespace) -> int:
+    from sonoranlab.compose import ComposeError, compose
+
+    try:
+        res = compose(
+            profile=args.profile, character=args.character, clips=args.clips, stills=args.stills, out=args.out
+        )
+    except (ComposeError, OSError) as e:
+        print(f"compose: {e}", file=sys.stderr)
+        return 2
+    if res["exit"] == 1:
+        print(f"FAIL {args.character}: {len(res['failures'])} validator failure(s); no export written", file=sys.stderr)
+        for m in res["failures"][:8]:
+            print(f"  - {m}", file=sys.stderr)
+        print(f"job: {res['job']}", file=sys.stderr)
+        return 1
+    print(f"PASS {args.character}: {len(res['warnings'])} warning(s)\njob:    {res['job']}")
+    print(f"export: {Path(res['export']['png']).parent}")
+    return 0
+
+
+def deliver_cmd(args: argparse.Namespace) -> int:
+    from sonoranlab import deliver
+
+    try:
+        if args.action == "build":
+            res = deliver.build(
+                profile=args.profile,
+                composed=args.composed,
+                request=args.request,
+                target_rev=args.target_rev,
+                base_manifest=args.base_manifest,
+                import_template=args.import_template,
+                out=args.out,
+            )
+        elif args.action == "verify":
+            res = deliver.verify(args.bundle, args.target, args.consumer_result)
+        else:
+            res = getattr(deliver, args.action)(args.bundle, args.target)
+    except (deliver.DeliveryError, OSError, ValueError) as e:
+        print(f"deliver {args.action}: {e}", file=sys.stderr)
+        return 2
+    print(json.dumps(res, indent=1))
+    return 0 if res.get("ok", True) else 1
 
 
 def main(argv: list[str] | None = None) -> int:
