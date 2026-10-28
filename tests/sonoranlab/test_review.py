@@ -728,3 +728,19 @@ def test_unverifiable_recorded_profile_breaks_binding(job, field):
         manifest["profile"]["sha256"] = "0" * 64
     manifest_path.write_text(json.dumps(manifest))
     assert not production_usable(job)
+
+
+def test_shared_setting_type_change_breaks_binding(job):
+    _git_profile(job, lambda doc, me: doc["canvas"].update(gen_scale=float(doc["canvas"]["gen_scale"])))
+    assert not production_usable(job)
+
+
+def test_relabelled_manifest_character_cannot_pick_another_row(job):
+    def edit(doc, me):
+        doc["characters"][me]["cell"] += 1  # the job's real row changes; the relabel points at an unchanged one
+
+    manifest_path, manifest = _git_profile(job, edit)
+    manifest["character"] = "villain"
+    manifest_path.write_text(json.dumps(manifest))
+    assert not production_usable(job)
+    assert any("sha256 differs from manifest" in e["message"] and "profile" in e["message"] for e in review_errors(job))

@@ -163,7 +163,22 @@ def _same_character_profile(path: Path, sha: object, rev: object, character: obj
     old_rows, new_rows = old.pop("characters", None), new.pop("characters", None)
     if not (isinstance(old_rows, dict) and isinstance(new_rows, dict) and character in old_rows):
         return False
-    return old == new and old_rows[character] == new_rows.get(character)
+    return _canonical(old) == _canonical(new) and _canonical(old_rows[character]) == _canonical(new_rows.get(character))
+
+
+def _canonical(value: object) -> str:
+    """Type-sensitive comparison: 4 != 4.0 and true != 1, as the profile parser treats them."""
+    return json.dumps(value, sort_keys=True, default=repr)
+
+
+def _bound_character(job: Path, manifest: dict) -> str | None:
+    """The manifest's character, only when the validated report agrees (a relabelled manifest cannot pick a row)."""
+    try:
+        report = _load(job / "report.json")
+    except ValueError:
+        return None
+    character = manifest.get("character")
+    return character if isinstance(report, dict) and report.get("character") == character else None
 
 
 def _provenance(job: Path) -> tuple[dict | None, list[str]]:
@@ -207,7 +222,7 @@ def _provenance(job: Path) -> tuple[dict | None, list[str]]:
         if p.is_symlink() or not p.is_file():
             problems.append(f"profile {p}: missing or not a regular file")
         elif sha256_file(p) != profile.get("sha256") and not _same_character_profile(
-            p, profile.get("sha256"), manifest.get("git"), manifest.get("character")
+            p, profile.get("sha256"), manifest.get("git"), _bound_character(job, manifest)
         ):
             problems.append(f"profile {p}: sha256 differs from manifest")
     try:
