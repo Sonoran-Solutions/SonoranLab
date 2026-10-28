@@ -2,7 +2,8 @@
 
 Pixel math only, no model. Per view: split the turnaround grid (or take a `--view DIRECTION=IMG` override) -> chroma
 matte with the profile's key_tol + despill (alpha.py) -> keep components >= MIN_COMPONENT_SHARE of the largest ->
-ONE common scale for all eight views (median of target height / view height, target = height_m x density) ->
+ONE common scale for the turnaround views (median of target height / view height, target = height_m x density;
+an override view from another canvas is normalised to the target height on its own) ->
 Lanczos to gen_scale x the target size -> the processing-v1 chain (pipeline.process_frame: PixelOE, palette lock,
 alpha threshold, fringe clean, colour cap) -> foot registration into the cell (register.register_clip). Views are
 never mirrored and a missing view is never synthesised. Outputs carry no approval: the owner approves exact hashes.
@@ -22,7 +23,7 @@ from sonoranlab.alpha import despill, extract_alpha
 from sonoranlab.profile import load_palette, load_profile, sha256_file
 
 MIN_COMPONENT_SHARE = 0.005  # drop matte islands smaller than 0.5% of the largest component (key noise, specks)
-HEIGHT_DEVIATION_WARN = 0.04  # a view whose height differs > 4% from the target after the common scale
+HEIGHT_DEVIATION_WARN = 0.04  # a view whose height differs > 4% from the target after scaling
 RESIDUAL_KEY_FACTOR = 2  # opaque pixels within this x key_tol of the key after matting are reported as residual key
 MARGIN = 2  # transparent final px around a view while it is processed
 MAX_EDGE = 16384
@@ -188,15 +189,22 @@ def refprep(
         sources[d] = {"source": "view_override", "path": str(p), "sha256": sha256_file(p)}
     matted = {d: _matte(images[d], d, key, pr.key_tol, pr.despill_px) for d in profile_order}
 
-    # ---- one common scale (final px per HD px) for all eight views
+    # ---- scale (final px per HD px) per source image: the turnaround views share ONE common scale (median of target
+    # height / view height) so their proportions stay consistent; an override comes from another canvas, so its own
+    # standing height is normalised to the target. With overrides only, the median over them is the common scale.
     heights = {d: m["crop"].shape[0] for d, m in matted.items()}
-    scale = float(np.median([target_h / h for h in heights.values()]))
+    common = [d for d in profile_order if sources[d]["source"] == "turnaround"] or list(profile_order)
+    scale = float(np.median([target_h / heights[d] for d in common]))
+    ref_h = float(np.median([heights[d] * scale for d in common]))  # the common views' median standing height
+    scales = {d: scale if d in common else target_h / heights[d] for d in profile_order}
     warnings = []
     for d in profile_order:
-        dev = heights[d] * scale / target_h - 1
-        sources[d]["height_deviation"] = round(dev, 4)
+        dev = heights[d] * scales[d] / (target_h if d in common else ref_h) - 1
+        basis = "common_median" if d in common else "override_to_target"
+        sources[d] |= {"scale": scales[d], "scale_basis": basis, "height_deviation": round(dev, 4)}
         if abs(dev) > HEIGHT_DEVIATION_WARN:
-            warnings.append(f"height: {d} stands {dev:+.1%} from the target {target_h}px at the common scale")
+            ref = f"the target {target_h}px" if d in common else f"the common views' median {ref_h:g}px"
+            warnings.append(f"height: {d} stands {dev:+.1%} from {ref} ({basis})")
         if n := matted[d]["residual_key_px"]:
             warnings.append(
                 f"residual_key: {d} keeps {n} opaque HD px within {RESIDUAL_KEY_FACTOR}x key_tol of the key after "
@@ -211,7 +219,7 @@ def refprep(
     stats: dict[str, dict] = {}
     for d in profile_order:
         crop = matted[d]["crop"]
-        sw, sh = max(1, round(crop.shape[1] * scale)), max(1, round(crop.shape[0] * scale))
+        sw, sh = max(1, round(crop.shape[1] * scales[d])), max(1, round(crop.shape[0] * scales[d]))
         hd = Image.fromarray(crop, "RGBA").resize((sw * gen, sh * gen), Image.Resampling.LANCZOS)
         canvas = Image.new("RGBA", ((sw + 2 * MARGIN) * gen, (sh + 2 * MARGIN) * gen), (0, 0, 0, 0))
         canvas.paste(hd, (MARGIN * gen, MARGIN * gen))

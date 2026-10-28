@@ -77,7 +77,9 @@ uv run sonoranlab refprep --profile profiles/twos-are-up.yaml --request REQUEST 
 - Matte: chroma key with the profile `key_tol` (tolerates near-#ff00ff noise) + despill; matte islands smaller
   than 0.5% of the largest component are dropped and listed. Opaque pixels still within 2 x key_tol of the key
   after matting are reported as a `residual_key` warning: inspect `DIR/crops/`.
-- One common scale for all eight views (median of target height / view height); views more than 4% off the
+- One common scale for the turnaround views (median of target height / view height); an `--view` override comes
+  from another canvas, so its own standing height is normalised to the target (with only overrides, their median
+  is the common scale). refprep.json records each view's source, scale and scale basis. Views more than 4% off the
   target height are warned. Lanczos to gen_scale x the target size, then the processing-v1 chain (PixelOE
   k-centroid, palette lock without dither, alpha threshold, fringe clean, colour cap), then foot registration on
   `cell - 4`, centred on `cell / 2`.

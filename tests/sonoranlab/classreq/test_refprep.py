@@ -115,3 +115,24 @@ def test_usage_errors(tmp_path, profile, capsys, args):
         extra = ["--turnaround", img, *args]
     code, out = refprep(tmp_path, profile, *extra)
     assert code == 2 and not out.exists()
+
+
+def test_override_from_a_3x_canvas_is_normalised_to_the_target_height(tmp_path, profile, capsys):
+    """Regression (real data): an override drawn at 3x the turnaround's resolution must not inherit the turnaround's
+    HD scale (that blew the view up ~3x and the cell past 288)."""
+    img = turnaround(tmp_path / "turn.png")
+    view = tmp_path / "sw3x.png"
+    Image.fromarray(hd_view("south-west", size=640, scale=12)).save(view)
+    code, out = refprep(tmp_path, profile, "--turnaround", img, "--view", f"south-west={view}")
+    assert code == 0, capsys.readouterr().err
+    doc = json.loads((out / "refprep.json").read_text())
+    assert doc["parameters"]["cell"] == CELL and doc["parameters"]["common_scale"] == 0.25
+    sw = doc["views"]["south-west"]
+    assert sw["source"] == "view_override" and sw["scale_basis"] == "override_to_target"
+    assert sw["scale"] == pytest.approx(43 / (43 * 12)) and abs(sw["height_deviation"]) < 0.04
+    assert doc["views"]["west"]["scale"] == 0.25 and doc["views"]["west"]["scale_basis"] == "common_median"
+    f = stills(out)["south-west"]
+    ys, xs = np.nonzero(f[..., 3])
+    assert ys.max() == CELL - 4 and ys.max() - ys.min() + 1 == 43 and xs.max() - xs.min() + 1 == 16
+    assert doc["check"]["status"] == "ready", doc["check"]["findings"]
+    capsys.readouterr()
