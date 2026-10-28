@@ -18,7 +18,9 @@ from sonoranlab.jobs import store
 from sonoranlab.jobs.executors import JobFailure
 
 START_HINT = "start it: bash env/comfy.sh up --offline"
+WORKFLOWS = {"E": "workflows/video/wan22_i2v_lightx2v.json", "C": "workflows/pose/qwen_edit_pose_native.json"}
 guard = import_module("sonoranlab.comfy.guard")
+provenance = import_module("sonoranlab.comfy.provenance")
 
 
 def references(params, ctx):
@@ -147,7 +149,7 @@ class Generation:
             params.setdefault("windows", "default")
             params.setdefault("godot_check", True)
             params.setdefault("need_gib", guard.min_need_gib("E"))
-            workflow = ctx.repo / "workflows/video/wan22_i2v_lightx2v.json"
+            workflow = ctx.repo / WORKFLOWS["E"]
         else:
             if params["direction"] not in profile.directions.generate:
                 raise ToolError("invalid_params", "direction must be in directions.generate", field="direction")
@@ -159,10 +161,18 @@ class Generation:
                 raise ToolError("refused", "Track C has no documented default prompt for this direction")
             params["anim"] = anim
             inputs["template"] = sha256_file(template)
-            workflow = ctx.repo / "workflows/pose/qwen_edit_pose_native.json"
+            workflow = ctx.repo / WORKFLOWS["C"]
+        if refusal := self.unverified_models(ctx.repo, workflow):
+            raise ToolError("refused", refusal, hint=provenance.HINT)
         inputs["workflow"] = sha256_file(workflow)
         params["track"] = self.track
         return params, inputs
+
+    @staticmethod
+    def unverified_models(repo, workflow):
+        """DYL-125: the refusal message when the BiRefNet files the container loads don't match env/models.tsv."""
+        work = import_module("sonoranlab.comfy.adapters.track_e").default_work()
+        return provenance.admit(work, workflow, models_tsv=repo / "env/models.tsv")[1]
 
     def admit(self, params, attempt, jobs):
         """Called by manager.submit under its submit lock. Attempts that ran (submitted a prompt) or are still active
@@ -242,6 +252,12 @@ class Generation:
 
     def run(self, job, ctx):
         # Approval and all frozen inputs are checked again after queueing, before any child starts.
+        repo = Context().repo
+        workflow = repo / WORKFLOWS[self.track]
+        if refusal := self.unverified_models(repo, workflow):
+            exc = JobFailure("model_provenance", "prepare", refusal)
+            exc.error["hint"] = provenance.HINT
+            raise exc
         normalized, hashes = self.validate(job["params"], budget=False)
         if hashes != job["input_hashes"] or normalized != job["params"]:
             raise JobFailure("inputs_changed", "prepare", "Frozen generation inputs changed")
@@ -288,7 +304,14 @@ class Generation:
                 "result": artifact(job, p),
                 **{
                     k: value.get(k)
-                    for k in ("models", "workflow_source_sha256", "workflow_patched_sha256", "inputs", "outputs")
+                    for k in (
+                        "models",
+                        "model_provenance",
+                        "workflow_source_sha256",
+                        "workflow_patched_sha256",
+                        "inputs",
+                        "outputs",
+                    )
                 },
                 "memory": value.get("memory"),
             }

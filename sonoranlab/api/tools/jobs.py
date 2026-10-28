@@ -98,7 +98,11 @@ def _result_summary(job: dict, human: dict) -> dict | None:
                 for r in (doc.get("generation") or {}).get("requests", [])
             ]
         }
-        summary["attempts"] = [{"result": attempt["result"]} for attempt in result.get("attempts", [])]
+        # DYL-125: verified model inventory per attempt; None for results that predate it (never inferred).
+        summary["attempts"] = [
+            {"result": attempt["result"], "model_provenance": attempt.get("model_provenance")}
+            for attempt in result.get("attempts", [])
+        ]
     for verdict in (summary, (summary.get("animate") or {}).get("verdict") or {}):
         for key in ("failures", "warnings", "errors"):
             if isinstance(verdict.get(key), list):
@@ -108,7 +112,9 @@ def _result_summary(job: dict, human: dict) -> dict | None:
     for key in ("godot_check", "raw_result"):
         if isinstance(result.get(key), dict):
             summary[key] = {
-                k: result[key][k] for k in ("status", "pass", "available", "error", "timing") if k in result[key]
+                k: result[key][k]
+                for k in ("status", "pass", "available", "error", "timing", "model_provenance")
+                if k in result[key]
             }
             if "godot_attempts" in result[key]:
                 summary[key]["godot_attempts"] = [

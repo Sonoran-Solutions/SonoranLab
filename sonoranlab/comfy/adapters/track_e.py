@@ -28,6 +28,7 @@ import numpy as np
 import yaml
 from PIL import Image
 
+from sonoranlab.comfy import provenance
 from sonoranlab.comfy.adapters.base import DEFAULT_BACKGROUND, GenerateRequest, RawResult
 from sonoranlab.comfy.guard import REPO, TRACK_NEED_GIB
 from sonoranlab.comfy.guard import guarded_argv as guarded_argv
@@ -185,8 +186,10 @@ class TrackE:
         work_root: Path | None = None,
         timeout_s: float = 1800,
         workflow: Any = None,  # preloaded client Workflow; None = loaded lazily from the path
+        models_tsv: Path | None = None,  # None = env/models.tsv
     ) -> None:
         self.client = client
+        self.models_tsv = Path(models_tsv) if models_tsv is not None else provenance.MODELS_TSV
         self.workflow_path = Path(workflow_path)
         self.work_root = Path(work_root) if work_root is not None else default_work()
         self.timeout_s = timeout_s
@@ -287,6 +290,13 @@ class TrackE:
             if res.error is None:  # the first error is the cause
                 res.error = {"code": code, "stage": stage, "message": message, "retryable": retryable}
 
+        # DYL-125: verify the BiRefNet files the container will load before anything is staged or submitted.
+        res.model_provenance, refusal = provenance.admit(self.work_root, plan.wf_path, models_tsv=self.models_tsv)
+        if refusal:
+            fail("model_provenance", "admission", refusal)
+            res.error["hint"] = provenance.HINT
+            res.write()
+            return res
         try:
             start = self._stage(request, plan, out)
         except (OSError, ValueError) as e:
@@ -325,7 +335,7 @@ class TrackE:
         res.workflow_source_sha256 = record.workflow_source_sha256
         res.workflow_patched_sha256 = record.workflow_patched_sha256
         res.params = dict(record.params or values)
-        res.models = dict(record.models)
+        res.models = provenance.merge_models(record.models, res.model_provenance)
         res.timing = dict(record.timing)
         with open(out / "run.json", "x") as f:
             f.write(json.dumps(record.to_json(), indent=2) + "\n")
