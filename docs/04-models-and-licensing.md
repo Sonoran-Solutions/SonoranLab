@@ -73,6 +73,13 @@ Notes on the caveats above:
   unlicensed `1038lab/BiRefNet` mirror. We pre-place the official files instead,
   and RMBG loads them: the F16 weights are a drop-in for its F32 mirror. Verified in
   the DYL-67 operational test, online and offline.
+  Runs verify them (DYL-125, `sonoranlab/comfy/provenance.py`): Track E and
+  Track C hash the copies the container loads (`$WORK/RMBG/BiRefNet`, mounted
+  as `models/RMBG`) against rows B1-B1c at job admission and again in the
+  adapter before submission, and refuse on a missing, unreadable or mismatched
+  file. `birefnet.py` also verifies as RMBG's load-time rewrite of B1a
+  (`from .BiRefNet_config` -> `from BiRefNet_config`). Hashes are cached per
+  (path, size, mtime_ns, inode) in `$WORK/cache/model-sha256.json`.
 - **Depth Anything V2 (P3).** `DepthAnythingV2Preprocessor` defaults to `vitl`,
   which is CC-BY-NC-4.0 and would be downloaded on first use. Only Small (vits)
   is allowed; every workflow must pin it.
