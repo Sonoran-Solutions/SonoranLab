@@ -624,8 +624,14 @@ def _attempt_usage(project: str, character: str, clip: str, jobs: list[dict]) ->
     ]
 
 
+# Request fields read only when building the delivery manifest (generation never reads them; reference prep's use is
+# already bound through the reference hashes), so changing one does not make earlier candidates stale.
+DELIVERY_ONLY_REQUEST_KEYS = frozenset({"height_m"})
+
+
 def _binding(frozen: dict) -> tuple:
-    return frozen["references"]["hashes"], frozen["profile"]["character_row"], frozen["request_sha256"]
+    request = {k: v for k, v in frozen["request"].items() if k not in DELIVERY_ONLY_REQUEST_KEYS}
+    return frozen["references"]["hashes"], frozen["profile"]["character_row"], classreq.request_sha256(request)
 
 
 def _composed_approvals(events: list[dict], current: set, campaign_id: str, ctx: Context) -> dict[str, dict]:
@@ -654,8 +660,9 @@ def _composed_approvals(events: list[dict], current: set, campaign_id: str, ctx:
     return out
 
 
-def _bundle_state(campaign_id: str, composed: set, jobs: list[dict], ctx: Context) -> str | None:
-    """Most advanced verified state of an intact bundle built from an approved composed job (delivery_status logic)."""
+def _bundle_state(campaign_id: str, composed: set, request_sha: str, jobs: list[dict], ctx: Context) -> str | None:
+    """Most advanced verified state of an intact bundle built from an approved composed job and exactly the current
+    request (the bundle bakes height_m into the manifest) (delivery_status logic)."""
     from sonoranlab.api.tools.delivery import delivery_status  # the delivery tools import this module
 
     best = None
@@ -666,6 +673,7 @@ def _bundle_state(campaign_id: str, composed: set, jobs: list[dict], ctx: Contex
             and job["state"] == "succeeded"
             and params.get("campaign_id") == campaign_id
             and params.get("composed") in composed
+            and (job.get("input_hashes") or {}).get("request") == request_sha
         ):
             continue
         for bundle in delivery_status(bundle=job["job_id"], ctx=ctx)["bundles"]:
@@ -757,6 +765,10 @@ def _view(path: Path, ctx: Context) -> dict:
             decisions[event["data"]["job_id"]] = event["data"] | {"at": event["at"]}
     # Candidates, selections, reviews and delivery count only when bound to the current frozen inputs.
     current = {r["revision"] for r in revisions if _binding(r) == _binding(frozen)}
+    # A bundle bakes every request field (height_m included) into the game manifest: delivery needs the exact request.
+    exact = {
+        r["revision"] for r in revisions if r["revision"] in current and r["request_sha256"] == frozen["request_sha256"]
+    }
     attempts = []
     for attempt in _attempts(events).values():
         a = _classify(attempt, revisions[attempt["revision"] - 1], ctx)
@@ -843,11 +855,11 @@ def _view(path: Path, ctx: Context) -> dict:
     else:
         state = next(s for s in OVERALL if s in planned)
         delivered = [
-            e["data"]["state"] for e in events if e["type"] == "delivery" and e["data"].get("revision") in current
+            e["data"]["state"] for e in events if e["type"] == "delivery" and e["data"].get("revision") in exact
         ]
         if state == "ARTIFACT_APPROVED":
             # Bundles give STAGED/READY only; INSTALLED comes only from an owner CLI record.
-            found = [_bundle_state(frozen["campaign_id"], set(composed), jobs, ctx)]
+            found = [_bundle_state(frozen["campaign_id"], set(composed), frozen["request_sha256"], jobs, ctx)]
             found += [DELIVERY[d] for d in delivered[-1:]]
             order = list(DELIVERY.values())
             state = max((f for f in found if f), key=order.index, default=state)
@@ -1208,6 +1220,12 @@ def owner_decision(
             ]
             if state == "installed" and data["ref"] not in installs:
                 raise ToolError("refused", "installed needs a prior install authorization for this bundle", field="ref")
+            bundle = next((j for j in manager.reconcile_all() if j["job_id"] == data["ref"]), None)
+            frozen = view["_revisions"][-1]
+            if bundle and (bundle.get("input_hashes") or {}).get("request") != frozen["request_sha256"]:
+                raise ToolError(
+                    "refused", "the bundle was built from another revision's request; rebuild it", field="ref"
+                )
             data |= {"state": state, "bundle": data["ref"], "revision": view["revision"]}
             event = _append(path, "delivery", data)
         else:
