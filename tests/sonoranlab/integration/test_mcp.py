@@ -417,3 +417,35 @@ def test_stdout_protocol_stderr_logging_and_bounded_worker_log(lab, caplog):
 
     run_async(exercise)
     assert not any("parse" in r.message.lower() or "invalid json" in r.message.lower() for r in caplog.records)
+
+
+def test_get_character_merges_native_and_imported_history(lab):
+    """DYL-126: one logical entry per job over real stdio, identical to `sonoranlab api get_character`."""
+
+    async def exercise():
+        async with lab.client(INTEGRATION_MODE="real") as (client, _):
+            await lab.references(client)
+            job = await submit_process(lab, client, stills=str(lab.stills))
+            await status(client, job)
+            imported = await call(client, "import_job", lab.base | {"job_dir": str(lab.output(job))})
+            params = lab.base | {"jobs_limit": 1}
+            character = await call(client, "get_character", params)
+            assert character["job_count"] == 1 and not character["jobs_truncated"]
+            (entry,) = character["jobs"]
+            assert entry["id"] == job and entry["source"] == "native+import" and entry["status"] == "ok"
+            assert imported["artifact_id"] in entry["aliases"] and entry["state"] == "succeeded"
+            assert entry["human"] == {"review": "none", "production_usable": False}
+            response = await client.call_tool("get_character", params)
+            proc = subprocess.run(
+                [str(REPO / ".venv/bin/sonoranlab"), "api", "get_character", "--params", "-"],
+                input=json.dumps(params),
+                env=lab.env,
+                cwd=REPO,
+                text=True,
+                capture_output=True,
+                timeout=30,
+            )
+            assert proc.returncode == 0, proc.stdout + proc.stderr
+            assert response.structured_content == json.loads(proc.stdout)
+
+    run_async(exercise)

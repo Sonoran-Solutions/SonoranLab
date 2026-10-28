@@ -29,7 +29,7 @@ no placeholder tools in discovery. See ADR-0010 for each library/CLI mapping.
 | `list_projects` | read-only / sync | Implemented: `result.projects` = profiles/*.yaml as id, name, relative profile_path |
 | `get_profile` | read-only / sync | Implemented: project id → resolved canvas, cells, directions, animations, limits, autonomy, protected export target; palette path + sha256 only |
 | `list_characters` | read-only / sync | Implemented: profile/registry union and verified approvals |
-| `get_character` | read-only / sync | Implemented: references, current review and imported job lineage |
+| `get_character` | read-only / sync | Implemented: references, current review and merged native + imported job history (DYL-126) |
 | `list_jobs` | read-only / sync | Implemented: bounded/filterable durable summaries (limit ≤200), offline lease reconciliation |
 | `job_status` | read-only / sync | Implemented: execution, measured file progress/timing, compact `result_summary` and separate technical/human status |
 | `job_result` | read-only / sync | Implemented: terminal result summary/error and paged artifact references |
@@ -184,8 +184,8 @@ are shown without `?`:
 
 | Tool | Input object | Result object |
 |---|---|---|
-| `list_characters` | `{project}` | `{characters: [{id, cell, anchor_mode, animations, registered, reference_sets: [{ref_set_id, approval}], jobs: [job_id]}]}` |
-| `get_character` | `{project, character}` | `{id, cell, anchor_mode, animations, registered, reference_sets, jobs}` |
+| `list_characters` | `{project}` | `{characters: [{id, cell, anchor_mode, animations, registered, reference_sets: [{ref_set_id, approval}], jobs: [imported job_id], job_count}]}` |
+| `get_character` | `{project, character, jobs_offset?: int>=0 (0), jobs_limit?: 1-200 (50)}` | `{id, cell, anchor_mode, animations, registered, reference_sets, jobs, job_count, jobs_offset, jobs_truncated, unattributed_invalid_jobs}` |
 | `register_character` | `{project, character, reference_dir, notes?: string}` | `{ref_set_id, approval, created: boolean}` |
 | `import_job` | `{project, character, job_dir}` | `{artifact_id, job_id, created: boolean}` |
 | `get_artifact` | `{ref}` | Native/import file ref: `{ref, size, sha256, media_type, dimensions?: [width,height]}`; bare native job ID: `{job_id, file_count, size, media_type}`; imported ID retains `{artifact_id, job_id, file_count, size, sha256, media_type}` |
@@ -209,9 +209,37 @@ Approval state is `approved`, `unapproved`, or `invalid`, recomputed from
 current hashes. Evidence contains the STATE-relative approval record path,
 its SHA256 and its record. Full jobs include import provenance and hashes,
 `current_hashes`, separate `technical` and `human` states, review problems,
-and `lineage: {parent_job, repair_children}`. Repair children are the imported
+and `lineage: {parent_job, repair_children}`. Repair children are the
 children linked by Phase 3.5 `repair.parent_job` / `upstream.parent_job`.
 Retired profile rows remain readable using their registered spec snapshot.
+
+**Merged history (DYL-126).** `get_character.jobs` lists every logical job of
+the exact (project, character): durable native jobs (any kind, any execution
+state) and registry imports. An import is the *same* job as a native one when
+its resolved `job_dir` equals or lies inside the native `output_dir`, or when it
+is the child a `finalize_repair` job imported (`result.artifact_id`, itself a
+hash of the exact path); names are never compared. Each entry has `id` (native
+job ID, else the import's `artifact_id`), `aliases` (the other accepted IDs),
+`source` (`native`, `import`, `native+import`), `kind` (`import` for import-only),
+`anim`, `created_at`, execution `state`/`stage`/`error` (null for import-only),
+`attempt: {number, parent_job_id, retries}` from `retry_job`, separate
+`technical` and `human` verdicts, `review_problems`, `imports` (per-import
+summaries), `lineage: {parent_job, parent_id, repair_children, child_ids}`
+(`parent_id`/`child_ids` are canonical IDs; `repair_children` keeps the DYL-114
+child `job_id` form) and `status: ok|invalid` with `problems`. Import-backed
+entries also keep the DYL-114 import fields (`artifact_id`, `job_dir`,
+`review_job`, `hashes`, `current_hashes`, `provenance`, `imported_at`).
+`human` is recomputed on every read through the `check_review` logic for every
+bound review (native and each import); the most conservative state wins and
+`production_usable` requires all of them. A corrupt record, journal mismatch,
+import drift or out-of-root directory makes only that entry `invalid`;
+corrupt native records whose project/character cannot be read are counted in
+`unattributed_invalid_jobs`. Entries are ordered by `created_at` then `id` and
+paged with `jobs_offset`/`jobs_limit` (default 50, maximum 200); `job_count` is
+the total and `jobs_truncated` says more pages follow. Only the returned page
+pays for reviews and native `job_status`-style reconciliation (the same lease
+check `list_jobs` performs); nothing is submitted, retried, launched or
+approved. `list_characters` stays lightweight: imported IDs plus `job_count`.
 
 Registration copies exactly the eight `still_<direction>.png` files,
 checks alpha and cell size with animate's preflight, and never changes source
