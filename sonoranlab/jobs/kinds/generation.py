@@ -197,7 +197,7 @@ class Generation:
         if self.kind != "animate":
             return
         import_module("sonoranlab.campaign").check_ownership(params)  # DYL-129: campaign clips only via the ledger
-        limit = registry._profile(params["project"], Context()).autonomy.max_attempts_per_animation
+        limit = registry._profile(params["project"], Context()).attempt_limit(params["character"])
         used = [
             j["job_id"]
             for j in jobs

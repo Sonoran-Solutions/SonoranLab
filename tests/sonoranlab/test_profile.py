@@ -345,3 +345,11 @@ def test_real_profile_schema():
 def test_real_profile_with_paths():
     assert check_profile(REAL) == []
     assert load_palette(load_profile(REAL)).shape == (255, 3)
+
+
+def test_character_attempt_limit_override():
+    """Owner-approved per-character override of autonomy.max_attempts_per_animation (Phase 5 gun run)."""
+    prof = load_profile(REAL, check_paths=False)
+    assert prof.attempt_limit("gun") == 6
+    assert prof.attempt_limit("thief") == prof.autonomy.max_attempts_per_animation == 3
+    assert prof.attempt_limit("not-a-row") == 3

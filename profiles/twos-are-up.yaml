@@ -102,6 +102,8 @@ characters:
   gun:                    # Phase 5 new class (DYL-134); owner-approved row 2026-10-28; default limits (no own-clip calibration)
     cell: 160               #   refprep measured 118 px needed for the standing rifle; 160 leaves room for the run cycle
     anchor_mode: foot
+    max_attempts_per_animation: 6   # owner 2026-10-28: "(a) raise max_attempts_per_animation for gun's run to 6"
+                                    #   (row-level: also raises gun idle's attempt cap; its campaign budget stays 3)
     max_foot_slide_px: 30
     max_bbox_drift_px: 25
     opaque_area_cv_warn: 0.13
