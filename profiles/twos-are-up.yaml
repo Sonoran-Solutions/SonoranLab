@@ -99,6 +99,27 @@ characters:
     max_bbox_drift_px: 25   #   calibration, which would be a separate owner decision
     opaque_area_cv_warn: 0.13
     loop_closure_ratio_warn: 1.29
+  gun:                    # Phase 5 new class (DYL-134); owner-approved row 2026-10-28; default limits (no own-clip calibration)
+    cell: 160               #   refprep measured 118 px needed for the standing rifle; 160 leaves room for the run cycle
+    anchor_mode: foot
+    max_foot_slide_px: 30
+    max_bbox_drift_px: 25
+    opaque_area_cv_warn: 0.13
+    loop_closure_ratio_warn: 1.29
+  thief:                  # Phase 5 new class (DYL-134); owner-approved row 2026-10-28; default limits
+    cell: 144
+    anchor_mode: foot
+    max_foot_slide_px: 30
+    max_bbox_drift_px: 25
+    opaque_area_cv_warn: 0.13
+    loop_closure_ratio_warn: 1.29
+  engineer:               # Phase 5 new class (DYL-134); owner-approved row 2026-10-28; default limits
+    cell: 144
+    anchor_mode: foot
+    max_foot_slide_px: 30
+    max_bbox_drift_px: 25
+    opaque_area_cv_warn: 0.13
+    loop_closure_ratio_warn: 1.29
   relay_sentinel:         # floats: no run clip, its hover idle stands in for locomotion (ADR-0007)
     cell: 136
     anchor_mode: bbox_bottom
