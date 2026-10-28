@@ -25,6 +25,7 @@ CORE = {
     "job_result",
     "get_artifact",
     "check_review",
+    "check_class_request",
     "import_job",
     "register_character",
     "validate",
@@ -50,6 +51,7 @@ READ = {
     "job_result",
     "get_artifact",
     "check_review",
+    "check_class_request",
 }
 BASE = {"project": "toy", "character": "hero", "anim": "idle"}
 
@@ -372,12 +374,15 @@ def test_offline_reads_review_tampering_and_godot_unavailable(lab, tamper):
                 "job_result": {"job_id": job},
                 "get_artifact": {"ref": job + ":report.json"},
                 "check_review": {"job": imported["artifact_id"]},
+                "check_class_request": {"project": "toy", "request": {}},
             }
             assert set(cases) == READ
             for name, params in cases.items():
                 result = await call(client, name, params)
                 if name == "check_review":
                     assert result["production_usable"]
+                if name == "check_class_request":
+                    assert result["status"] == "invalid"
             assert (await call(client, "job_status", {"job_id": job}))["human"]["production_usable"]
             checked = (await call(client, "godot_check", BASE | {"source": job + ":export/hero/hero.png"}))["job_id"]
             await status(client, checked)

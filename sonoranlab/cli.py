@@ -118,6 +118,39 @@ def build_parser() -> argparse.ArgumentParser:
     v.add_argument("--registration", type=Path, help="registration dict JSON from a pipeline report or manifest")
     v.set_defaults(func=validate_frames)
 
+    cr = verbs.add_parser("classreq", help="class-request intake (ADR-0011)").add_subparsers(
+        dest="action", required=True
+    )
+    cc = cr.add_parser("check", help="check a class request + eight stills; exit 0 ready, 1 not ready, 2 usage")
+    cc.add_argument("request", type=Path, help="sonoranlab.class_request/1 YAML or JSON")
+    cc.add_argument("--profile", type=Path, required=True)
+    cc.add_argument("--stills", type=Path, help="dir of still_<direction>.png (default: the request's stills_dir)")
+    cc.add_argument("--state", type=Path, help="STATE root: read-only registry lookup for the character id")
+    cc.add_argument("--out", type=Path, help="write the JSON here (never overwritten) instead of printing it")
+    cc.add_argument("--contact", type=Path, help="write a 4x review contact sheet PNG (never overwritten)")
+    cc.set_defaults(func=classreq_check_cmd)
+    cp = cr.add_parser("propose-row", help="print a reviewable characters.<id> row; never edits the profile")
+    cp.add_argument("request", type=Path)
+    cp.add_argument("--profile", type=Path, required=True)
+    cp.add_argument("--cell", type=int, required=True)
+    cp.add_argument("--out", type=Path, help="write the snippet here (never overwritten)")
+    cp.set_defaults(func=classreq_propose_cmd)
+
+    rf = verbs.add_parser("refprep", help="HD turnaround -> candidate stills (deterministic, no model; ADR-0011)")
+    rf.add_argument("--profile", type=Path, required=True)
+    rf.add_argument("--request", type=Path, required=True)
+    rf.add_argument("--turnaround", type=Path, help="HD grid image; optional only when --view gives all directions")
+    rf.add_argument("--grid", default="4x2", help="COLSxROWS of the turnaround (default 4x2)")
+    rf.add_argument("--order", help="comma-separated directions, row-major (default: profile directions.order)")
+    rf.add_argument(
+        "--view", action="append", default=[], metavar="DIRECTION=IMG", help="replace one view with a separate HD image"
+    )
+    rf.add_argument("--out", type=Path, required=True, help="new directory; refuses to exist")
+    rf.add_argument("--cell", type=int, help="cell size (default: profile row, else the smallest fitting)")
+    rf.add_argument("--bg-key", help="#rrggbb background key (default: profile alpha.bg_key)")
+    rf.add_argument("--despill-px", type=int, help="magenta despill band in HD px (default: profile processing)")
+    rf.set_defaults(func=refprep_cmd)
+
     pr = verbs.add_parser(
         "process", help="raw HD frames -> validated job dir -> Godot export on PASS (exit 0 pass, 1 fail, 2 error)"
     )
@@ -914,6 +947,108 @@ def review_check_cmd(args: argparse.Namespace) -> int:
     for error in problems:
         print(json.dumps(error))
     return int(bool(problems))
+
+
+def _exclusive(*paths: Path | None) -> None:
+    for p in paths:
+        if p is not None and (p.exists() or p.is_symlink()):
+            raise FileExistsError(f"{p} exists: outputs are never overwritten")
+
+
+def classreq_check_cmd(args: argparse.Namespace) -> int:
+    from sonoranlab import classreq
+
+    try:
+        _exclusive(args.out, args.contact)
+        prof = load_profile(args.profile)
+        raw, _ = classreq.load_request_file(args.request)
+        stills = args.stills
+        if stills is None and isinstance(raw, dict) and isinstance(raw.get("references"), dict):
+            given = raw["references"].get("stills_dir")
+            if isinstance(given, str) and given:
+                stills = args.request.parent / given
+        character = raw.get("character") if isinstance(raw, dict) else None
+        reg = None
+        if args.state and isinstance(character, str) and classreq.NAME_RE.match(character):
+            reg = classreq.read_registry(args.state, prof.id, character)
+        result, read = classreq.check(
+            raw,
+            prof,
+            load_palette(prof),
+            stills_dir=stills,
+            stills_source=str(stills) if stills else None,
+            registry=reg,
+        )
+        if args.contact:
+            img = classreq.contact(result, read, prof.directions.order)
+            with open(args.contact, "xb") as fh:
+                img.save(fh, "PNG")
+        text = json.dumps(result, indent=2)
+        if args.out:
+            with open(args.out, "x") as fh:
+                fh.write(text + "\n")
+            print(json.dumps({"status": result["status"], "out": str(args.out)}))
+        else:
+            print(text)
+    except (OSError, ValueError) as e:
+        print(f"classreq check: {e}", file=sys.stderr)
+        return 2
+    return 0 if result["status"] == "ready" else 1
+
+
+def classreq_propose_cmd(args: argparse.Namespace) -> int:
+    from sonoranlab import classreq
+
+    try:
+        _exclusive(args.out)
+        prof = load_profile(args.profile)
+        raw, _ = classreq.load_request_file(args.request)
+        req, problems = classreq.parse_request(raw)
+        if req is None:
+            raise ValueError("class request invalid: " + "; ".join(problems))
+        text = classreq.propose_row(prof, req["character"], args.cell, classreq.request_sha256(raw))
+        if args.out:
+            with open(args.out, "x") as fh:
+                fh.write(text)
+        print(text, end="")
+    except (OSError, ValueError) as e:
+        print(f"classreq propose-row: {e}", file=sys.stderr)
+        return 2
+    return 0
+
+
+def refprep_cmd(args: argparse.Namespace) -> int:
+    from sonoranlab.refprep import refprep
+
+    try:
+        views = {}
+        for spec in args.view:
+            d, sep, img = spec.partition("=")
+            if not sep or not img or d in views:
+                raise ValueError(f"--view {spec!r}: expected DIRECTION=IMG, once per direction")
+            views[d] = Path(img)
+        doc = refprep(
+            profile_path=args.profile,
+            request_path=args.request,
+            out=args.out,
+            turnaround=args.turnaround,
+            grid=args.grid,
+            order=args.order.split(",") if args.order else None,
+            views=views,
+            cell=args.cell,
+            bg_key=args.bg_key,
+            despill_px=args.despill_px,
+        )
+    except (OSError, ValueError) as e:
+        print(f"refprep: {e}", file=sys.stderr)
+        return 2
+    status = doc["check"]["status"]
+    print(
+        json.dumps(
+            {"out": str(args.out), "cell": doc["parameters"]["cell"], "status": status, "warnings": doc["warnings"]}
+        )
+    )
+    return 0 if status in ("ready", "needs_profile_row") else 1
 
 
 def main(argv: list[str] | None = None) -> int:

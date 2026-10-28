@@ -1,0 +1,191 @@
+"""`sonoranlab refprep`: synthetic HD turnaround -> eight candidate stills (pixel math only)."""
+
+import json
+
+import numpy as np
+import pytest
+from classreq_fixtures import CELL, ORDER, PALETTE, figure, hd_view, turnaround, write_request
+from PIL import Image
+
+from sonoranlab.cli import main
+
+
+def refprep(tmp_path, profile, *extra, character="hero", name="out"):
+    req = write_request(tmp_path / f"req-{character}.yaml", character=character)
+    out = tmp_path / name
+    argv = ["refprep", "--profile", str(profile), "--request", str(req), "--out", str(out), *map(str, extra)]
+    return main(argv), out
+
+
+def stills(out):
+    return {d: np.asarray(Image.open(out / f"still_{d}.png")) for d in ORDER}
+
+
+def test_turnaround_to_eight_stills(tmp_path, profile, capsys):
+    img = turnaround(tmp_path / "turn.png")
+    code, out = refprep(tmp_path, profile, "--turnaround", img, "--grid", "4x2")
+    summary = json.loads(capsys.readouterr().out)
+    assert code == 0 and summary["status"] == "ready" and summary["cell"] == CELL
+    doc = json.loads((out / "refprep.json").read_text())
+    assert doc["parameters"]["target_height_px"] == 43 and doc["parameters"]["common_scale"] == 0.25
+    assert doc["check"]["status"] == "ready" and doc["check"]["findings"] == []
+    pal = {tuple(c) for c in PALETTE}
+    for d, f in stills(out).items():
+        assert f.shape == (CELL, CELL, 4)
+        opaque = f[..., 3] > 0
+        assert set(np.unique(f[..., 3])) == {0, 255}
+        assert np.nonzero(opaque)[0].max() == CELL - 4
+        assert {tuple(c) for c in f[opaque, :3].tolist()} <= pal
+        ys, xs = np.nonzero(opaque)
+        crop = f[ys.min() : ys.max() + 1, xs.min() : xs.max() + 1]
+        assert np.array_equal(crop, figure(d, height=43)), d  # exact round trip of the drawn pixel figure
+        assert doc["views"][d]["source"] == "turnaround"
+    assert set(doc["outputs"]) == {f"still_{d}.png" for d in ORDER} | {f"crops/{d}_hd.png" for d in ORDER} | {
+        "contact.png"
+    }
+    assert doc["inputs"]["turnaround"]["sha256"] and doc["inputs"]["profile"]["sha256"]
+    # exclusive output: a second run refuses and leaves the first untouched
+    before = (out / "refprep.json").read_bytes()
+    code, _ = refprep(tmp_path, profile, "--turnaround", img)
+    assert code == 2 and "exists" in capsys.readouterr().err
+    assert (out / "refprep.json").read_bytes() == before
+
+
+def test_deterministic_and_no_row_needs_profile_row(tmp_path, profile, capsys):
+    img = turnaround(tmp_path / "turn.png")
+    _, a = refprep(tmp_path, profile, "--turnaround", img, character="rogue", name="a")
+    _, b = refprep(tmp_path, profile, "--turnaround", img, character="rogue", name="b")
+    da, db = (json.loads((x / "refprep.json").read_text()) for x in (a, b))
+    assert da["outputs"] == db["outputs"]
+    assert da["check"]["status"] == "needs_profile_row" and da["parameters"]["cell_source"] == "computed"
+    capsys.readouterr()
+
+
+def test_blank_grid_cell_is_an_error_naming_the_direction(tmp_path, profile, capsys):
+    img = turnaround(tmp_path / "turn.png", blank=("south-west",))
+    code, out = refprep(tmp_path, profile, "--turnaround", img)
+    assert code == 2 and "south-west" in capsys.readouterr().err and not out.exists()
+
+
+def test_view_override_replaces_one_cell(tmp_path, profile, capsys):
+    img = turnaround(tmp_path / "turn.png", blank=("south-west",))
+    view = tmp_path / "sw.png"
+    Image.fromarray(hd_view("south-west", size=300)).save(view)
+    code, out = refprep(tmp_path, profile, "--turnaround", img, "--view", f"south-west={view}")
+    assert code == 0, capsys.readouterr().err
+    doc = json.loads((out / "refprep.json").read_text())
+    assert doc["views"]["south-west"]["source"] == "view_override"
+    assert doc["inputs"]["views"]["south-west"]["sha256"] == doc["views"]["south-west"]["sha256"]
+    assert doc["views"]["west"]["source"] == "turnaround" and doc["check"]["status"] == "ready"
+    capsys.readouterr()
+    # all eight as views: no turnaround needed; seven views without a turnaround is a usage error
+    views = []
+    for d in ORDER:
+        p = tmp_path / f"v-{d}.png"
+        Image.fromarray(hd_view(d)).save(p)
+        views += ["--view", f"{d}={p}"]
+    assert refprep(tmp_path, profile, *views, name="all")[0] == 0
+    assert refprep(tmp_path, profile, *views[:-2], name="seven")[0] == 2
+    assert refprep(tmp_path, profile, "--turnaround", img, "--view", f"up={view}", name="bad")[0] == 2
+    capsys.readouterr()
+
+
+def test_noisy_key_and_residual_key_warning(tmp_path, profile, capsys):
+    img = turnaround(tmp_path / "turn.png", noise=True)
+    code, out = refprep(tmp_path, profile, "--turnaround", img)
+    doc = json.loads((out / "refprep.json").read_text())
+    assert code == 0 and doc["check"]["status"] == "ready"
+    assert not [w for w in doc["warnings"] if w.startswith("residual_key")]
+    # a near-key blob attached to one figure survives the matte and is reported
+    arr = np.asarray(Image.open(img)).copy()
+    arr[200:216, 100:140] = (200, 40, 200)
+    Image.fromarray(arr).save(tmp_path / "blob.png")
+    _, out2 = refprep(tmp_path, profile, "--turnaround", tmp_path / "blob.png", name="blob")
+    doc2 = json.loads((out2 / "refprep.json").read_text())
+    assert any(w.startswith("residual_key: north") for w in doc2["warnings"]), doc2["warnings"]
+    assert doc2["views"]["north"]["residual_key_px"] > 0
+    capsys.readouterr()
+
+
+@pytest.mark.parametrize("args", [["--grid", "3x2"], ["--order", "north,south"], ["--cell", "100"], []])
+def test_usage_errors(tmp_path, profile, capsys, args):
+    img = turnaround(tmp_path / "turn.png")
+    extra = args if args else []
+    if args:
+        extra = ["--turnaround", img, *args]
+    code, out = refprep(tmp_path, profile, *extra)
+    assert code == 2 and not out.exists()
+
+
+def test_override_from_a_3x_canvas_is_normalised_to_the_target_height(tmp_path, profile, capsys):
+    """Regression (real data): an override drawn at 3x the turnaround's resolution must not inherit the turnaround's
+    HD scale (that blew the view up ~3x and the cell past 288)."""
+    img = turnaround(tmp_path / "turn.png")
+    view = tmp_path / "sw3x.png"
+    Image.fromarray(hd_view("south-west", size=640, scale=12)).save(view)
+    code, out = refprep(tmp_path, profile, "--turnaround", img, "--view", f"south-west={view}")
+    assert code == 0, capsys.readouterr().err
+    doc = json.loads((out / "refprep.json").read_text())
+    assert doc["parameters"]["cell"] == CELL and doc["parameters"]["common_scale"] == 0.25
+    sw = doc["views"]["south-west"]
+    assert sw["source"] == "view_override" and sw["scale_basis"] == "override_to_target"
+    assert sw["scale"] == pytest.approx(43 / (43 * 12)) and abs(sw["height_deviation"]) < 0.04
+    assert doc["views"]["west"]["scale"] == 0.25 and doc["views"]["west"]["scale_basis"] == "common_median"
+    f = stills(out)["south-west"]
+    ys, xs = np.nonzero(f[..., 3])
+    assert ys.max() == CELL - 4 and ys.max() - ys.min() + 1 == 43 and xs.max() - xs.min() + 1 == 16
+    assert doc["check"]["status"] == "ready", doc["check"]["findings"]
+    capsys.readouterr()
+
+
+def test_prop_across_the_grid_line_stays_with_its_figure(tmp_path, profile, capsys):
+    """Regression (real data): a rifle crossing a grid line was cut by fixed grid cropping. Segmentation runs over
+    the whole image: the prop stays whole and the neighbour cell gets no fragment. A detached part near a figure
+    joins it; a detached part far from every figure is dropped and reported."""
+    arr = np.asarray(Image.open(turnaround(tmp_path / "turn.png"))).copy()
+    dark = PALETTE[0]
+    # north-west figure spans x 353..416, y 64..235; a 4 px thin prop runs left across x = 256 into the north cell
+    arr[152:156, 201:353] = dark
+    # south figure spans x 100..163, y 320..491: a detached 8x8 part 4 px to its right, and a far 8x8 island
+    arr[356:364, 168:176] = dark
+    arr[260:268, 4:12] = dark
+    Image.fromarray(arr).save(tmp_path / "prop.png")
+    code, out = refprep(tmp_path, profile, "--turnaround", tmp_path / "prop.png")
+    assert code == 0, capsys.readouterr().err
+    doc = json.loads((out / "refprep.json").read_text())
+    got = stills(out)
+
+    def crop(f):
+        ys, xs = np.nonzero(f[..., 3])
+        return f[ys.min() : ys.max() + 1, xs.min() : xs.max() + 1]
+
+    assert np.array_equal(crop(got["north"]), figure("north", height=43))  # no rifle-tip fragment
+    nw = crop(got["north-west"])
+    assert nw.shape[:2] == (43, 16 + 38)  # the whole prop (152 HD px = 38 px) is kept
+    assert np.array_equal(nw[:, 38:], figure("north-west", height=43))
+    assert (nw[22, :38, :3] == dark).all() and (nw[22, :38, 3] == 255).all()
+    south = crop(got["south"])
+    assert south.shape[:2] == (43, 19) and np.array_equal(south[:, :16], figure("south", height=43))
+    assert doc["views"]["south"]["attached_components"][0]["distance_hd"] == 5
+    dropped = doc["segmentation"]["turnaround"]["dropped"]
+    assert [d["bbox_hd"] for d in dropped] == [[4, 260, 11, 267]] and "farther" in dropped[0]["reason"]
+    assert any(w.startswith("dropped_components: turnaround") for w in doc["warnings"])
+    assert doc["check"]["status"] == "ready", doc["check"]["findings"]
+    capsys.readouterr()
+
+
+def test_key_tinted_pixels_are_reported_and_despill_px_is_an_override(tmp_path, profile, capsys):
+    arr = np.asarray(Image.open(turnaround(tmp_path / "turn.png"))).copy()
+    arr[64:236, 96:98] = (180, 60, 180)  # magenta spill on the outer 2 HD px of the north figure's left outline
+    Image.fromarray(arr).save(tmp_path / "tint.png")
+    _, raw = refprep(tmp_path, profile, "--turnaround", tmp_path / "tint.png", "--despill-px", 0, name="raw")
+    doc = json.loads((raw / "refprep.json").read_text())
+    assert doc["parameters"]["despill_px"] == 0 and doc["parameters"]["despill_px_profile"] == 2
+    assert doc["views"]["north"]["chain"]["key_tinted_px"] > 0
+    assert any(w.startswith("key_tinted: north") for w in doc["warnings"])
+    _, fixed = refprep(tmp_path, profile, "--turnaround", tmp_path / "tint.png", name="fixed")
+    doc = json.loads((fixed / "refprep.json").read_text())
+    assert doc["parameters"]["despill_px"] == 2
+    assert all(v["chain"]["key_tinted_px"] == 0 for v in doc["views"].values())
+    assert refprep(tmp_path, profile, "--turnaround", tmp_path / "tint.png", "--despill-px", -1, name="neg")[0] == 2
+    capsys.readouterr()
