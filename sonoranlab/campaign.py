@@ -1220,6 +1220,12 @@ def owner_decision(
             ]
             if state == "installed" and data["ref"] not in installs:
                 raise ToolError("refused", "installed needs a prior install authorization for this bundle", field="ref")
+            bundle = next((j for j in manager.reconcile_all() if j["job_id"] == data["ref"]), None)
+            frozen = view["_revisions"][-1]
+            if bundle and (bundle.get("input_hashes") or {}).get("request") != frozen["request_sha256"]:
+                raise ToolError(
+                    "refused", "the bundle was built from another revision's request; rebuild it", field="ref"
+                )
             data |= {"state": state, "bundle": data["ref"], "revision": view["revision"]}
             event = _append(path, "delivery", data)
         else:

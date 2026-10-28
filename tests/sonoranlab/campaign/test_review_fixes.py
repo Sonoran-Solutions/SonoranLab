@@ -160,3 +160,16 @@ def test_height_only_revision_keeps_candidates_but_not_delivery(lab, monkeypatch
     clip = view["clips"]["idle"]
     assert clip["selected"] == job_id and clip["attempts"][0]["current"] is True
     assert view["state"] == "ARTIFACT_APPROVED"
+
+
+def test_owner_delivery_record_refuses_a_bundle_built_from_another_request(lab, monkeypatch, capsys):
+    cid = create(lab)
+    old_sha = campaign._view(campaign._find(cid), lab["ctx"])["_revisions"][-1]["request_sha256"]
+    request = lab["request"] | {"height_m": lab["request"]["height_m"] + 0.04}
+    ok(api(lab, "campaign_create", project="toy", request=request, reference_id=lab["ref"], revise=cid))
+    real = manager.reconcile_all
+    stale = {"job_id": "b-old", "kind": "build_delivery", "input_hashes": {"request": old_sha}}
+    monkeypatch.setattr(manager, "reconcile_all", lambda: [*real(), stale])
+    argv = ["campaign", "owner-decision", "--campaign", cid, "--kind", "delivery", "--ref", "b-old"]
+    assert main([*argv, "--state", "ready_to_install", "--verbatim", "late record"]) != 0
+    assert "another revision's request" in capsys.readouterr().out

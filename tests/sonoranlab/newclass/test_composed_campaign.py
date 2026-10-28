@@ -81,9 +81,12 @@ def test_installed_is_never_derived_from_a_bundle(lab, capsys, monkeypatch):
     record_review(composed, **PASS)
     forged = {"bundles": [{"states": {"INSTALLED": True, "STAGED_AND_ENGINE_VERIFIED": True}}]}
     monkeypatch.setattr(delivery, "delivery_status", lambda **k: forged)
+    request_sha = campaign._view(campaign._find(cid), lab.ctx)["_revisions"][-1]["request_sha256"]
     job = {"kind": "build_delivery", "state": "succeeded", "job_id": "b", "params": {"campaign_id": cid}}
     job["params"]["composed"] = a.composed["job"]
-    assert campaign._bundle_state(cid, {a.composed["job"]}, [job], lab.ctx) == "STAGED_AND_ENGINE_VERIFIED"
+    job["input_hashes"] = {"request": request_sha}
+    assert campaign._bundle_state(cid, {a.composed["job"]}, request_sha, [job], lab.ctx) == "STAGED_AND_ENGINE_VERIFIED"
+    assert campaign._bundle_state(cid, {a.composed["job"]}, "0" * 64, [job], lab.ctx) is None  # another request
     argv = ["campaign", "owner-decision", "--campaign", cid, "--kind", "delivery", "--ref", "b1"]
     assert main([*argv, "--state", "installed", "--verbatim", "not authorized"]) == 1
     capsys.readouterr()
