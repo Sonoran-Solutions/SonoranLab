@@ -26,6 +26,7 @@ import secrets
 import socket
 import stat
 from contextlib import ExitStack, contextmanager
+from contextvars import ContextVar
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -63,6 +64,7 @@ EVENTS = {
     "note",
     "cost",
 }
+PRIVILEGED = {"owner_decision", "delivery"}  # written only by the owner CLI path
 OWNER_KINDS = ("budget_grant", "resume", "delivery", "install", "profile_row", "reference_approval", "note")
 GUARD = {"budget_refused", "guard_busy"}
 INFRA = {
@@ -83,6 +85,36 @@ LIMIT = 200
 GENESIS = "0" * 64
 # Test hook only (e.g. godot_check=False on a host without Godot); never caller input and never a track/memory knob.
 ANIMATE_OPTIONS: dict = {}
+
+
+# Set only by campaign.submit around its manager call; animate admission refuses campaign-owned clips without it.
+_SUBMITTING: ContextVar[str | None] = ContextVar("campaign_submission", default=None)
+
+
+def owner(project: str, character: str, anim: str) -> str | None:
+    """The campaign whose latest frozen clip plan includes this clip. Read-only; an unreadable record fails closed."""
+    root = state_root() / "campaigns" / project / character
+    for path in sorted(root.glob("camp-*")) if root.is_dir() else ():
+        frozen = sorted(path.glob("frozen-r*.json"), key=lambda f: int(f.stem.removeprefix("frozen-r")))
+        try:
+            if not frozen or anim in json.loads(frozen[-1].read_bytes())["clips"]:
+                return path.name
+        except (OSError, ValueError, KeyError, TypeError):
+            return path.name
+    return None
+
+
+def check_ownership(params: dict) -> None:
+    """Called by the animate executor's admission (under the manager's submit lock): a clip owned by a campaign is
+    generated only through campaign_submit, so plain animate or retry_job cannot spend seeds the ledger can't see."""
+    cid = owner(params["project"], params["character"], params["anim"])
+    if cid and not (_SUBMITTING.get() or "").startswith(f"campaign/{cid}/"):
+        raise ToolError(
+            "refused",
+            f"{params['character']}/{params['anim']} belongs to campaign {cid}; generate it through campaign_submit",
+            field="anim",
+            hint="campaign_submit (retry_job and animate are refused for campaign-owned clips)",
+        )
 
 
 class LedgerError(Exception):
@@ -167,7 +199,12 @@ def read_events(path: Path) -> tuple[list[dict], dict]:
         and (hashes[head["seq"] - 1] if head["seq"] else GENESIS) == head.get("sha256")
     ):
         raise LedgerError("head.json disagrees with events.jsonl (truncated or rewritten ledger)")
-    return events, {"events": len(events), "head": prev, "torn_tail_bytes": len(data) - complete}
+    committed = (head or {}).get("privileged", [])
+    if not (isinstance(committed, list) and all(type(seq) is int for seq in committed)):
+        raise LedgerError("head.json privileged list is invalid")
+    ignored = [e["seq"] for e in events if e["type"] in PRIVILEGED and e["seq"] not in committed]
+    info = {"events": len(events), "head": prev, "torn_tail_bytes": len(data) - complete}
+    return events, info | {"privileged": committed, "ignored_privileged": ignored}
 
 
 def _append(path: Path, kind: str, data: dict) -> dict:
@@ -192,7 +229,9 @@ def _append(path: Path, kind: str, data: dict) -> dict:
         stream.flush()
         os.fsync(stream.fileno())
     store.fsync_dir(path)
-    store.atomic(path / "head.json", {"seq": event["seq"], "sha256": _sha(line)})
+    # Privileged (owner) events count only when this same writer commits their seq in head.json.
+    privileged = info["privileged"] + ([event["seq"]] if kind in PRIVILEGED else [])
+    store.atomic(path / "head.json", {"seq": event["seq"], "sha256": _sha(line), "privileged": privileged})
     return event
 
 
@@ -226,6 +265,7 @@ def _writer(path: Path):
 def _load(path: Path) -> tuple[list[dict], list[dict], dict]:
     """(events, frozen revisions in order, ledger info); frozen files must match their recorded hashes."""
     events, info = read_events(path)
+    events = [e for e in events if e["seq"] not in info["ignored_privileged"]]
     revisions = []
     for event in events:
         if event["type"] != "revision":
@@ -382,6 +422,19 @@ def create(
             except LedgerError as exc:
                 raise ToolError("conflict", f"Campaign ledger is damaged: {exc}") from None
             previous = revisions[-1]
+            # A revision never raises a clip's cap: it carries the last frozen limit (more only via budget_grant).
+            for clip in body["budget"]:
+                last = next((r["budget"][clip] for r in reversed(revisions) if clip in r["budget"]), None)
+                if last is None:
+                    continue
+                if max_seeds_per_clip is None:
+                    body["budget"][clip] = last
+                elif max_seeds_per_clip > last["max_seeds"]:
+                    raise ToolError(
+                        "refused",
+                        f"{clip}: a revision cannot raise the {last['max_seeds']}-seed cap; the owner grants more",
+                        field="max_seeds_per_clip",
+                    )
             if {k: previous[k] for k in body if k != "admission"} == {k: body[k] for k in body if k != "admission"}:
                 return {"created": False, "campaign_id": campaign_id, "state": "READY", "revision": len(revisions)}
         revision = 1 if previous is None else previous["revision"] + 1
@@ -458,7 +511,25 @@ def _attempts(events: list[dict]) -> dict[str, dict]:
     return attempts
 
 
-def _classify(attempt: dict, project: str, character: str, ctx: Context) -> dict:
+def _mismatch(job: dict, attempt: dict, frozen: dict) -> str | None:
+    """Why a job record is not exactly the attempt's request (frozen revision inputs), else None."""
+    params, hashes = job.get("params") or {}, job.get("input_hashes") or {}
+    expected = {
+        "kind": ("animate", job.get("kind")),
+        "track": ("E", job.get("track")),
+        "project": (frozen["project"], job.get("project")),
+        "character": (frozen["character"], job.get("character")),
+        "clip": (attempt["clip"], job.get("anim")),
+        "seeds": ([attempt["seed"]], params.get("seeds")),
+        "ref_set_id": (frozen["references"]["ref_set_id"], params.get("ref_set_id")),
+        "still hashes": (frozen["references"]["hashes"], hashes.get("stills")),
+        "profile hash": (frozen["profile"]["sha256"], hashes.get("profile")),
+    }
+    wrong = [name for name, (want, got) in expected.items() if want != got]
+    return f"job {job.get('job_id')} differs from the intent: {', '.join(wrong)}" if wrong else None
+
+
+def _classify(attempt: dict, frozen: dict, ctx: Context) -> dict:
     """Attach the live job and its outcome class. Status of a recorded job uses job_status (same reconciliation)."""
     a = dict(attempt)
     if a["job_id"] is None and a["outcome"] is None:
@@ -492,10 +563,13 @@ def _classify(attempt: dict, project: str, character: str, ctx: Context) -> dict
         "warnings_count": verdict.get("warnings_count", len(verdict.get("warnings", []))),
     }
     a["status"] = status  # internal: report accounting; stripped from outputs
-    identity = (status.get("kind"), status.get("project"), status.get("character"), status.get("anim"))
+    mismatch = None if manager.corrupt(status) else _mismatch(status, a, frozen)
+    if mismatch and a.get("adoptable"):
+        return a | {"class": "unknown", "job": None, "detail": "adoption refused: " + mismatch}
     if manager.corrupt(status):
         cls = "blocked"
-    elif identity != ("animate", project, character, a["clip"]) or status.get("track") != "E":
+    elif mismatch:
+        a["detail"] = mismatch
         cls = "foreign"
     elif status["state"] in store.ACTIVE:
         cls = "active"
@@ -513,7 +587,19 @@ def _classify(attempt: dict, project: str, character: str, ctx: Context) -> dict
 
 
 def _public(attempt: dict) -> dict:
-    keys = ("key", "clip", "seed", "revision", "job_id", "adopted", "class", "consumed", "blocking", "resumed")
+    keys = (
+        "key",
+        "clip",
+        "seed",
+        "revision",
+        "current",
+        "job_id",
+        "adopted",
+        "class",
+        "consumed",
+        "blocking",
+        "resumed",
+    )
     out = {k: attempt.get(k) for k in keys}
     out["job"] = attempt.get("job")
     if attempt.get("verdict"):
@@ -534,6 +620,10 @@ def _attempt_usage(project: str, character: str, clip: str, jobs: list[dict]) ->
         and (j.get("project"), j.get("character"), j.get("anim")) == (project, character, clip)
         and (j["state"] in store.ACTIVE or j.get("prompts"))
     ]
+
+
+def _binding(frozen: dict) -> tuple:
+    return frozen["references"]["hashes"], frozen["profile"]["character_row"], frozen["request_sha256"]
 
 
 def _gate(frozen: dict, ctx: Context) -> tuple[str, str]:
@@ -573,9 +663,12 @@ def _view(path: Path, ctx: Context) -> dict:
     for event in events:
         if event["type"] == "candidate_decision":
             decisions[event["data"]["job_id"]] = event["data"] | {"at": event["at"]}
+    # Candidates, selections, reviews and delivery count only when bound to the current frozen inputs.
+    current = {r["revision"] for r in revisions if _binding(r) == _binding(frozen)}
     attempts = []
     for attempt in _attempts(events).values():
-        a = _classify(attempt, project, character, ctx)
+        a = _classify(attempt, revisions[attempt["revision"] - 1], ctx)
+        a["current"] = a["revision"] in current
         a["resumed"] = a["class"] in RESUMABLE and bool({a["key"], a["job_id"]} & resumed)
         prompts = (a.get("job") or {}).get("prompts", 0)
         a["consumed"] = a["class"] not in NOT_CONSUMED and not (a["class"] == "cancelled" and not prompts)
@@ -603,7 +696,7 @@ def _view(path: Path, ctx: Context) -> dict:
                 "decision": decisions.get(a["job_id"], {}).get("decision"),
             }
             for a in mine
-            if a["class"] == "pass"
+            if a["class"] == "pass" and a["current"]
         ]
         live = [c for c in candidates if c["decision"] != "rejected"]
         selected = next((c for c in reversed(live) if c["decision"] == "selected"), None)
@@ -651,7 +744,9 @@ def _view(path: Path, ctx: Context) -> dict:
         state = "GENERATING"
     else:
         state = next(s for s in OVERALL if s in planned)
-        delivered = [e["data"]["state"] for e in events if e["type"] == "delivery"]
+        delivered = [
+            e["data"]["state"] for e in events if e["type"] == "delivery" and e["data"].get("revision") in current
+        ]
         if state == "ARTIFACT_APPROVED" and delivered:
             state = DELIVERY[delivered[-1]]
     view = {
@@ -664,7 +759,14 @@ def _view(path: Path, ctx: Context) -> dict:
         "state": state,
         "gate": {"state": gate, "detail": gate_detail},
         "clips": clips,
-        "problems": [],
+        "problems": [
+            {
+                "code": "uncommitted_privileged_event",
+                "seq": seq,
+                "detail": "owner event not committed by the owner CLI; ignored",
+            }
+            for seq in info["ignored_privileged"]
+        ],
         "ledger": info,
         "_attempts": attempts,
         "_events": events,
@@ -763,16 +865,23 @@ def _reconcile(path: Path, ctx: Context) -> dict:
     """Under the writer lock. An intent without a job: adopt the job its key created, else mark it unknown (BLOCKED,
     never resubmitted). Then record observations and return the fresh view."""
     try:
-        events, _, _ = _load(path)
+        events, revisions, _ = _load(path)
     except LedgerError as exc:
         raise ToolError("conflict", f"Campaign ledger is damaged: {exc}", hint="preserve it for inspection") from None
     for a in _attempts(events).values():
         if a["job_id"] is None and a["outcome"] is None:
             base = {"idempotency_key": a["key"], "clip": a["clip"], "seed": a["seed"]}
-            if found := _lookup(a["key"]):
+            found = _lookup(a["key"])
+            try:
+                mismatch = found and _mismatch(manager.get(found), a, revisions[a["revision"] - 1])
+            except (ToolError, OSError, ValueError) as exc:
+                mismatch = f"job {found} unreadable ({exc})"
+            if found and not mismatch:
                 _append(path, "submitted", base | {"job_id": found, "adopted": True})
             else:
                 detail = "intent recorded but the manager has no job for its key; not resubmitted"
+                if mismatch:
+                    detail = f"adoption refused: {mismatch}; not resubmitted"
                 _append(path, "submit_outcome", base | {"class": "unknown", "detail": detail})
     view = _view(path, ctx)
     _observe(path, view)
@@ -810,6 +919,12 @@ def submit(campaign_id: str, clip: str, seed: int | None = None, *, ctx: Context
             raise ToolError("refused", f"{c['state']}: {c['reason']}", field="clip")
         if c["state"] == "HOLD_BUDGET":
             raise ToolError("refused", f"HOLD_BUDGET: {c['reason']}", field="clip", hint="campaign_escalate")
+        # Numeric checks independent of state precedence (a passing candidate must not hide a spent budget).
+        spent, limit = c["budget"], c["attempt_limit"]
+        if spent["remaining"] <= 0 or limit["used"] >= limit["limit"]:
+            total = spent["base"] + spent["granted"]
+            reason = f"{spent['consumed']}/{total} seeds, {limit['used']}/{limit['limit']} attempts"
+            raise ToolError("refused", f"HOLD_BUDGET: {reason}", field="clip", hint="campaign_escalate")
         used = {a["seed"] for a in attempts if a["clip"] == clip}
         if seed is None:
             seed = next(s for s in range(len(used) + 1) if s not in used)
@@ -828,12 +943,15 @@ def submit(campaign_id: str, clip: str, seed: int | None = None, *, ctx: Context
             "seeds": [seed],
             **ANIMATE_OPTIONS,
         }
+        token = _SUBMITTING.set(key)
         try:
             job = manager.submit("animate", params, key)
         except ToolError as exc:
             outcome = {"idempotency_key": key, "clip": clip, "seed": seed, "class": "admission_refused"}
             _append(path, "submit_outcome", outcome | {"detail": exc.error})
             raise
+        finally:
+            _SUBMITTING.reset(token)
         _append(path, "submitted", {"idempotency_key": key, "clip": clip, "seed": seed, "job_id": job["job_id"]})
         after = _view(path, ctx)["clips"][clip]
         return {
@@ -865,6 +983,8 @@ def decide(campaign_id: str, job_id: str, decision: str, reason: str, *, ctx: Co
         a = _attempt_for(view, job_id)
         if a["class"] in IN_FLIGHT or a["job"] is None:
             raise ToolError("not_ready", "Job has no terminal outcome yet", field="job_id", retryable=True)
+        if decision == "selected" and not a["current"]:
+            raise ToolError("refused", "Job belongs to inputs of an earlier revision", field="job_id")
         if decision == "selected" and a["class"] != "pass":
             raise ToolError("refused", f"Only a technically passing job can be selected ({a['class']})", field="job_id")
         _append(
@@ -986,7 +1106,8 @@ def owner_decision(
             ]
             if state == "installed" and data["ref"] not in installs:
                 raise ToolError("refused", "installed needs a prior install authorization for this bundle", field="ref")
-            event = _append(path, "delivery", {"state": state, "bundle": data["ref"], **data})
+            data |= {"state": state, "bundle": data["ref"], "revision": view["revision"]}
+            event = _append(path, "delivery", data)
         else:
             event = _append(path, "owner_decision", data)
         return {"campaign_id": campaign_id, "seq": event["seq"], "type": event["type"], **event["data"]}
