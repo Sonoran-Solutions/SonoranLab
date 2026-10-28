@@ -6,13 +6,17 @@ Changing any of them after approval makes the job not production usable (same ru
 
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import re
 import stat
+import subprocess
 from datetime import datetime
 from pathlib import Path
 from typing import Literal
+
+import yaml
 
 from sonoranlab.artifacts import require_regular_file, verify_raw, write_json
 from sonoranlab.artifacts import sha256_file as _sha256_file
@@ -134,6 +138,49 @@ def _export_files(job: Path) -> dict[str, str]:
     return files
 
 
+def _same_character_profile(path: Path, sha: object, rev: object, character: object) -> bool:
+    """A changed profile file still binds a job when only *other* characters' rows changed.
+
+    The recorded file is recovered from git at the job's recorded commit and must hash to the recorded sha256 (so the
+    comparison is against exactly the bytes the job used); then every top-level setting and this job's character row
+    must be identical. Anything unverifiable is a mismatch.
+    """
+    if not (isinstance(sha, str) and isinstance(rev, str) and re.fullmatch(r"[0-9a-f]{40}", rev)):
+        return False
+    if not isinstance(character, str) or not character:
+        return False
+    try:
+        r = subprocess.run(
+            ["git", "-C", str(path.parent), "show", f"{rev}:./{path.name}"], capture_output=True, timeout=10
+        )
+        if r.returncode != 0 or hashlib.sha256(r.stdout).hexdigest() != sha:
+            return False
+        old, new = yaml.safe_load(r.stdout), yaml.safe_load(path.read_bytes())
+    except (OSError, subprocess.SubprocessError, yaml.YAMLError):
+        return False
+    if not (isinstance(old, dict) and isinstance(new, dict)):
+        return False
+    old_rows, new_rows = old.pop("characters", None), new.pop("characters", None)
+    if not (isinstance(old_rows, dict) and isinstance(new_rows, dict) and character in old_rows):
+        return False
+    return _canonical(old) == _canonical(new) and _canonical(old_rows[character]) == _canonical(new_rows.get(character))
+
+
+def _canonical(value: object) -> str:
+    """Type-sensitive comparison: 4 != 4.0 and true != 1, as the profile parser treats them."""
+    return json.dumps(value, sort_keys=True, default=repr)
+
+
+def _bound_character(job: Path, manifest: dict) -> str | None:
+    """The manifest's character, only when the validated report agrees (a relabelled manifest cannot pick a row)."""
+    try:
+        report = _load(job / "report.json")
+    except ValueError:
+        return None
+    character = manifest.get("character")
+    return character if isinstance(report, dict) and report.get("character") == character else None
+
+
 def _provenance(job: Path) -> tuple[dict | None, list[str]]:
     """Check report/manifest/outputs/raw against disk; returns (binds from the current disk state, problems)."""
     problems: list[str] = []
@@ -174,7 +221,9 @@ def _provenance(job: Path) -> tuple[dict | None, list[str]]:
         p = Path(profile["path"])
         if p.is_symlink() or not p.is_file():
             problems.append(f"profile {p}: missing or not a regular file")
-        elif sha256_file(p) != profile.get("sha256"):
+        elif sha256_file(p) != profile.get("sha256") and not _same_character_profile(
+            p, profile.get("sha256"), manifest.get("git"), _bound_character(job, manifest)
+        ):
             problems.append(f"profile {p}: sha256 differs from manifest")
     try:
         problems += verify_raw(job, inputs=manifest["inputs"])

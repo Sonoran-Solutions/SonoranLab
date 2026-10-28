@@ -56,7 +56,9 @@ def _json(p: Path) -> dict:
     return doc
 
 
-def _check_job(job: Path, name: str, *, prof, spec, profile_sha: str, stills: dict[str, np.ndarray]) -> dict:
+def _check_job(
+    job: Path, name: str, *, prof, spec, profile_path: Path, profile_sha: str, stills: dict[str, np.ndarray]
+) -> dict:
     """Refuse an input job that is not an intact, passing, single-clip export of `name` for this character/profile.
     Returns what composing needs: sheet path + pixels, report, hashes."""
     try:
@@ -73,7 +75,10 @@ def _check_job(job: Path, name: str, *, prof, spec, profile_sha: str, stills: di
             f"expected {spec.name}/{name}"
         )
     bound = ((report.get("provenance") or {}).get("profile") or {}).get("sha256")
-    if bound != profile_sha:
+    recorded = manifest.get("profile") if isinstance(manifest.get("profile"), dict) else {}
+    # job_integrity already accepted the recorded profile for this character (same file, or only other rows changed)
+    same_file = Path(str(recorded.get("path", ""))).resolve() == profile_path.resolve()
+    if bound != profile_sha and not (bound == recorded.get("sha256") and same_file):
         raise ComposeError(f"--clips {name}={job}: validated with a different profile (sha256 {bound})")
     anim = spec.animations[name]
     exp = job / "export" / spec.name
@@ -158,7 +163,15 @@ def compose(*, profile: Path, character: str, clips: Sequence[tuple[str, Path]],
         raise ComposeError(f"--stills {stills}: missing still_<direction>.png for {', '.join(missing)}")
     still_px = {d: _clean(f) for d, f in still_px.items()}
     checked = {
-        n: _check_job(Path(j).expanduser(), n, prof=prof, spec=spec, profile_sha=profile_sha, stills=still_px)
+        n: _check_job(
+            Path(j).expanduser(),
+            n,
+            prof=prof,
+            spec=spec,
+            profile_path=profile,
+            profile_sha=profile_sha,
+            stills=still_px,
+        )
         for n, j in clips
     }
 
