@@ -60,7 +60,7 @@ out="$(realpath -m "$out")"
 [[ "$out" == "$snap" || "$out" == "$snap"/* ]] && die "--out must be outside the snapshot"
 harness="$snap/sonoranlab_consumer_check"
 [[ -e "$harness" ]] && die "$harness exists (another run in progress or a leftover)"
-avail=$(df -P --output=avail -B1 "$(dirname "$out")" | tail -n 1)
+avail=$(df --output=avail -B1 "$(dirname "$out")" | tail -n 1)
 ((avail >= 20 * 1024 ** 3)) || die "less than 20 GiB free under $(dirname "$out")"
 csproj="$snap/TwosAreUp.csproj"
 [[ -f "$csproj" ]] || die "$csproj missing"
