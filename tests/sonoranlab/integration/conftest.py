@@ -182,6 +182,7 @@ def lab(tmp_path):
     template = repo / "templates/poses/idle/east/pose_000.png"
     template.parent.mkdir(parents=True)
     shutil.copyfile(REPO / "templates/poses/run/east/pose_000.png", template)
+    shutil.copyfile(REPO / "templates/poses/run/template.yaml", template.parent.parent / "template.yaml")
     hook = tmp_path / "hooks"
     hook.mkdir()
     (hook / "sitecustomize.py").write_text(SITECUSTOMIZE)

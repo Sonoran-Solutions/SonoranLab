@@ -2,15 +2,17 @@
 
 from __future__ import annotations
 
+import hashlib
 import os
 import subprocess
 import sys
 from importlib import import_module
 
+import yaml
 from jsonschema import Draft202012Validator
 from jsonschema.exceptions import ValidationError
 
-from sonoranlab import registry
+from sonoranlab import posetemplate, registry
 from sonoranlab.api.registry import Context, ToolError
 from sonoranlab.api.tools.generation import ANIMATE_SCHEMA, POSE_SCHEMA
 from sonoranlab.artifacts import require_regular_file, sha256_file
@@ -57,6 +59,16 @@ def template_path(params, ctx):
     except (OSError, ValueError) as exc:
         raise ToolError("path_refused", str(exc), field="template") from exc
     return anim, path
+
+
+def control_bytes(params, template, cell):
+    """DYL-127: the control image for this character's cell, drawn from the template's canvas-independent joints
+    (the shipped PNG is only valid for cell 136). Deterministic, so admission and the worker agree on its hash."""
+    frame = int(params["template"].rsplit("_", 1)[1])
+    try:
+        return posetemplate.control_png(template.parent.parent / "template.yaml", params["direction"], frame, cell)
+    except (OSError, ValueError, yaml.YAMLError) as exc:
+        raise ToolError("invalid_params", f"Cannot render template control image: {exc}", field="template") from exc
 
 
 def artifact(job, path):
@@ -160,7 +172,12 @@ class Generation:
             if not getattr(adapter, "POSE_PROMPTS", {}).get(params["direction"]):
                 raise ToolError("refused", "Track C has no documented default prompt for this direction")
             params["anim"] = anim
-            inputs["template"] = sha256_file(template)
+            cell = profile.character(params["character"]).cell
+            if cell[0] != cell[1]:
+                raise ToolError("invalid_params", "pose_frame needs a square character cell", field="character")
+            inputs["template"] = sha256_file(template)  # admission identity (path, direction, frame exist)
+            inputs["template_yaml"] = sha256_file(template.parent.parent / "template.yaml")  # the joints drawn from
+            inputs["control"] = hashlib.sha256(control_bytes(params, template, cell[0])).hexdigest()
             workflow = ctx.repo / WORKFLOWS["C"]
         if refusal := self.unverified_models(ctx.repo, workflow):
             raise ToolError("refused", refusal, hint=provenance.HINT)
@@ -266,7 +283,7 @@ class Generation:
         ctx.check_cancelled()
         ctx.set_stage("generate")
         if self.kind == "pose_frame":
-            return self.pose(job, ctx, refs, api_ctx)
+            return self.pose(job, ctx, refs, api_ctx, profile)
         animate = import_module("sonoranlab.animate").animate
 
         def runner(argv, **kwargs):
@@ -331,11 +348,18 @@ class Generation:
             **self.status(doc, root),
         }
 
-    def pose(self, job, ctx, refs, api_ctx):
+    def pose(self, job, ctx, refs, api_ctx, profile):
         GenerateRequest = import_module("sonoranlab.comfy.adapters.base").GenerateRequest
 
         params = job["params"]
         _, template = template_path(params, api_ctx)
+        cell = profile.character(params["character"]).cell[0]
+        control = ctx.output_dir / "control.png"
+        data = control_bytes(params, template, cell)
+        if hashlib.sha256(data).hexdigest() != job["input_hashes"]["control"]:
+            raise JobFailure("inputs_changed", "generate", "Rendered control image differs from the admitted one")
+        with open(control, "xb") as f:
+            f.write(data)
         adapter = import_module("sonoranlab.comfy.adapters.track_c")
         request = GenerateRequest(
             track="C",
@@ -343,7 +367,7 @@ class Generation:
             anim=params["anim"],
             direction=params["direction"],
             source_image=refs / f"still_{params['direction']}.png",
-            control_image=template,
+            control_image=control,
             prompt=adapter.POSE_PROMPTS[params["direction"]],
             seed=params["seed"],
             out_dir=ctx.output_dir / "attempt-1",
