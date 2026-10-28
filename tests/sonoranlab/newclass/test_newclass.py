@@ -147,6 +147,13 @@ def test_happy_path_owner_review_then_ready_to_install(lab):
     assert not lab.jobs("build_delivery")
 
     record_review(composed, **PASS)  # the owner's 1x review (test-recorded, never an agent call)
+    # DYL-129: the one composed-sheet review approves every contained selected clip in the campaign.
+    view = ok(call("campaign_status", {"campaign_id": cid}))
+    assert view["state"] == "ARTIFACT_APPROVED"
+    assert {c: v["state"] for c, v in view["clips"].items()} == {
+        "run": "ARTIFACT_APPROVED",
+        "idle": "ARTIFACT_APPROVED",
+    }
     before = outside_state(lab)
     handoff, a = invoke(lab, campaign_id=cid, reference_id=ref, delivery=delivery)
     assert handoff["stop"] == "BUILT", handoff
@@ -154,6 +161,7 @@ def test_happy_path_owner_review_then_ready_to_install(lab):
     assert list((lab.root / "game").iterdir()) == []
     bundle_job = handoff["detail"]["bundle"]
     bundle = store.output(manager.get(bundle_job)) / "bundle"
+    assert ok(call("campaign_status", {"campaign_id": cid}))["state"] == "ARTIFACT_APPROVED"  # BUILT
 
     # Coordinator CLI step (no MCP tool): apply + verify in a disposable snapshot.
     snap = lab.root / "snapshot"
@@ -177,6 +185,7 @@ def test_happy_path_owner_review_then_ready_to_install(lab):
     assert handoff["stop"] == "READY_TO_INSTALL" and "build_delivery" not in a.calls
     status = ok(call("delivery_status", {"bundle": bundle_job}))["bundles"][0]
     assert status["states"]["INSTALLED"] is False and status["known_missing_clips"] == ["cast", "death"]
+    assert ok(call("campaign_status", {"campaign_id": cid}))["state"] == "READY_TO_INSTALL"  # never INSTALLED
     assert git(game, "status", "--porcelain") == ""  # the real checkout is never touched
 
 
