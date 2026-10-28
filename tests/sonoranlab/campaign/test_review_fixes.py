@@ -136,3 +136,27 @@ def test_forged_owner_event_with_valid_chain_is_ignored(lab, capsys):
     assert main([*argv, "--seeds", "1", "--verbatim", "real grant"]) == 0
     capsys.readouterr()
     assert status(lab, cid)["clips"]["idle"]["budget"]["granted"] == 1
+
+
+def test_height_only_revision_keeps_candidates_but_not_delivery(lab, monkeypatch, capsys):
+    """height_m is read only by the delivery manifest: a height-only revision keeps selections and reviews current,
+    while delivery records (which baked the old height) do not carry over."""
+    from test_review import PASS
+
+    from sonoranlab.review import record_review
+
+    cid = create(lab)
+    job_id = ok(submit(lab, cid))["job_id"]
+    run(job_id, monkeypatch)
+    ok(api(lab, "campaign_decide", campaign_id=cid, job_id=job_id, decision="selected", reason="good"))
+    record_review(Path(manager.get(job_id)["result"]["animate"]["verdict"]["job"]), **PASS)
+    argv = ["campaign", "owner-decision", "--campaign", cid, "--kind", "delivery"]
+    assert main([*argv, "--state", "staged_and_engine_verified", "--ref", "b1", "--verbatim", "staged"]) == 0
+    capsys.readouterr()
+    assert status(lab, cid)["state"] == "STAGED_AND_ENGINE_VERIFIED"
+    request = lab["request"] | {"height_m": lab["request"]["height_m"] + 0.04}
+    ok(api(lab, "campaign_create", project="toy", request=request, reference_id=lab["ref"], revise=cid))
+    view = status(lab, cid)
+    clip = view["clips"]["idle"]
+    assert clip["selected"] == job_id and clip["attempts"][0]["current"] is True
+    assert view["state"] == "ARTIFACT_APPROVED"
