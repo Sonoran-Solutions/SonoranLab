@@ -14,11 +14,14 @@ import pytest
 from PIL import Image
 
 from sonoranlab import cli
+from sonoranlab.comfy import provenance
 from sonoranlab.comfy.adapters import track_e
 from sonoranlab.comfy.adapters.base import DEFAULT_BACKGROUND, GenerateRequest, RawResult
 from sonoranlab.comfy.adapters.track_e import RUN_PROMPTS, TrackE, alpha_fringe_stats, guarded_argv
 from sonoranlab.comfy.client import Workflow, graph_sha256
 from sonoranlab.comfy.guard import pending_submissions
+
+from .birefnet_fixture import work_untouched, write_birefnet
 
 DIRS = ["north", "north-east", "east", "south-east", "south"]
 
@@ -119,6 +122,7 @@ def env(tmp_path: Path):
         work=work,
         still=write_still(tmp_path / "still.png"),
         client=FakeClient(work / "output"),
+        models_tsv=write_birefnet(work),
     )
 
 
@@ -137,7 +141,7 @@ def request(env, **kw) -> GenerateRequest:
 
 
 def adapter(env) -> TrackE:
-    return TrackE(env.client, work_root=env.work, workflow=object(), timeout_s=99)
+    return TrackE(env.client, work_root=env.work, workflow=object(), timeout_s=99, models_tsv=env.models_tsv)
 
 
 def test_success_layout_and_values(env) -> None:
@@ -283,7 +287,7 @@ def test_submission_fsynced_before_client_with_workflow_hash(env, monkeypatch) -
         return run(*a, **kw)
 
     monkeypatch.setattr(env.client, "run", checked_run)
-    res = TrackE(env.client, work_root=env.work, workflow=workflow).generate(req)
+    res = TrackE(env.client, work_root=env.work, workflow=workflow, models_tsv=env.models_tsv).generate(req)
     (submission,) = synced
     assert res.status == "ok"
     assert submission["workflow_patched_sha256"] == graph_sha256(workflow.patch(env.client.calls[0]["values"]))
@@ -345,7 +349,7 @@ def test_malformed_request_writes_nothing(env, kw) -> None:
     req = request(env, **kw)
     with pytest.raises(ValueError):
         adapter(env).generate(req)
-    assert not req.out_dir.exists() and not env.work.exists() and env.client.calls == []
+    assert not req.out_dir.exists() and work_untouched(env.work) and env.client.calls == []
 
 
 def test_existing_out_dir_and_staging_refused(env) -> None:
@@ -417,6 +421,7 @@ def cli_env(env, monkeypatch, lease_window):
     monkeypatch.setattr(cli, "_exec", unexpected_exec)
     monkeypatch.setenv("SONORANLAB_WORK", str(env.work))
     monkeypatch.setattr(track_e, "load_workflow", lambda p: object())
+    monkeypatch.setattr(provenance, "MODELS_TSV", env.models_tsv)
     made = {}
 
     def make(base_url, output_root, exec_container=None):

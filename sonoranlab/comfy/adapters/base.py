@@ -65,6 +65,8 @@ class RawResult:
     params: dict[str, Any] = field(default_factory=dict)  # every patched param, inputs included
     inputs: dict[str, str] = field(default_factory=dict)  # param name -> sha256 of the staged input file
     models: dict[str, str] = field(default_factory=dict)  # model file (models.tsv dest) -> sha256
+    # verified file inventory per role, e.g. {"birefnet": {name, files, node, verified, reason}} (comfy.provenance)
+    model_provenance: dict[str, Any] = field(default_factory=dict)
     outputs: dict[str, str] = field(default_factory=dict)  # output path relative to out_dir -> sha256
     timing: dict[str, float] = field(default_factory=dict)  # seconds: queue_wait, exec, wall, ...
     error: dict[str, Any] | None = None  # structured client/adapter error: code, stage, message, retryable, ...
