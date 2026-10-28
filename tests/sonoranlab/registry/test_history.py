@@ -250,3 +250,83 @@ def test_pagination_is_deterministic_and_bounded(mixed):
     for bad in ({"jobs_limit": 0}, {"jobs_limit": 201}, {"jobs_offset": -1}):
         response = call("get_character", {"project": "toy", "character": "hero", **bad}, ctx=ctx)
         assert response["error"]["code"] == "invalid_params"
+
+
+@pytest.mark.parametrize("parent_first", [True, False])
+def test_nested_import_only_jobs_stay_distinct(setup, job, monkeypatch, tmp_path, parent_first):  # noqa: F811
+    """Finding 1: import-only entries merge only on exact directory identity, never by containment."""
+    ctx, _, _ = setup
+    monkeypatch.setenv("SONORANLAB_READ_ROOTS", os.pathsep.join([str(tmp_path), str(job.parent.parent)]))
+    parent = shutil.copytree(job, tmp_path / "archive/parent")
+    child = shutil.copytree(job, parent / "repairs/child")
+    order = [parent, child] if parent_first else [child, parent]
+    made = [records.import_job("toy", "hero", str(path), ctx=ctx)["artifact_id"] for path in order]
+    character = records.get_character("toy", "hero", ctx=ctx)
+    assert character["job_count"] == 2
+    assert sorted(e["id"] for e in character["jobs"]) == sorted(made)
+    assert all(e["source"] == "import" and e["aliases"] == [e["job_id"]] for e in character["jobs"])
+
+
+def test_invalid_native_output_symlink_never_claims_an_import(setup, job, monkeypatch, tmp_path):  # noqa: F811
+    """Finding 2: an output_dir symlink is refused before dedup, so it cannot absorb another job's import."""
+    ctx, _, state = setup
+    monkeypatch.setenv("SONORANLAB_READ_ROOTS", os.pathsep.join([str(tmp_path), str(job.parent.parent)]))
+    out = native(state, ids(1), "process", "succeeded", created="2026-10-20T00:00:01+00:00")
+    out.rmdir()
+    out.symlink_to(job, target_is_directory=True)
+    imported = records.import_job("toy", "hero", str(job), ctx=ctx)
+    entries = {e["id"]: e for e in records.get_character("toy", "hero", ctx=ctx)["jobs"]}
+    assert set(entries) == {ids(1), imported["artifact_id"]}
+    assert entries[ids(1)]["status"] == "invalid" and entries[ids(1)]["problems"][0]["code"] == "path_refused"
+    assert entries[imported["artifact_id"]]["source"] == "import" and entries[imported["artifact_id"]]["status"] == "ok"
+
+
+def test_malformed_native_metadata_and_unexpected_errors_isolated(setup, monkeypatch):  # noqa: F811
+    """Finding 3: shape errors and unexpected exceptions invalidate one entry, never the response."""
+    ctx, _, state = setup
+    register(setup)
+    native(state, ids(1), "process", "succeeded", created="2026-10-20T00:00:01+00:00", result={"technical": "corrupt"})
+    native(state, ids(2), "process", "queued", created="2026-10-20T00:00:02+00:00")
+    native(state, ids(3), "process", "queued", created="2026-10-20T00:00:03+00:00")
+    original = records._merged_entry
+
+    def explode(item, ctx):
+        if item["id"] == ids(3):
+            raise RuntimeError("unexpected")
+        return original(item, ctx)
+
+    monkeypatch.setattr(records, "_merged_entry", explode)
+    response = call("get_character", {"project": "toy", "character": "hero"}, ctx=ctx)
+    assert response["ok"], response
+    entries = {e["id"]: e for e in response["result"]["jobs"]}
+    assert entries[ids(1)]["status"] == "invalid" and "Malformed" in entries[ids(1)]["problems"][0]["message"]
+    assert entries[ids(2)]["status"] == "ok"
+    assert entries[ids(3)]["status"] == "invalid" and "RuntimeError" in entries[ids(3)]["problems"][0]["message"]
+
+
+def test_manifest_and_review_work_is_bounded_by_the_page(mixed, monkeypatch):
+    """Finding 4: dedup uses cheap metadata; manifests, lineage and reviews are read for page entries only."""
+    ctx, *_ = mixed
+    calls = {"manifest": 0, "summary": 0}
+    json_read, summary = records._json, records._job_summary
+
+    def counting_json(path, **kwargs):
+        calls["manifest"] += path.name == "manifest.json"
+        return json_read(path, **kwargs)
+
+    def counting_summary(entry, ctx):
+        calls["summary"] += 1
+        return summary(entry, ctx)
+
+    monkeypatch.setattr(records, "_json", counting_json)
+    monkeypatch.setattr(records, "_job_summary", counting_summary)
+    full = records.get_character("toy", "hero", ctx=ctx)
+    assert full["job_count"] == 8 and calls["summary"] == 3 and calls["manifest"] > 0
+    native_only = next(i for i, e in enumerate(full["jobs"]) if e["source"] == "native")
+    calls.update(manifest=0, summary=0)
+    page = records.get_character("toy", "hero", jobs_offset=native_only, jobs_limit=1, ctx=ctx)
+    assert page["job_count"] == 8 and page["jobs_truncated"] and len(page["jobs"]) == 1
+    assert calls == {"manifest": 0, "summary": 0}
+    calls.update(manifest=0, summary=0)
+    records.get_character("toy", "hero", jobs_offset=full["job_count"] - 1, jobs_limit=1, ctx=ctx)  # One import.
+    assert calls["summary"] == 1 and 0 < calls["manifest"] <= 3

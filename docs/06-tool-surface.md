@@ -216,9 +216,12 @@ Retired profile rows remain readable using their registered spec snapshot.
 **Merged history (DYL-126).** `get_character.jobs` lists every logical job of
 the exact (project, character): durable native jobs (any kind, any execution
 state) and registry imports. An import is the *same* job as a native one when
-its resolved `job_dir` equals or lies inside the native `output_dir`, or when it
-is the child a `finalize_repair` job imported (`result.artifact_id`, itself a
-hash of the exact path); names are never compared. Each entry has `id` (native
+its resolved `job_dir` equals or lies inside the native job's validated output
+root (`store.output`: no symlinks or escapes), or when it is the child a valid
+`finalize_repair` job imported (`result.artifact_id`, itself a hash of the
+exact path). Import-only entries merge only on the exact same resolved
+directory, never by containment, and invalid native jobs claim nothing; names
+are never compared. Each entry has `id` (native
 job ID, else the import's `artifact_id`), `aliases` (the other accepted IDs),
 `source` (`native`, `import`, `native+import`), `kind` (`import` for import-only),
 `anim`, `created_at`, execution `state`/`stage`/`error` (null for import-only),
@@ -226,18 +229,21 @@ job ID, else the import's `artifact_id`), `aliases` (the other accepted IDs),
 `technical` and `human` verdicts, `review_problems`, `imports` (per-import
 summaries), `lineage: {parent_job, parent_id, repair_children, child_ids}`
 (`parent_id`/`child_ids` are canonical IDs; `repair_children` keeps the DYL-114
-child `job_id` form) and `status: ok|invalid` with `problems`. Import-backed
+child `job_id` form; children are those on the same page, while every child
+always carries its own `parent_id`) and `status: ok|invalid` with `problems`. Import-backed
 entries also keep the DYL-114 import fields (`artifact_id`, `job_dir`,
 `review_job`, `hashes`, `current_hashes`, `provenance`, `imported_at`).
 `human` is recomputed on every read through the `check_review` logic for every
 bound review (native and each import); the most conservative state wins and
 `production_usable` requires all of them. A corrupt record, journal mismatch,
-import drift or out-of-root directory makes only that entry `invalid`;
+malformed recorded verdict, import drift, out-of-root directory or any other
+per-entry error makes only that entry `invalid`;
 corrupt native records whose project/character cannot be read are counted in
 `unattributed_invalid_jobs`. Entries are ordered by `created_at` then `id` and
 paged with `jobs_offset`/`jobs_limit` (default 50, maximum 200); `job_count` is
-the total and `jobs_truncated` says more pages follow. Only the returned page
-pays for reviews and native `job_status`-style reconciliation (the same lease
+the total and `jobs_truncated` says more pages follow. Ordering and dedup use
+only record metadata and path resolution; only the returned page pays for
+manifest/lineage reads, reviews and native `job_status`-style reconciliation (the same lease
 check `list_jobs` performs); nothing is submitted, retried, launched or
 approved. `list_characters` stays lightweight: imported IDs plus `job_count`.
 
