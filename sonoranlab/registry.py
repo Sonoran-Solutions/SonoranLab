@@ -20,6 +20,7 @@ import yaml
 from jsonschema import Draft202012Validator
 from jsonschema.exceptions import ValidationError
 
+from sonoranlab import repo_inputs
 from sonoranlab.api import paths
 from sonoranlab.api.registry import Context, ToolError
 from sonoranlab.artifacts import require_regular_file, sha256_file
@@ -480,11 +481,8 @@ def _job_metadata(job: Path, ctx: Context) -> tuple[Path, dict, dict | None]:
     profile_path = manifest["profile"].get("path")
     if not isinstance(profile_path, str):
         raise ToolError("invalid_params", f"{job / 'manifest.json'}: missing profile path")
-    profile_file = Path(profile_path)
-    _protected(profile_file, ctx)
-    if profile_file.resolve() not in {p.path.resolve() for p in ctx.profiles()}:
-        paths.resolve_input(profile_file)
-    require_regular_file(profile_file)
+    if not _admit_profile(manifest, ctx, missing_ok=False):
+        require_regular_file(Path(profile_path))
     for relative in manifest["outputs"]:
         _job_file(job, relative)
     for name in manifest["inputs"]:
@@ -492,6 +490,26 @@ def _job_metadata(job: Path, ctx: Context) -> tuple[Path, dict, dict | None]:
             raise ToolError("path_refused", "Raw input name must be a plain filename")
         _job_file(job, "raw/" + name)
     return job, manifest, animate
+
+
+def _admit_profile(manifest: dict, ctx: Context, *, missing_ok: bool) -> bool:
+    """Preflight a manifest's recorded profile before the review layer hashes it. True when it binds only through git
+    recovery (a removed worktree or a path outside the read roots: the exact recorded bytes are recovered from this
+    repository's history by content hash, and the path itself must not be opened)."""
+    recorded = manifest["profile"]["path"]
+    path = Path(recorded)
+    _protected(path, ctx)
+    if path.resolve() in {p.path.resolve() for p in ctx.profiles()}:
+        return False
+    try:
+        paths.resolve_input(path)
+        return False
+    except (ToolError, FileNotFoundError) as exc:
+        if isinstance(exc, FileNotFoundError) and missing_ok:
+            return False  # the review layer recovers it or reports the invalid binding
+        if repo_inputs.recover(recorded, manifest["profile"].get("sha256"), manifest.get("git")) is None:
+            raise
+        return True
 
 
 def _review(job: Path, ctx: Context, *, entry: dict | None = None) -> dict:
@@ -534,13 +552,10 @@ def _review(job: Path, ctx: Context, *, entry: dict | None = None) -> dict:
                 raise
         else:
             profile = manifest.get("profile")
+            # Missing provenance is reported by the review layer as an invalid binding; an outside profile binds
+            # there only through its recorded bytes in git (review._provenance never opens it).
             if isinstance(profile, dict) and isinstance(profile.get("path"), str):
-                path = Path(profile["path"])
-                _protected(path, ctx)
-                if path.resolve() not in {p.path.resolve() for p in ctx.profiles()}:
-                    # Missing provenance is reported by the review layer as an invalid binding.
-                    with suppress(FileNotFoundError):
-                        paths.resolve_input(path)
+                _admit_profile(manifest, ctx, missing_ok=True)
     problems = review_errors(job)
     usable = production_usable(job)
     exists = (job / "review.json").exists() or (job / "review.json").is_symlink()
@@ -548,6 +563,10 @@ def _review(job: Path, ctx: Context, *, entry: dict | None = None) -> dict:
     if exists and {p["code"] for p in problems} == {"REVIEW_NOT_PASS"}:
         state = "fail"
     return {"production_usable": usable, "review_state": state, "problems": problems}
+
+
+def _same_binding(a: dict, b: dict) -> bool:
+    return a.get("path") == b.get("path") and a.get("sha256") == b.get("sha256")
 
 
 def _confine_profile_templates(source: Path) -> None:
@@ -576,6 +595,57 @@ def _confine_profile_templates(source: Path) -> None:
                 require_regular_file(path)
 
 
+def _admit_profile_provenance(
+    project: str, profile, current: Path, manifest: dict, animate: dict | None, ctx: Context
+) -> dict:
+    """The job's recorded profile bindings (animate.json and the final manifest) identify `project`. Reads nothing
+    outside the read roots and writes nothing."""
+    provenance = (animate["inputs"] if animate else manifest).get("profile")
+    if not isinstance(provenance, dict) or not isinstance(provenance.get("path"), str):
+        raise ToolError("invalid_params", "Job has no profile provenance")
+    # A synthetic or historical profile copy must still identify the same project.
+    from sonoranlab.profile import load_profile
+    from sonoranlab.review import bound_character, same_character_profile
+
+    provenances = [provenance, manifest["profile"]] if manifest else [provenance]
+    character_bound = bound_character(current, manifest) if manifest else None  # report and manifest must agree
+    for binding in provenances:
+        # animate.json records its own repo_rev; borrow the final manifest's commit only for an identical binding.
+        if manifest and _same_binding(binding, manifest["profile"]):
+            rev = manifest.get("git")
+        else:
+            rev = animate["inputs"].get("repo_rev") if animate else None
+        source_profile = Path(binding["path"])
+        _protected(source_profile, ctx)
+        if source_profile.resolve() != profile.path.resolve():
+            try:
+                paths.resolve_input(source_profile)
+            except (ToolError, FileNotFoundError):
+                # Removed worktree / outside the read roots: only the recorded bytes recovered from git count, and
+                # the outside path is never opened (no template preflight needed: nothing is loaded from it).
+                recovered = repo_inputs.recover(binding["path"], binding.get("sha256"), rev)
+                if recovered is None:
+                    raise
+                raw = yaml.safe_load(recovered.data)
+                if not isinstance(raw, dict) or raw.get("id") != project:
+                    raise ToolError(
+                        "invalid_params", "Job profile provenance does not match the requested project"
+                    ) from None
+                continue
+            require_regular_file(source_profile)
+            _confine_profile_templates(source_profile)
+        else:
+            require_regular_file(source_profile)
+        # The repository profile (including its templates) was already loaded by _character. A file edited since the
+        # job ran still binds when only other characters' rows changed (the review layer's equivalence).
+        if load_profile(source_profile).id != project or (
+            sha256_file(source_profile) != binding.get("sha256")
+            and not same_character_profile(source_profile, binding, rev, character_bound)
+        ):
+            raise ToolError("invalid_params", "Job profile provenance does not match the requested project")
+    return provenance
+
+
 def import_job(project: str, character: str, job_dir: str, *, ctx: Context) -> dict:
     profile = _character(project, character, ctx)
     job = _job_directory(job_dir, ctx)
@@ -586,23 +656,7 @@ def import_job(project: str, character: str, job_dir: str, *, ctx: Context) -> d
     inputs = animate["inputs"] if animate else manifest
     if inputs.get("character") != character:
         raise ToolError("invalid_params", "Job character differs from requested character")
-    provenance = inputs.get("profile")
-    if not isinstance(provenance, dict) or not isinstance(provenance.get("path"), str):
-        raise ToolError("invalid_params", "Job has no profile provenance")
-    # A synthetic or historical profile copy must still identify the same project.
-    from sonoranlab.profile import load_profile
-
-    provenances = [provenance, manifest["profile"]] if manifest else [provenance]
-    for binding in provenances:
-        source_profile = Path(binding["path"])
-        _protected(source_profile, ctx)
-        require_regular_file(source_profile)
-        if source_profile.resolve() != profile.path.resolve():
-            paths.resolve_input(source_profile)
-            _confine_profile_templates(source_profile)
-        # The repository profile (including its templates) was already loaded by _character.
-        if load_profile(source_profile).id != project or sha256_file(source_profile) != binding.get("sha256"):
-            raise ToolError("invalid_params", "Job profile provenance does not match the requested project")
+    provenance = _admit_profile_provenance(project, profile, current, manifest, animate, ctx)
     if manifest and manifest.get("character") != character:
         raise ToolError("invalid_params", "Final job character differs from requested character")
     for relative, expected in manifest.get("outputs", {}).items():
