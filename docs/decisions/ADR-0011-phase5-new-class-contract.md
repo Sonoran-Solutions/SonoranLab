@@ -1,7 +1,13 @@
 # ADR-0011 — Phase 5 new-class contract
 
-**Status:** proposed (2026-10-28, DYL-123). Records the coordinator's Phase 5 contract and the owner decisions given
-so far; nothing here is accepted until the owner says so at senior review.
+**Status:** accepted 2026-10-29 with amendments (owner, after the Phase 5 senior review: "record that I agree with
+the reviewer's answers to the open questions for me"). Proposed 2026-10-28 (DYL-123).
+
+**Amendments at acceptance.** (1) Scope stays **visual asset delivery**: a delivered sheet is not a playable class,
+and READY_TO_INSTALL is not an installation; installing any bundle remains a separate owner authorization per bundle
+and target revision. (2) The 60-minute end-to-end criterion is **not declared passed for any class**: reference
+preparation and owner hands-on time were not measured; thief and engineer met the machine-time component, gun did
+not. (3) The owner-decision table below records the decisions actually given during Phase 5.
 
 ## Context
 
@@ -135,13 +141,17 @@ here. Samurai, oathguard and pyromancer are regression baselines, not new classe
 
 | # | Decision | State |
 |---|---|---|
-| O1 | Accept ADR-0010 (merged 2026-10-21, text still "proposed") | NEEDS_OWNER_INPUT |
-| O2 | Accept this ADR | NEEDS_OWNER_INPUT |
+| O1 | Accept ADR-0010 | **accepted 2026-10-29** with the as-implemented amendment |
+| O2 | Accept this ADR | **accepted 2026-10-29** with the amendments above |
 | O3 | Trial classes gun, thief, engineer; Codex creates the references | given 2026-10-28 |
-| O4 | Each class request and its eight-still reference set (hash-bound) | NEEDS_OWNER_INPUT per class |
-| O5 | Profile rows for gun/thief/engineer | NEEDS_OWNER_INPUT (reviewed patch) |
-| O6 | Live generation budget per class | NEEDS_OWNER_INPUT |
+| O4 | Each class request and its eight-still reference set (hash-bound) | given 2026-10-28: "Approve all three" (gun-v3, thief-v3-dp6, engineer-v3); engineer `height_m` amended to 1.74 on 2026-10-28 ("Set height_m to 1.74") |
+| O5 | Profile rows for gun/thief/engineer | given 2026-10-28: "Approve rows" (gun 160, thief 144, engineer 144, default limits); gun `max_attempts_per_animation: 6` on 2026-10-28 |
+| O6 | Live generation budget per class | given 2026-10-28: "≤3 seeds per clip"; gun run +3 ("Grant 3 more seeds") |
 | O7 | Track C live window (DYL-127) | given 2026-10-28: host ComfyUI kept off for Phase 5 |
 | O8 | Game read + private staged copies + disposable snapshot (DYL-131/133) | given 2026-10-28 |
-| O9 | One bounded live repair edit on a disposable pyromancer copy (DYL-132) | given 2026-10-28 |
-| O10 | 1× review of each final sheet; installation of any bundle | NEEDS_OWNER_INPUT per artifact |
+| O9 | One bounded live repair edit (DYL-132) | given 2026-10-28 for a pyromancer copy (refused at admission); retargeted 2026-10-29 to a disposable copy of an approved Phase 5 thief job |
+| O10 | 1× review of each final sheet | given 2026-10-28 for thief, gun (run seed 2 accepted with E/W rifle loss) and engineer (idle seed 2 accepted with S/SE/SW cannon defects) |
+| O11 | Installation of any bundle | **HOLD** (2026-10-29): rebuild against the current game revision in a fresh private snapshot, resolve the shared `characters.json` changes, retest the combined result, then authorize each final bundle separately (thief, engineer, gun last) |
+| O12 | Missing `cast`/`death` | 2026-10-29: game-side explicit fallbacks short term (documented contract, runtime tests, gallery contract updated on purpose); dedicated clips long term; not "playable" until consumer and runtime tests pass |
+| O13 | Historical artifact portability | 2026-10-29: content-hash provenance resolver approved and prioritized (no manifest rewrites, no inherited approvals, no external-directory allowlist) |
+| O14 | Gun smoke `nearest_filtering` (blue 7→0, tolerance 6) | 2026-10-29: investigate with a controlled 1×/4×, with/without-shader comparison before any waiver; global tolerance stays 6; rifle continuity stays a separate known defect |
