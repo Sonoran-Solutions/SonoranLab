@@ -1,6 +1,16 @@
 # ADR-0010 — Phase 4 MCP contract
 
-**Status:** proposed (2026-10-20, DYL-113)
+**Status:** accepted 2026-10-29 with amendment (owner, Phase 5 senior review: "I agree with the reviewer's answers";
+the reviewer's answer was to accept ADR-0010 recording the accepted Phase 4 implementation). Proposed 2026-10-20
+(DYL-113); implemented and merged in Phase 4 (main `b42317f`, 2026-10-21).
+
+**Amendment — as implemented.** The decision below is what Phase 4 shipped: local stdio MCP server, durable jobs
+with idempotent submission and crash recovery, guarded inference admission, technical verdicts kept separate from
+owner approval, and an optional Aseprite repair handoff. Its deferred operations stayed deferred (Track A /
+`generate_character`, diffusion `regenerate_region`, template/bake tools, automatic C→E fallback), and Phase 4's
+recorded gaps are in [phase4-handoff.md §15](../../benchmark/results/2026-10-21-phase4/phase4-handoff.md). Phase 5 later
+added `smoke_render` and the BiRefNet hash and changed `get_character` history under their own tickets (ADR-0011);
+those are not retroactive edits of this record.
 
 ## Context
 
