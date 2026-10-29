@@ -709,6 +709,28 @@ def check_composition(campaign_id: str, params: dict, ctx: Context) -> int:
     return frozen["revision"]
 
 
+def check_delivery(campaign_id: str, composed_job: str, ctx: Context) -> dict:
+    """build_delivery: the composed job must be this campaign's owner-approved sheet for its current inputs (reference
+    hashes, character row, request apart from delivery-only keys) and contain exactly the currently selected candidate
+    of every planned clip. Returns the current frozen revision. Checked at submission and again at execution."""
+    view = _view(_find(campaign_id), ctx)
+    if "_events" not in view:
+        raise ToolError("conflict", "Campaign ledger is damaged", field="campaign_id")
+    inputs = view["_composed"].get(composed_job)
+    if inputs is None:
+        raise ToolError(
+            "refused",
+            "Composed job is not an owner-approved sheet of this campaign's current revision",
+            field="composed",
+            hint="compose_sheet with this campaign_id from the current selections, then the owner's 1x review",
+        )
+    planned = {name for name, info in view["clips"].items() if info["in_plan"]}
+    selected = {name: view["clips"][name]["selected"] for name in planned}
+    if set(inputs) != planned or any(inputs[name] != selected[name] for name in planned):
+        raise ToolError("refused", "Composed sheet's clips are not the campaign's current selections", field="composed")
+    return view["_revisions"][-1]
+
+
 def record_composed(campaign_id: str, params: dict, job_id: str, artifact_id: str, sheet_sha256: str, ctx: Context):
     """Append the `composed` event under the writer lock (waits briefly if another writer holds it)."""
     path = _find(campaign_id)
@@ -885,6 +907,7 @@ def _view(path: Path, ctx: Context) -> dict:
         "_attempts": attempts,
         "_events": events,
         "_revisions": revisions,
+        "_composed": composed,
     }
     view["next_actions"] = _next_actions(view)
     return view

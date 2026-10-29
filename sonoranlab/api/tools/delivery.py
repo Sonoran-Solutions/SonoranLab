@@ -189,6 +189,9 @@ class BuildDelivery:
             raise ToolError("conflict", f"Campaign ledger is damaged: {exc}") from None
         if (frozen["project"], frozen["character"]) != (params["project"], composed_job["character"]):
             raise ToolError("refused", "Campaign and composed sheet name different characters", field="campaign_id")
+        # Senior review P1: the sheet must be this campaign's current approved composition (rechecked in run()).
+        if campaign.check_delivery(params["campaign_id"], params["composed"], ctx)["revision"] != frozen["revision"]:
+            raise ToolError("conflict", "Campaign revised while checking the delivery", field="campaign_id")
         staged = {k: _staged(params[k], k, ctx) for k in ("base_manifest", "import_template")}
         return profile, composed, frozen, staged
 

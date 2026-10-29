@@ -3,10 +3,12 @@ STAGED/READY, never INSTALLED."""
 
 from pathlib import Path
 
+import pytest
 from test_newclass import PASS, approved_ref, invoke, ok
 
 from sonoranlab import campaign
 from sonoranlab.api import call, paths
+from sonoranlab.api.registry import ToolError
 from sonoranlab.cli import main
 from sonoranlab.review import record_review
 
@@ -91,3 +93,115 @@ def test_installed_is_never_derived_from_a_bundle(lab, capsys, monkeypatch):
     assert main([*argv, "--state", "installed", "--verbatim", "not authorized"]) == 1
     capsys.readouterr()
     assert status(cid)["state"] == "ARTIFACT_APPROVED"
+
+
+# ---------------------------------------------------------------- senior review P1: delivery binds the campaign
+
+
+def _approved(lab):
+    cid, ref, composed, a = composed_lab(lab)
+    record_review(composed, **PASS)
+    assert status(cid)["state"] == "ARTIFACT_APPROVED"
+    return cid, ref, composed, a
+
+
+def _delivery_params(cid, composed_job, rev="0" * 40):
+    return {
+        "project": "toy",
+        "campaign_id": cid,
+        "composed": composed_job,
+        "target_rev": rev,
+        "base_manifest": "game/characters.json",
+        "import_template": "game/knight.png.import",
+    }
+
+
+def _revise(lab, cid, ref, **request):
+    return ok(
+        call(
+            "campaign_create",
+            {"project": "toy", "request": lab.request | request, "reference_id": ref, "revise": cid},
+        )
+    )
+
+
+def frozen_ref(cid):
+    return campaign._load(campaign._find(cid))[1][-1]["references"]["ref_set_id"]
+
+
+def test_delivery_accepts_the_current_approved_sheet_only(lab):
+    cid, _, _, a = _approved(lab)
+    assert campaign.check_delivery(cid, a.composed["job"], lab.ctx)["revision"] == 1
+    unknown = call("build_delivery", _delivery_params(cid, "job-20261028T000000Z-00000000"))
+    assert unknown["error"]["code"] in {"not_found", "refused"}
+
+
+def test_delivery_refuses_an_older_revisions_sheet(lab):
+    cid, ref, _, a = _approved(lab)
+    _revise(lab, cid, ref, display_name="Hero v2")  # request changed: the approved sheet belongs to revision 1
+    refused = call("build_delivery", _delivery_params(cid, a.composed["job"]))
+    assert refused["error"]["code"] == "refused" and "current revision" in refused["error"]["message"]
+
+
+def test_delivery_refuses_after_the_references_change(lab):
+    import numpy as np
+    from conftest import approve
+    from PIL import Image
+    from test_newclass import register
+
+    cid, _, _, a = _approved(lab)
+    stills = lab.root / "stills-v2"
+    stills.mkdir()
+    for p in lab.stills.iterdir():
+        (stills / p.name).write_bytes(p.read_bytes())
+    still = stills / "still_south.png"
+    px = np.asarray(Image.open(still).convert("RGBA")).copy()
+    ys, xs = np.nonzero(px[..., 3])
+    px[ys[0], xs[0]] = 0  # one opaque pixel becomes transparent: a different, still binary-alpha reference
+    Image.fromarray(px).save(still)
+    ref2 = register(lab, stills)
+    assert ref2 != frozen_ref(cid)
+    approve(ref2, stills)
+    ok(call("campaign_create", {"project": "toy", "request": lab.request, "reference_id": ref2, "revise": cid}))
+    refused = call("build_delivery", _delivery_params(cid, a.composed["job"]))
+    assert refused["error"]["code"] == "refused", refused
+
+
+def test_delivery_refuses_a_sheet_composed_outside_this_campaign(lab):
+    cid, ref, _, _ = _approved(lab)
+    selected = {c: v["selected"] for c, v in status(cid)["clips"].items()}
+    params = {"project": "toy", "character": "hero", "reference_id": ref}
+    outside = ok(call("compose_sheet", params | {"clips": [{"name": c, "job": selected[c]} for c in ("idle", "run")]}))
+    from sonoranlab.jobs import manager, store, worker
+
+    worker._work(store.job_dir(outside["job_id"]))
+    # approved by the owner, but not composed in this campaign
+    record_review(store.output(manager.get(outside["job_id"])) / "composed", **PASS)
+    refused = call("build_delivery", _delivery_params(cid, outside["job_id"]))
+    assert refused["error"]["code"] == "refused", refused
+    with pytest.raises(ToolError, match="current revision"):
+        campaign.check_delivery(cid, outside["job_id"], lab.ctx)
+
+
+def test_height_only_revision_keeps_the_approved_sheet_deliverable(lab):
+    cid, ref, _, a = _approved(lab)
+    _revise(lab, cid, ref, height_m=lab.request["height_m"] + 0.04)
+    assert campaign.check_delivery(cid, a.composed["job"], lab.ctx)["revision"] == 2
+
+
+def test_delivery_binding_is_rechecked_at_execution(lab):
+    from test_newclass import game_repo
+
+    from sonoranlab.jobs import manager, store, worker
+    from sonoranlab.jobs.executors import executor
+
+    cid, ref, composed, a = _approved(lab)
+    _, rev = game_repo(lab, composed / "export/hero/hero.png")
+    job_id = ok(call("build_delivery", _delivery_params(cid, a.composed["job"], rev)))["job_id"]  # admitted
+    _revise(lab, cid, ref, display_name="Hero v3")  # the approval no longer matches the campaign
+    worker._work(store.job_dir(job_id))
+    job = manager.get(job_id)
+    assert job["state"] == "failed" and job["error"]["stage"] == "prepare"
+    with pytest.raises(ToolError, match="current revision"):  # what run() hit: its first step re-validates
+        executor("build_delivery").validate(job["params"])
+    assert not (store.output(job) / "bundle/bundle.json").exists()
