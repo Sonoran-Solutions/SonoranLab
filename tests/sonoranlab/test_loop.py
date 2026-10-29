@@ -112,8 +112,9 @@ def test_select_once_return_ignores_the_unmoved_run_up() -> None:
 def test_select_once_fall_ends_when_motion_settles_golden() -> None:
     pick = select_once(once_clip("fall"), n_frames=6, size=48, end="settle")
     assert pick.end["settled"] is True and pick.end["end"] == 15  # the last tipping step ends at frame 15
-    assert pick.picks == [0, 3, 6, 9, 12, 15]  # golden
-    assert pick.loop_seam_score > 0 and len(pick.end["steps"]) == 32
+    # golden: 5 picks over [0, 15], then one resting frame a stride later, so the held final pair is two resting frames
+    assert pick.picks == [0, 4, 8, 11, 15, 19] and pick.end["hold_pick"] == 19
+    assert pick.loop_seam_score == 0 and len(pick.end["steps"]) == 32  # resting pair: no motion between them
 
 
 def test_select_once_fall_that_never_settles_uses_the_last_frame() -> None:

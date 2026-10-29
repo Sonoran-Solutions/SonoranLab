@@ -788,3 +788,12 @@ def test_fall_mode_needs_a_non_looping_clip():
         fall_validate([fall_frame(*p) for p in FALL_POSES], loop=True)
     with pytest.raises(ValueError, match="validator_mode"):
         fall_validate([fall_frame(*p) for p in FALL_POSES], mode="hold")
+
+
+def test_fall_mode_gates_frame0_even_when_frame0_is_not_a_contact_frame():
+    # frame 0 stands 2 px higher than the later poses (so it is not on the clip's lowest foot line) and 1 px off the
+    # anchor: the frame-0 gate must still fire (codex review of c9bddda)
+    frames = [fall_frame(15, 18, 11), *[fall_frame(*p) for p in FALL_POSES[1:]]]
+    frames[0] = np.roll(frames[0], -2, axis=0)
+    rep = fall_validate(frames)
+    assert any(m.startswith("foot_slide: frame 0 ") for m in rep["failures"]), rep["failures"]
