@@ -44,6 +44,11 @@ class Recovered:
         }
 
 
+def checkout() -> Path:
+    """This checkout: present profiles inside it keep the in-place rules (a drifted row breaks the binding)."""
+    return _REPO
+
+
 def _git(repo: Path, *args: str) -> subprocess.CompletedProcess:
     return subprocess.run(["git", "-C", str(repo), *args], capture_output=True, timeout=10)
 

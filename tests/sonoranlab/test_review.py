@@ -794,12 +794,76 @@ def test_recovery_never_carries_an_approval_to_a_copy(job, monkeypatch):
     assert production_usable(job) and not production_usable(copy)  # the review binds its own job path
 
 
-def test_git_only_inputs_are_never_opened(job, monkeypatch):
-    from sonoranlab.review import git_only_inputs
+def _outside_profile(job, monkeypatch):
+    """The recorded profile sits outside this checkout (a removed or foreign worktree); this repository's git holds the
+    exact recorded bytes under the same path suffix."""
+    committed = _committed_profile(job, monkeypatch)
+    outside = job.parent / "old-worktree/profiles/toy.yaml"
+    outside.parent.mkdir(parents=True)
+    shutil.copyfile(committed, outside)
+    manifest_path = job / "manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    manifest["profile"]["path"] = str(outside)
+    manifest_path.write_text(json.dumps(manifest))
+    monkeypatch.setenv("SONORANLAB_READ_ROOTS", str(job))  # the old worktree is outside the read roots
+    monkeypatch.setenv("SONORANLAB_STATE", str(job / "state"))
+    return outside
 
-    profile = _committed_profile(job, monkeypatch)
+
+def _never_open(monkeypatch, target):
+    target = Path(target).resolve()
+
+    def wrap(original):
+        def guard(path, *args, **kwargs):
+            if isinstance(path, (str, os.PathLike)):
+                assert Path(path).resolve() != target, f"{target} opened"
+            return original(path, *args, **kwargs)
+
+        return guard
+
+    for name in ("read_text", "read_bytes", "open"):
+        monkeypatch.setattr(Path, name, wrap(getattr(Path, name)))
+    monkeypatch.setattr(builtins, "open", wrap(builtins.open))
+
+
+def test_outside_profile_binds_only_through_git_and_is_never_opened(job, monkeypatch):
+    profile = _outside_profile(job, monkeypatch)
     record_review(job, **PASS)
-    profile.write_text("id: something else entirely\n")  # outside the caller's roots: must not be read
-    assert not production_usable(job)  # read in place, the changed bytes fail
-    with git_only_inputs({str(profile)}):
-        assert production_usable(job)  # bound only through the recorded bytes in git
+    profile.write_text("id: something else entirely\n")  # outside this checkout: must not be read
+    _never_open(monkeypatch, profile)
+    assert review_errors(job) == [] and production_usable(job)  # bound only through the recorded bytes in git
+
+
+def test_compose_job_integrity_never_opens_an_outside_profile(job, monkeypatch):
+    from sonoranlab.compose import job_integrity
+
+    profile = _outside_profile(job, monkeypatch)
+    profile.write_text("id: something else entirely\n")
+    _never_open(monkeypatch, profile)
+    binds, problems = job_integrity(job)
+    assert binds is not None and problems == []
+
+
+def test_drifted_own_row_inside_the_checkout_still_breaks_binding(job, monkeypatch):
+    from sonoranlab import repo_inputs
+
+    _git_profile(job, lambda doc, me: doc["characters"][me].update(cell=doc["characters"][me]["cell"] + 1))
+    monkeypatch.setattr(repo_inputs, "_REPO", job.parent / "profile-repo")  # the profile is this checkout's own file
+    assert not production_usable(job)
+    assert any("sha256 differs from manifest" in e["message"] for e in review_errors(job))
+
+
+def test_profile_inside_the_read_roots_is_read_in_place_without_git(job, monkeypatch):
+    from sonoranlab import repo_inputs
+
+    profile = _outside_profile(job, monkeypatch)
+    record_review(job, **PASS)
+    monkeypatch.setenv("SONORANLAB_READ_ROOTS", str(job.parent))  # a readable worktree: no git, no subprocess
+
+    def no_git(*args, **kwargs):
+        raise AssertionError("git consulted for a readable profile")
+
+    monkeypatch.setattr(repo_inputs, "recover", no_git)
+    assert production_usable(job)
+    profile.write_text(profile.read_text() + "# drifted\n")
+    assert not production_usable(job)  # read in place, a drift breaks the binding (no git fallback here)

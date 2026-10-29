@@ -9,11 +9,10 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import os
 import re
 import stat
 import subprocess
-from contextlib import contextmanager
-from contextvars import ContextVar
 from datetime import datetime
 from pathlib import Path
 from typing import Literal
@@ -194,17 +193,17 @@ def _bound_character(job: Path, manifest: dict) -> str | None:
     return character if isinstance(report, dict) and report.get("character") == character else None
 
 
-_GIT_ONLY: ContextVar[frozenset[str]] = ContextVar("review_git_only_inputs", default=frozenset())
+def _readable_root(path: Path) -> bool:
+    """Inside the configured read roots or STATE, lexically and resolved (no stat, nothing opened)."""
+    from sonoranlab.api import paths
 
-
-@contextmanager
-def git_only_inputs(recorded_paths: set[str]):
-    """Within this block, these recorded input paths are never opened: they bind only through git recovery."""
-    token = _GIT_ONLY.set(_GIT_ONLY.get() | frozenset(recorded_paths))
     try:
-        yield
-    finally:
-        _GIT_ONLY.reset(token)
+        roots = (*paths.read_roots(), paths.state_root())
+        lexical = Path(os.path.abspath(path))
+        resolved = lexical.resolve()
+    except (OSError, RuntimeError, ValueError, paths.ToolError):
+        return False
+    return any(lexical.is_relative_to(r) for r in roots) and any(resolved.is_relative_to(r) for r in roots)
 
 
 def _provenance(job: Path) -> tuple[dict | None, list[str]]:
@@ -245,11 +244,14 @@ def _provenance(job: Path) -> tuple[dict | None, list[str]]:
         problems.append("manifest.json has no profile path")
     else:
         p = Path(profile["path"])
-        if profile["path"] in _GIT_ONLY.get() or p.is_symlink() or not p.is_file():
-            # Gone (e.g. a removed worktree) or not readable under the caller's roots: only the exact recorded bytes,
-            # recovered from this repository's git history by content hash, count. The path itself is not read.
-            if repo_inputs.recover(profile["path"], profile.get("sha256"), manifest.get("git")) is None:
-                problems.append(f"profile {p}: missing or not a regular file")
+        gone = p.is_symlink() or not p.is_file()
+        # A removed or foreign worktree (outside this checkout and the read roots): only the exact recorded bytes,
+        # recovered from this repository's git history by content hash, bind the job, and the path is never opened.
+        git_only = not p.absolute().is_relative_to(repo_inputs.checkout()) and not _readable_root(p)
+        if (gone or git_only) and repo_inputs.recover(profile["path"], profile.get("sha256"), manifest.get("git")):
+            pass
+        elif gone:
+            problems.append(f"profile {p}: missing or not a regular file")
         elif sha256_file(p) != profile.get("sha256") and not _same_character_profile(
             p, profile.get("sha256"), manifest.get("git"), _bound_character(job, manifest)
         ):

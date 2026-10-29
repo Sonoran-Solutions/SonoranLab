@@ -513,7 +513,7 @@ def _admit_profile(manifest: dict, ctx: Context, *, missing_ok: bool) -> bool:
 
 
 def _review(job: Path, ctx: Context, *, entry: dict | None = None) -> dict:
-    from sonoranlab.review import git_only_inputs, production_usable, review_errors
+    from sonoranlab.review import production_usable, review_errors
 
     if entry is not None:
         root = _job_directory(entry["job_dir"], ctx)
@@ -543,7 +543,6 @@ def _review(job: Path, ctx: Context, *, entry: dict | None = None) -> dict:
             }
 
     # Locate using the import evidence; callers never follow a newly edited animate pointer.
-    git_only: set[str] = set()
     manifest_path = job / "manifest.json"
     if manifest_path.exists():
         try:
@@ -553,18 +552,21 @@ def _review(job: Path, ctx: Context, *, entry: dict | None = None) -> dict:
                 raise
         else:
             profile = manifest.get("profile")
-            # Missing provenance is reported by the review layer as an invalid binding.
-            valid = isinstance(profile, dict) and isinstance(profile.get("path"), str)
-            if valid and _admit_profile(manifest, ctx, missing_ok=True):
-                git_only.add(profile["path"])
-    with git_only_inputs(git_only):
-        problems = review_errors(job)
-        usable = production_usable(job)
+            # Missing provenance is reported by the review layer as an invalid binding; an outside profile binds
+            # there only through its recorded bytes in git (review._provenance never opens it).
+            if isinstance(profile, dict) and isinstance(profile.get("path"), str):
+                _admit_profile(manifest, ctx, missing_ok=True)
+    problems = review_errors(job)
+    usable = production_usable(job)
     exists = (job / "review.json").exists() or (job / "review.json").is_symlink()
     state = "none" if not exists else "pass" if usable else "invalid"
     if exists and {p["code"] for p in problems} == {"REVIEW_NOT_PASS"}:
         state = "fail"
     return {"production_usable": usable, "review_state": state, "problems": problems}
+
+
+def _same_binding(a: dict, b: dict) -> bool:
+    return a.get("path") == b.get("path") and a.get("sha256") == b.get("sha256")
 
 
 def _confine_profile_templates(source: Path) -> None:
@@ -610,8 +612,12 @@ def import_job(project: str, character: str, job_dir: str, *, ctx: Context) -> d
     from sonoranlab.profile import load_profile
 
     provenances = [provenance, manifest["profile"]] if manifest else [provenance]
-    rev = manifest.get("git") if manifest else None  # animate.json records no commit; its final job's manifest does
     for binding in provenances:
+        # animate.json records its own repo_rev; borrow the final manifest's commit only for an identical binding.
+        if manifest and _same_binding(binding, manifest["profile"]):
+            rev = manifest.get("git")
+        else:
+            rev = animate["inputs"].get("repo_rev") if animate else None
         source_profile = Path(binding["path"])
         _protected(source_profile, ctx)
         if source_profile.resolve() != profile.path.resolve():

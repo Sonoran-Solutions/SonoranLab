@@ -1,6 +1,11 @@
 """Imported profile templates are confined before the loader follows them."""
 
+import builtins
+import hashlib
 import json
+import os
+import shutil
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -85,27 +90,41 @@ def test_historical_profile_with_relative_template_is_imported(setup, job, monke
     assert result["artifact_id"].startswith("import-")
 
 
-def _outside_committed_profile(job, monkeypatch, tmp_path_factory, edit=None):
-    """The job's profile lives outside the read roots (a removed or foreign worktree) and in this repo's git."""
-    import hashlib
-    import subprocess
+def _repo_with(root, *versions):
+    """A repository standing in for this one: one commit per profile version at profiles/toy.yaml; returns the revs."""
+    git = ["git", "-C", str(root), "-c", "user.name=t", "-c", "user.email=t@t"]
+    (root / "profiles").mkdir(parents=True)
+    subprocess.run([*git, "init", "-q"], check=True)
+    revs = []
+    for text in versions:
+        (root / "profiles/toy.yaml").write_text(text)
+        subprocess.run([*git, "add", "-A"], check=True)
+        subprocess.run([*git, "commit", "-qm", "p"], check=True)
+        revs.append(subprocess.run([*git, "rev-parse", "HEAD"], check=True, capture_output=True, text=True).stdout)
+    return [rev.strip() for rev in revs]
 
+
+def _sha(text):
+    return hashlib.sha256(text.encode()).hexdigest()
+
+
+def _outside_committed_profile(job, monkeypatch, tmp_path_factory, edit=None):
+    """The job's profile lives outside the read roots and this checkout (a removed or foreign worktree); this repo's
+    git holds the same bytes under the same path suffix."""
     from sonoranlab import repo_inputs
 
     manifest_path = job / "manifest.json"
     manifest = json.loads(manifest_path.read_text())
-    repo = tmp_path_factory.mktemp("outside-read-roots") / "wt"
-    (repo / "profiles").mkdir(parents=True)
     data = yaml.safe_load(Path(manifest["profile"]["path"]).read_text())
     if edit:
         edit(data)
-    profile = repo / "profiles/toy.yaml"
-    profile.write_text(yaml.safe_dump(data))
-    git = ["git", "-C", str(repo), "-c", "user.name=t", "-c", "user.email=t@t"]
-    for args in (["init", "-q"], ["add", "-A"], ["commit", "-qm", "p"]):
-        subprocess.run([*git, *args], check=True)
-    rev = subprocess.run([*git, "rev-parse", "HEAD"], check=True, capture_output=True, text=True).stdout.strip()
-    manifest["profile"] = {"path": str(profile), "sha256": hashlib.sha256(profile.read_bytes()).hexdigest()}
+    text = yaml.safe_dump(data)
+    repo = tmp_path_factory.mktemp("repo")
+    (rev,) = _repo_with(repo, text)
+    profile = tmp_path_factory.mktemp("outside-read-roots") / "wt/profiles/toy.yaml"
+    profile.parent.mkdir(parents=True)
+    profile.write_text(text)
+    manifest["profile"] = {"path": str(profile), "sha256": _sha(text)}
     manifest["git"] = rev
     manifest_path.write_text(json.dumps(manifest))
     monkeypatch.setattr(repo_inputs, "_REPO", repo)
@@ -126,6 +145,14 @@ def test_import_admits_an_outside_profile_only_through_git_and_never_opens_it(
             return _original(path, *args, **kwargs)
 
         monkeypatch.setattr(Path, name, guard)
+    original_open = builtins.open
+
+    def guarded_open(path, *args, **kwargs):
+        if isinstance(path, (str, os.PathLike)):
+            assert Path(path).resolve() != profile.resolve(), "outside profile opened"
+        return original_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "open", guarded_open)
     result = registry.import_job("toy", "hero", str(job), ctx=ctx)
     assert result["artifact_id"].startswith("import-")
     review = registry.check_review(result["artifact_id"], ctx=ctx)
@@ -149,3 +176,69 @@ def test_outside_profile_without_a_git_match_is_still_refused(setup, job, monkey
     with pytest.raises(ToolError) as exc:
         registry.import_job("toy", "hero", str(job), ctx=ctx)
     assert exc.value.error["code"] == "path_refused"
+
+
+def _animate_import(job, monkeypatch, tmp_path_factory, *, versions, final, animate_binding, repo_rev=None):
+    """An animate wrapper whose final job and animate.json bind removed-worktree profiles (never on disk)."""
+    from sonoranlab import repo_inputs
+
+    base = yaml.safe_dump(
+        yaml.safe_load(Path(json.loads((job / "manifest.json").read_text())["profile"]["path"]).read_text())
+    )
+    texts = [base + suffix for suffix in versions]
+    repo = tmp_path_factory.mktemp("repo")
+    revs = _repo_with(repo, *texts)
+    gone = tmp_path_factory.mktemp("removed")
+    outer = job.parent / "animate"
+    current = shutil.copytree(job, outer / "sweep/final/job")
+    manifest = json.loads((current / "manifest.json").read_text())
+    manifest["profile"] = {"path": str(gone / "final-wt/profiles/toy.yaml"), "sha256": _sha(texts[final])}
+    manifest["git"] = revs[final]
+    (current / "manifest.json").write_text(json.dumps(manifest))
+    path, version = animate_binding
+    inputs = {
+        "profile": {"path": str(gone / path), "sha256": _sha(texts[version])},
+        "character": "hero",
+        "anim": "idle",
+    }
+    if repo_rev is not None:
+        inputs["repo_rev"] = revs[repo_rev]
+    animate = {"schema": "sonoranlab.animate/1", "outcome": "pass", "exit": 0, "inputs": inputs}
+    animate["verdict"] = {"pass": True, "job": str(current)}
+    (outer / "animate.json").write_text(json.dumps(animate))
+    monkeypatch.setattr(repo_inputs, "_REPO", repo)
+    monkeypatch.setenv("SONORANLAB_READ_ROOTS", str(job.parent))
+    return outer
+
+
+def test_differing_animate_binding_does_not_borrow_the_final_jobs_commit(setup, job, monkeypatch, tmp_path_factory):
+    ctx, _, _ = setup
+    # Same bytes, another path: not the final job's binding, and animate.json records no commit of its own.
+    outer = _animate_import(
+        job, monkeypatch, tmp_path_factory, versions=[""], final=0, animate_binding=("anim-wt/profiles/toy.yaml", 0)
+    )
+    with pytest.raises(ToolError) as exc:
+        registry.import_job("toy", "hero", str(outer), ctx=ctx)
+    assert exc.value.error["code"] == "path_refused"
+
+
+def test_differing_animate_binding_recovers_at_its_own_commit(setup, job, monkeypatch, tmp_path_factory):
+    ctx, _, _ = setup
+    outer = _animate_import(
+        job,
+        monkeypatch,
+        tmp_path_factory,
+        versions=["", "# revised\n"],
+        final=1,
+        animate_binding=("anim-wt/profiles/toy.yaml", 0),
+        repo_rev=0,
+    )
+    assert registry.import_job("toy", "hero", str(outer), ctx=ctx)["artifact_id"].startswith("import-")
+
+
+def test_identical_animate_binding_uses_the_final_jobs_commit(setup, job, monkeypatch, tmp_path_factory):
+    ctx, _, _ = setup
+    outer = _animate_import(
+        job, monkeypatch, tmp_path_factory, versions=[""], final=0, animate_binding=("final-wt/profiles/toy.yaml", 0)
+    )
+    assert registry.import_job("toy", "hero", str(outer), ctx=ctx)["artifact_id"].startswith("import-")
