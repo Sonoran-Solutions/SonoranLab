@@ -55,6 +55,7 @@ from sonoranlab.repair.confine import (
     verify_destination,
 )
 from sonoranlab.repair.runtime import AsepriteConverter, no_symlinks
+from sonoranlab.review import bound_character, same_character_profile
 from sonoranlab.slice import pack_sheet, slice_sheet
 from sonoranlab.validate import read_frames, read_stills, validate
 
@@ -157,7 +158,14 @@ def _verify(repair: Path) -> tuple:
     require(exports == {k for k in doc["parent_hashes"] if k.startswith("export/")}, "parent_hash_mismatch")
     require({"report.json", "manifest.json"} <= set(doc["parent_hashes"]), "parent_hash_mismatch")
     manifest = read_json(parent / "manifest.json")
-    require(doc["profile"]["sha256"] == manifest.get("profile", {}).get("sha256"), "profile_hash_mismatch")
+    recorded = manifest.get("profile", {})
+    # The parent's recorded profile, or the repair's profile when it differs only in another character's row (the
+    # same equivalence import and prepare use: recorded bytes recovered from git, own row and shared settings equal).
+    require(
+        doc["profile"]["sha256"] == recorded.get("sha256")
+        or same_character_profile(profile_path, recorded, manifest.get("git"), bound_character(parent, manifest)),
+        "profile_hash_mismatch",
+    )
     outputs = manifest.get("outputs", {})
     require(exports == {k for k in outputs if k.startswith("export/")}, "parent_hash_mismatch")
     require(all(artifacts.sha256_file(parent / name) == outputs[name] for name in exports), "parent_hash_mismatch")
