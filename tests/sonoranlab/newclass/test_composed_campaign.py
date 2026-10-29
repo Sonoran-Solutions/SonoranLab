@@ -4,7 +4,7 @@ STAGED/READY, never INSTALLED."""
 from pathlib import Path
 
 import pytest
-from test_newclass import PASS, approved_ref, invoke, ok
+from test_newclass import PASS, approve, approved_ref, invoke, ok, register
 
 from sonoranlab import campaign
 from sonoranlab.api import call, paths
@@ -145,9 +145,7 @@ def test_delivery_refuses_an_older_revisions_sheet(lab):
 
 def test_delivery_refuses_after_the_references_change(lab):
     import numpy as np
-    from conftest import approve
     from PIL import Image
-    from test_newclass import register
 
     cid, _, _, a = _approved(lab)
     stills = lab.root / "stills-v2"
