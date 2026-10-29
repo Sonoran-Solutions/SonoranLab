@@ -118,7 +118,7 @@ Fall mode (ADR-0008 addendum 2026-10-29; animation `validator_mode: fall`, `loop
 | `foot_slide` | gated on frame 0 only; later contact frames reported | ≤ `max_foot_slide_px` | fail (frame 0) |
 | `bbox_drift` | gated value = max(\|Δ bottom edge\|, \|Δ core bbox centre x\|) vs the previous frame; top/left/right edges over the limit are warnings | ≤ `max_bbox_drift_px` | fail / warn |
 | `fall_final` | the last frame's bbox lies inside `canvas.padding` and registration clipped none of its pixels | exact | fail |
-| `fall_hold` | `frame_delta(last − 1, last)`: share of the pair's opaque union whose alpha or colour differs | ≤ 0.10 (`FALL_HOLD_MAX_DELTA`) | fail |
+| `fall_hold` | `silhouette_delta(last − 1, last)`: share of the pair's opaque union whose opacity differs (shape; colour shimmer of a resting Track E body is ignored) | ≤ 0.02 (`FALL_HOLD_MAX_DELTA`; owner 2026-10-29, calibrated on approved idles: ≤ 0.011) | fail |
 | `static_clip` | every frame equals frame 0 (the game's `--pixel-check` repeated-still rule) | — | fail |
 
 ## Where the numbers come from

@@ -93,8 +93,10 @@ In fall mode, and only there:
 - `bbox_drift` is gated on the bottom edge and on the body core's centre x (same `max_bbox_drift_px`; 25 for gun);
   the top/left/right edges are reported as warnings, not gated.
 - New gates per direction: `fall_final` (the last frame lies inside the cell padding and registration clipped none of
-  its pixels), `fall_hold` (the held last frame is settled: `frame_delta(second-to-last, last)` — the share of the
-  pair's opaque union whose alpha or colour differs — is at most 0.10) and `static_clip` (not every frame equals frame
+  its pixels), `fall_hold` (the held last frame is settled: `silhouette_delta(second-to-last, last)` — the share of
+  the pair's opaque union whose opacity differs — is at most 0.02; amended 2026-10-29 by the owner, "Silhouette <= 2%",
+  after live seeds showed the first rule (alpha or colour, 0.10) fails even approved idles, whose resting frames
+  differ 24–38% in colour from re-quantisation but at most 1.1% in silhouette) and `static_clip` (not every frame equals frame
   0, mirroring the game's `--pixel-check` refusal of a repeated-still death row).
 - `opaque_area_cv` stays a warning; the loop rules already do not run for loop=False. No limit is loosened and no
   other clip's rules change. `cast` uses the gun's existing gates unchanged.
