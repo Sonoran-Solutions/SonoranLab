@@ -698,3 +698,93 @@ def test_shipped_relay_sentinel_triggers_no_hover_warning():
         max_colours=prof.palette.max_colors_per_cell, loop=anim.loop, anchor_mode=spec.anchor_mode,
     )  # fmt: skip
     assert rep["pass"] and not [w for w in rep["warnings"] if w.startswith("hover")], rep["warnings"]
+
+
+# ---------------------------------------------------------------- validator_mode fall (ADR-0008 fall addendum)
+
+FALL_PAL = np.array([(17, 13, 12), (200, 40, 40)], np.uint8)
+FALL_LIMITS = SimpleNamespace(
+    max_foot_slide_px=0.25, max_bbox_drift_px=2, opaque_area_cv_warn=10.0, loop_closure_ratio_warn=1.29
+)
+# (x0, x1, y0) of a body standing on row 28 of a 32 px cell, tipping over: the top drops 3 px a frame (> the 2 px
+# limit) and the half-pixel centre of the wider poses moves the foot 0.5 px (> 0.25); bottom and core centre stay.
+FALL_POSES = [(14, 17, 13), (13, 18, 16), (12, 20, 19), (10, 21, 22), (8, 23, 25), (8, 23, 25)]
+
+
+def fall_frame(x0: int, x1: int, y0: int, colour: int = 1) -> np.ndarray:
+    f = np.zeros((32, 32, 4), np.uint8)
+    f[y0:29, x0 : x1 + 1] = (*FALL_PAL[colour], 255)
+    return f
+
+
+def fall_validate(frames: list[np.ndarray], mode: str | None = "fall", **kw) -> dict:
+    args = {
+        "cell": (32, 32),
+        "frames": len(frames),
+        "directions": ["east"],
+        "palette": FALL_PAL,
+        "foot_y": 28,
+        "anchor_x": 16,
+        "padding": 2,
+        "limits": FALL_LIMITS,
+        "max_colours": 4,
+        "loop": False,
+        "validator_mode": mode,
+    }
+    return validate({"east": frames}, **(args | kw))
+
+
+def test_fall_mode_passes_a_falling_figure_the_default_rules_reject():
+    frames = [fall_frame(*p) for p in FALL_POSES]
+    default = fall_validate(frames, mode=None)
+    assert {m.split(":")[0] for m in default["failures"]} == {"bbox_drift", "foot_slide"}  # what a fall must do
+    assert "validator_mode" not in default and "fall_hold_max_delta" not in default["limits"]  # default unchanged
+    rep = fall_validate(frames)
+    assert rep["pass"], rep["failures"]
+    assert rep["validator_mode"] == "fall" and rep["limits"]["fall_hold_max_delta"] == 0.10
+    assert any("top edge moved 3px" in w and "not gated" in w for w in rep["warnings"])  # reported, not gated
+    fall = rep["directions"]["east"]["fall"]
+    assert fall == {
+        "drift_max": 0.5,
+        "foot_slide_frame0": 0.0,
+        "hold_delta": 0.0,
+        "final_inside": True,
+        "static": False,
+    }
+    assert rep["directions"]["east"]["foot_slide_max"] == 0.5  # later frames still reported
+
+
+def test_fall_mode_still_gates_frame0_foot_bottom_edge_and_core_centre():
+    shifted = [fall_frame(15, 18, 13), *[fall_frame(*p) for p in FALL_POSES[1:]]]
+    assert any(m.startswith("foot_slide: frame 0 ") for m in fall_validate(shifted)["failures"])
+    frames = [fall_frame(*p) for p in FALL_POSES]
+    frames[3] = fall_frame(13, 24, 22)  # core centre jumps 2.5 px right, then back
+    msgs = [m for m in fall_validate(frames)["failures"] if m.startswith("bbox_drift")]
+    assert len(msgs) == 2 and all("(fall)" in m for m in msgs)
+
+
+@pytest.mark.parametrize(
+    "case, rule",
+    [("clipped", "fall_final"), ("in_padding", "fall_final"), ("not_settled", "fall_hold"), ("static", "static_clip")],
+)
+def test_fall_gates_fail(case, rule):
+    frames = [fall_frame(*p) for p in FALL_POSES]
+    kw = {}
+    if case == "clipped":
+        kw["registration"] = {"east": {"clipped_px": [0, 0, 0, 0, 0, 3], "shift_px": [0, 0]}}
+    elif case == "in_padding":
+        frames[5] = fall_frame(8, 23, 25)
+        frames[5][25:29, 30] = (*FALL_PAL[0], 255)  # an arm reaches into the right padding
+    elif case == "not_settled":
+        frames[5] = fall_frame(8, 23, 25, colour=0)  # same silhouette, every pixel recoloured: still moving
+    else:
+        frames = [fall_frame(*FALL_POSES[0])] * 6
+    rep = fall_validate(frames, **kw)
+    assert not rep["pass"] and any(m.startswith(f"{rule}: east") for m in rep["failures"]), rep["failures"]
+
+
+def test_fall_mode_needs_a_non_looping_clip():
+    with pytest.raises(ValueError, match="fall needs loop=False"):
+        fall_validate([fall_frame(*p) for p in FALL_POSES], loop=True)
+    with pytest.raises(ValueError, match="validator_mode"):
+        fall_validate([fall_frame(*p) for p in FALL_POSES], mode="hold")

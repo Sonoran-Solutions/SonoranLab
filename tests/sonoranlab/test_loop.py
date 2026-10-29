@@ -8,7 +8,7 @@ import numpy as np
 import pytest
 from PIL import Image
 
-from sonoranlab.loop import select_loop, write_loop
+from sonoranlab.loop import end_rule, select_loop, select_once, write_loop
 
 SCRIPT = Path(__file__).resolve().parents[2] / "benchmark/tools/select_loop.py"
 PERIOD = 8
@@ -70,3 +70,76 @@ def test_too_short_clip(tmp_path: Path) -> None:
     files = make_clip(tmp_path / "clip", n=10)
     with pytest.raises(ValueError, match="too short"):
         select_loop(files, n_frames=7, size=64)
+
+
+# ---------------------------------------------------------------- select_once (loop: false clips)
+
+
+def once_clip(kind: str, n: int = 33) -> list[Image.Image]:
+    """Tiny synthetic Track E clips. cast: still 0-5, the arm rises to frame 14, holds, is back at rest from 24.
+    fall: still 0-4, the body tips over 5-15 and lies still from 16. drift: never settles (slides 1 px per frame)."""
+    frames = []
+    for i in range(n):
+        a = np.zeros((64, 64, 4), np.uint8)
+        if kind == "cast":
+            a[20:60, 28:36] = (200, 40, 40, 255)  # body
+            lift = 0 if i <= 5 or i >= 24 else min(i - 5, 9, 24 - i) * 2
+            a[30 - lift : 36 - lift, 36:50] = (30, 60, 220, 255)  # arm/rifle
+        elif kind == "fall":
+            t = min(max(i - 5, 0), 10) / 10
+            h, w = round(40 - 32 * t), round(8 + 32 * t)
+            a[60 - h : 60, 32 - w // 2 : 32 - w // 2 + w] = (200, 40, 40, 255)
+        else:
+            a[20:60, 10 + i : 18 + i] = (200, 40, 40, 255)
+        frames.append(Image.fromarray(a))
+    return frames
+
+
+def test_select_once_cast_returns_near_the_start_pose_golden() -> None:
+    pick = select_once(once_clip("cast"), n_frames=8, size=48, end="return")
+    assert pick.end["peak"] in range(8, 16) and pick.end["search"] == [pick.end["peak"] + 1, 32]
+    assert pick.period == 24 and pick.end["end"] == 24 and pick.end["end_delta"] == 0.0  # first frame back at rest
+    assert pick.picks == [0, 3, 7, 10, 14, 17, 21, 24]  # golden: frame 0 + 7 even steps up to E
+    assert (pick.start, pick.window, pick.loop_seam_score) == (0, "return", 0.0)
+
+
+def test_select_once_return_ignores_the_unmoved_run_up() -> None:
+    # frames 1..5 equal frame 0 (delta 0): without the peak rule E = n_frames would pick a clip that never moves
+    pick = select_once(once_clip("cast"), n_frames=4, size=48, end="return")
+    assert pick.period > pick.end["peak"] >= 4
+
+
+def test_select_once_fall_ends_when_motion_settles_golden() -> None:
+    pick = select_once(once_clip("fall"), n_frames=6, size=48, end="settle")
+    assert pick.end["settled"] is True and pick.end["end"] == 15  # the last tipping step ends at frame 15
+    assert pick.picks == [0, 3, 6, 9, 12, 15]  # golden
+    assert pick.loop_seam_score > 0 and len(pick.end["steps"]) == 32
+
+
+def test_select_once_fall_that_never_settles_uses_the_last_frame() -> None:
+    pick = select_once(once_clip("drift"), n_frames=6, size=48, end="settle")
+    assert pick.end["settled"] is False and pick.picks[-1] == 32 and pick.picks[0] == 0
+
+
+def test_select_once_bounds_and_loop_json(tmp_path: Path) -> None:
+    clip = once_clip("cast")
+    assert select_once(clip, n_frames=8, size=48, end="return", max_end=20).picks[-1] <= 20
+    with pytest.raises(ValueError, match="end rule"):
+        select_once(clip, n_frames=8, size=48, end="loop")
+    with pytest.raises(ValueError, match="too short"):
+        select_once(clip[:8], n_frames=8, size=48, end="return")
+    write_loop(select_once(clip, n_frames=8, size=48, end="return"), clip, tmp_path / "once", "east")
+    info = json.loads((tmp_path / "once/loop.json").read_text())
+    assert info["window"] == "return" and info["end"]["end"] == 24 and info["picks"][0] == 0
+    files = make_clip(tmp_path / "loop")
+    write_loop(select_loop(files, n_frames=7, size=64), files, tmp_path / "loopout", "east")
+    assert "window" not in json.loads((tmp_path / "loopout/loop.json").read_text())  # loop clips: unchanged json
+
+
+def test_end_rule_is_explicit() -> None:
+    from sonoranlab.profile import Animation
+
+    assert end_rule(Animation(6, 10, True)) is None
+    assert end_rule(Animation(8, 10, False)) == "return"
+    assert end_rule(Animation(6, 8, False, hold_last=True)) == "return"  # hold_last never implies fall
+    assert end_rule(Animation(6, 8, False, hold_last=True, validator_mode="fall")) == "settle"

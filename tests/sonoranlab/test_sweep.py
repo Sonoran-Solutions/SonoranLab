@@ -461,3 +461,31 @@ def test_generation_cli_refuses_under_budget(tmp_path, capsys, monkeypatch, trac
     monkeypatch.setattr(subprocess, "run", lambda *a, **kw: pytest.fail("under-budget request must not run"))
     assert main(["sweep", "run", "--requests", str(path), "--repo", str(tmp_path), "--need-gib", need]) == 2
     assert f"Track {track} needs {minimum} GiB" in capsys.readouterr().err
+
+
+def test_plan_generation_prompt_motion(tmp_path):
+    """A non-run clip with the profile's prompt_motion gets that motion; run and motion-less clips are unchanged."""
+    stills = tmp_path / "stills"
+    stills.mkdir()
+    Image.fromarray(figure("east", 0)).save(stills / "still_east.png")
+
+    def prompt(anim, motion, name):
+        p = sweep.plan_generation("hero", anim, ["east"], [1], stills, tmp_path / name, motion=motion)[0]
+        return json.loads(p.read_text())["prompt"]
+
+    tail = " Static camera, flat solid #808080 background, 2D game sprite animation."
+    motion = "raises the rifle to the shoulder, fires one shot with a small recoil, then lowers it; feet stay planted"
+    assert prompt("cast", motion, "cast") == f"This character {motion}, facing east.{tail}"
+    assert prompt("cast", None, "plain") == f"This character performing cast in place, facing east.{tail}"
+    run = prompt("run", "ignored", "run")
+    assert run == prompt("run", None, "run2") and run.startswith("This character running in place, side view")
+
+
+def test_non_loop_clip_uses_select_once(tmp_path):
+    root = attempt(tmp_path / "attempt")
+    once = sweep.loop_candidates(root, n_frames=3, size=48, windows="steady", once="return")
+    assert len(once) == 1 and once[0].loop.window == "return" and once[0].loop.picks[0] == 0
+    loop = sweep.loop_candidates(root, n_frames=2, size=48)[0].loop
+    assert loop.window == "loop" and loop.end is None
+    with pytest.raises(ValueError, match="end rule"):
+        sweep.loop_candidates(root, n_frames=3, size=48, once="fall")

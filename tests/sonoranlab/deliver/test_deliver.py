@@ -69,15 +69,23 @@ def base_manifest(extra: dict | None = None) -> bytes:
     return (json.dumps(doc, indent=1) + "\n").encode()
 
 
+# A full class's clips as the game's table has them (loop false: no hold field), at toy frame counts.
+ANIMS = {
+    "run": {"frames": 2, "fps": 10, "loop": True},
+    "cast": {"frames": 2, "fps": 10, "loop": False, "track_default": "E"},
+    "death": {"frames": 2, "fps": 8, "loop": False, "hold_last": True, "track_default": "E", "validator_mode": "fall"},
+}
+
+
 @pytest.fixture(scope="module")
 def world(tmp_path_factory):
     """Two real passing clip jobs (pipeline.run on the toy character, slow: built once), the stills, a synthetic game
     repo at one revision and a class request."""
     root = tmp_path_factory.mktemp("world")
-    prof = toy_profile(root, lambda d: d["animations"].update(run={"frames": 2, "fps": 10, "loop": True}))
+    prof = toy_profile(root, lambda d: d["animations"].update(ANIMS))
     raw, stills = raw_set(root), stills_dir(root)
     jobs = {}
-    for anim in ("idle", "run"):
+    for anim in ("idle", "run", "cast", "death"):
         assert process(raw, prof, root / anim, "--stills", str(stills), anim=anim) == 0
         jobs[anim] = root / anim
     game = root / "game-src"
@@ -99,8 +107,8 @@ def world(tmp_path_factory):
     return {"root": root, "profile": prof, "jobs": jobs, "stills": stills, "game": game, "rev": rev, "request": request}
 
 
-def run_compose(world, out: Path, stills: Path | None = None) -> int:
-    clips = ",".join(f"{n}={world['jobs'][n]}" for n in ("idle", "run"))
+def run_compose(world, out: Path, stills: Path | None = None, names=("idle", "run")) -> int:
+    clips = ",".join(f"{n}={world['jobs'][n]}" for n in names)
     argv = ["compose", "--profile", str(world["profile"]), "--character", "hero", "--clips", clips]
     return main([*argv, "--stills", str(stills or world["stills"]), "--out", str(out)])
 
@@ -179,6 +187,48 @@ def test_compose_happy_path(world, tmp_path, capsys):
     record_review(job, **PASS)  # the owner's 1x review binds to the composed sheet
     assert production_usable(job)
     assert run_compose(world, job) == 2  # exclusive
+
+
+def test_compose_and_build_a_four_clip_class(world, tmp_path, capsys):
+    """idle, run, cast, death: start columns follow the clips, west rows mirror east, the clip table carries no hold
+    field (a non-loop clip holds its last frame in the game) and a request listing all four is delivered complete."""
+    job = tmp_path / "composed"
+    assert run_compose(world, job, names=("idle", "run", "cast", "death")) == 0, capsys.readouterr().err
+    side = json.loads((job / "export" / "hero" / "hero.sonoranlab.json").read_text())
+    entry = side["characters_json_entry"]
+    assert entry["columns"] == 9 and entry["clips"] == [
+        {"name": "idle", "start": 1, "frames": 2, "fps": 5, "loop": True},
+        {"name": "run", "start": 3, "frames": 2, "fps": 10, "loop": True},
+        {"name": "cast", "start": 5, "frames": 2, "fps": 10, "loop": False},
+        {"name": "death", "start": 7, "frames": 2, "fps": 8, "loop": False},
+    ]
+    report = json.loads((job / "report.json").read_text())
+    assert report["pass"] and report["clips"]["death"]["validator_mode"] == "fall"
+    assert "validator_mode" not in report["clips"]["cast"]
+    sheet = np.asarray(Image.open(job / "export" / "hero" / "hero.png").convert("RGBA"))
+    assert sheet.shape == (8 * 24, 9 * 24, 4)
+    for west, east in MIRROR.items():
+        w, e = (sheet[ORDER.index(r) * 24 : (ORDER.index(r) + 1) * 24, 24:] for r in (west, east))
+        for c in range(8):
+            assert np.array_equal(w[:, c * 24 : (c + 1) * 24], e[:, c * 24 : (c + 1) * 24][:, ::-1]), (west, c)
+    record_review(job, **PASS)
+    request = tmp_path / "request.yaml"
+    doc = yaml.safe_load(world["request"].read_text()) | {"clips": ["run", "idle", "cast", "death"]}
+    request.write_text(yaml.safe_dump(doc))
+    assert main(build_args(world, job, tmp_path / "bundle", **{"--request": request})) == 0
+    bundle = bundle_doc(tmp_path / "bundle")
+    assert bundle["known_missing_clips"] == []
+    hero = json.loads((tmp_path / "bundle" / "files" / "sprites" / "characters.json").read_bytes())["characters"][
+        "hero"
+    ]
+    assert hero["columns"] == 9 and [list(c) for c in hero["clips"]] == [["name", "start", "frames", "fps", "loop"]] * 4
+    # a request listing a clip the sheet lacks is refused
+    assert main(build_args(world, job, tmp_path / "b2", **{"--request": world["request"]})) == 0
+    two = tmp_path / "two"
+    assert run_compose(world, two) == 0
+    record_review(two, **PASS)
+    assert main(build_args(world, two, tmp_path / "b3", **{"--request": request})) == 2
+    assert "requires clips ['cast', 'death']" in capsys.readouterr().err
 
 
 def test_compose_refuses_stills_that_differ_from_the_jobs(world, tmp_path, capsys):
