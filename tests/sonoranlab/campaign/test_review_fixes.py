@@ -173,3 +173,53 @@ def test_owner_delivery_record_refuses_a_bundle_built_from_another_request(lab, 
     argv = ["campaign", "owner-decision", "--campaign", cid, "--kind", "delivery", "--ref", "b-old"]
     assert main([*argv, "--state", "ready_to_install", "--verbatim", "late record"]) != 0
     assert "another revision's request" in capsys.readouterr().out
+
+
+def test_adding_clips_keeps_the_other_clips_selections_current(lab, monkeypatch, capsys):
+    """Gun cast/death (owner 2026-10-29): a revision that adds clips to the request and Track E overrides of those
+    clips to the character row keeps the existing clips' candidates and selections current (the request's clip list
+    is plan-only, the row is bound per clip); the new clips get the owner's 3-seed budget. Changing a bound input of
+    the existing clip still invalidates it."""
+    import yaml
+
+    profile = lab["ctx"].repo / "profiles/toy.yaml"
+    data = yaml.safe_load(profile.read_text())
+    data["animations"]["death"] = {"frames": 2, "fps": 8, "loop": False, "hold_last": True}  # not Track E yet
+    profile.write_text(yaml.safe_dump(data))
+    cid = create(lab)
+    job_id = ok(submit(lab, cid))["job_id"]
+    run(job_id, monkeypatch)
+    ok(api(lab, "campaign_decide", campaign_id=cid, job_id=job_id, decision="selected", reason="good"))
+    data["characters"]["hero"]["animations"] = {"death": {"track_default": "E", "validator_mode": "fall"}}
+    profile.write_text(yaml.safe_dump(data))
+    assert status(lab, cid)["gate"]["state"] == "NEEDS_OWNER_INPUT"  # a profile edit still needs a revision
+    request = lab["request"] | {"clips": ["idle", "death"]}
+    revised = ok(
+        api(
+            lab,
+            "campaign_create",
+            project="toy",
+            request=request,
+            reference_id=lab["ref"],
+            revise=cid,
+            max_seeds_per_clip=3,
+            budget_decision_ref="owner 2026-10-29: <=3 seeds per clip",
+        )
+    )
+    assert revised["created"] and revised["revision"] == 2 and revised["budget"]["death"] == 3
+    view = status(lab, cid)
+    idle, death = view["clips"]["idle"], view["clips"]["death"]
+    assert idle["selected"] == job_id and idle["attempts"][0]["current"] is True
+    assert idle["state"] == "AWAITING_OWNER_REVIEW" and idle["budget"]["consumed"] == 1
+    assert death["in_plan"] and death["state"] == "READY" and death["budget"]["base"] == 3
+    second = ok(api(lab, "campaign_submit", campaign_id=cid, clip="death"))
+    assert manager.get(second["job_id"])["anim"] == "death"
+    assert run(second["job_id"], monkeypatch)["state"] == "succeeded"
+    assert status(lab, cid)["clips"]["death"]["state"] == "TECHNICAL_PASS"
+    # the existing clip's own animation entry is bound: changing it makes its candidates stale
+    data["characters"]["hero"]["animations"]["idle"] = {"fps": 4}
+    profile.write_text(yaml.safe_dump(data))
+    ok(api(lab, "campaign_create", project="toy", request=request, reference_id=lab["ref"], revise=cid))
+    idle = status(lab, cid)["clips"]["idle"]
+    assert idle["selected"] is None and idle["attempts"][0]["current"] is False
+    assert status(lab, cid)["clips"]["death"]["candidates"]  # death's binding did not change
