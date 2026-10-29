@@ -104,6 +104,14 @@ characters:
     anchor_mode: foot
     max_attempts_per_animation: 6   # owner 2026-10-28: "(a) raise max_attempts_per_animation for gun's run to 6"
                                     #   (row-level: also raises gun idle's attempt cap; its campaign budget stays 3)
+    animations:             # owner 2026-10-29 (ADR-0011 amendment): gun-only Track E cast (shoot) and death
+      cast:
+        track_default: E
+        prompt_motion: "raises the rifle to the shoulder, fires one shot with a small recoil, then lowers it; feet stay planted"
+      death:
+        track_default: E
+        validator_mode: fall    # ADR-0008 fall addendum; explicit, never inferred from hold_last
+        prompt_motion: "is hit, staggers and collapses to the ground, ending lying still"
     max_foot_slide_px: 30
     max_bbox_drift_px: 25
     opaque_area_cv_warn: 0.13
