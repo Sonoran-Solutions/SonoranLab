@@ -496,8 +496,8 @@ def _edited_parent_profile(fixture, monkeypatch, tmp_path_factory, edit, report_
     for args in (["init", "-q"], ["add", "-A"], ["commit", "-qm", "p"]):
         subprocess.run([*git, *args], check=True)
     rev = subprocess.run([*git, "rev-parse", "HEAD"], check=True, capture_output=True, text=True).stdout.strip()
-    write(job / "report.json", {"pass": True, "character": report_character})
     manifest = read_json(job / "manifest.json")
+    write(job / "report.json", {"pass": True, "character": report_character, "animation": manifest["animation"]})
     manifest["profile"] = {"path": str(profile.path), "sha256": sha256_file(profile.path)}
     manifest["git"] = rev
     manifest["outputs"]["report.json"] = sha256_file(job / "report.json")
