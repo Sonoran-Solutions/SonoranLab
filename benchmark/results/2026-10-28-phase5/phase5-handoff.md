@@ -1,8 +1,56 @@
 # Phase 5 senior-review handoff — New-class orchestration and game-ready asset delivery (DYL-123..135)
 
-**Status: READY_FOR_SENIOR_REVIEW**, with the NEEDS_OWNER_INPUT items in §11. Nothing is merged, auto-merge is off,
+**Status: REVISED after senior review — READY_FOR_SENIOR_RE-REVIEW** (§0). Nothing is merged, auto-merge is off,
 Phase 6 is not started, no artwork was approved on the owner's behalf (every approval below quotes the owner), and
-the production game checkout was never written.
+the production game checkout was never written. Game installation: **HOLD**.
+
+## 0. Revision after senior review (2026-10-29)
+
+Senior verdict: REVISE before merge (P1 in #62/#63); Phase 5 engineering GO conditional; installation HOLD. The owner
+(verbatim): "Make the required revisions from senior review, and record that I agree with the reviewer's answers to
+the open questions for me".
+
+**P1 — delivery bound to the campaign's current approved artwork** (PR #65, `53182b4`, `ba54300`, test import fix `4d8d34a`):
+- `campaign.check_delivery()`: the composed job must be one of this campaign's owner-approved sheets for its
+  current inputs (reference hashes, character row, request apart from the delivery-only `height_m`), and must
+  contain exactly the current selection of every planned clip. `BuildDelivery._inputs` calls it at submission.
+- At execution, `run()` holds the campaign's mutation lock from the check until the bundle is written, so no
+  decision or revision can land in between. It builds from the same snapshot it validated against the frozen
+  input hashes.
+- Campaign readiness (STAGED/READY) counts only bundles of sheets that contain the current selections.
+- Regressions, each shown to fail without its fix where applicable:
+  - an older revision's sheet;
+  - changed references;
+  - an owner-approved sheet composed outside the campaign;
+  - a revision between submission and execution;
+  - the permitted height-only revision;
+  - the lock blocking a revision during a build;
+  - readiness ignoring a superseded selection's bundle.
+- An independent Codex review of the first fix found the race, the double read and the readiness gap. All three
+  are fixed in `ba54300`.
+- The three existing bundles were built before this check. Re-checked read-only on the live checkout at `3a2eac4`,
+  `check_delivery` accepts each bundle's sheet for its campaign (gun rev 2, thief rev 2, engineer rev 3), and all
+  three campaigns still derive READY_TO_INSTALL under the stricter readiness rule. They are superseded anyway by the
+  rebuild in O11. (A first attempt ran the check from the integration worktree's code; the profile then resolved to
+  that worktree's path, so the clip jobs didn't count as current and all three were refused. Not a product finding.)
+
+**Owner decisions recorded** (ADR-0011's decision table, PR #53 `af6d7f3`; run `owner-decisions.log`):
+- ADR-0010 accepted, with an amendment recording what Phase 4 shipped. ADR-0011 accepted with amendments:
+  - its scope is visual asset delivery only;
+  - installation is a separate authorization;
+  - the 60-minute criterion is not declared passed for any class;
+  - the decision table now records the decisions actually made.
+- DYL-132 retargeted to a disposable copy of an approved Phase 5 thief job.
+- Installs on HOLD. They need a rebuild at the current game revision in a fresh private snapshot, a combined
+  retest, and a separate authorization per bundle, in the order thief, engineer, gun.
+- Missing cast/death: game-side fallbacks (with runtime tests) short term, dedicated clips long term.
+- Content-hash provenance resolver: approved and prioritized.
+- Gun's dark-colour shift: investigate before any waiver; the tolerance stays 6.
+
+None of these is executed by this revision. They are follow-up work under the recorded decisions.
+
+**Revised tested tree:** `p5/integration` @ `5631ec8` (code; plus this evidence). Full-suite result: see the
+addendum at the end of §5.
 
 ## 1. Outcome
 
@@ -40,7 +88,7 @@ INSTALLED (owner only).
 | Order | PR | Head branch @ sha | Base |
 |---|---|---|---|
 | 1 | #52 | p5/dyl-124-runner-race @ a2e9e64 | main (b42317f) |
-| 2 | #53 | p5/dyl-123-contract @ 1043351 | main |
+| 2 | #53 | p5/dyl-123-contract @ af6d7f3 | main |
 | 3 | #54 | p5/dyl-125-birefnet-provenance @ ad92e9d | main |
 | 4 | #55 | p5/dyl-126-character-history @ e22db92 | main |
 | 5 | #56 | p5/dyl-127-pose-control @ 28e3c6b | #54 |
@@ -52,7 +100,7 @@ INSTALLED (owner only).
 | 11 | #62 | p5/dyl-130-new-class-skill @ 71fd442 | p5/base/eec2d79 |
 | 12 | #63 | p5/dyl-129b-composed-review @ e37856e | p5/base/dd73493 |
 | 13 | #64 | p5/gun-attempt-limit @ 9198158 | p5/base/abb1c97 |
-| 14 | #65 | p5/live-run-fixes @ b41d487 | p5/base/f550c4c |
+| 14 | #65 | p5/live-run-fixes @ 4d8d34a | p5/base/f550c4c |
 
 `p5/base/<sha>` branches are snapshots of `p5/integration` at the commit each later branch was cut from, so each PR
 shows only its own commits. The integration merges resolved conflicts in `cli.py`, `api/tools/__init__.py`, docs/06
@@ -88,6 +136,11 @@ fakes leaked into the smoke tests through the test-only executor override, which
 Focused runs during the phase: profile 159, campaign 33, generation 59, review 203, deliver 29, newclass 20, repair
 428, registry 65, smoke 45 (+1 skip), validate 94. Hosted CI: PRs #52–#55 green; #56–#65 tests job green, package
 job reported on each PR; the combined-check PR's CI result is recorded on that PR.
+
+**Addendum — revised tree `5631ec8` (2026-10-29, `fullsuite` attempt 4, 1148 s):** ruff clean; `tests` (ops) 147
+passed; `tests/sonoranlab` one process **1981 passed, 1 skipped** (the same opt-in real-Godot test, not a pass).
+Attempt 3 (on `3a2eac4`) failed one new test: it imported `approve` from the bare `conftest` inside the function,
+which in a single-process run resolves to another directory's conftest. Fixed in `4d8d34a`; preserved.
 
 ## 6. Closure of the three Phase 4 findings
 
@@ -136,7 +189,7 @@ Track C; GTT credit off; ComfyUI in `strix-ai` stopped by the owner, no service 
 under the host heavy-job lock, one at a time (it waited for another project's campaign twice). Memory sampling unit
 `sonoranlab-p5-sampler3` (5 s, host-wide) — per-attempt memory NOT_MEASURED.
 
-## 11. NEEDS_OWNER_INPUT
+## 11. NEEDS_OWNER_INPUT (decided 2026-10-29: see §0)
 
 1. Accept or amend **ADR-0010** and **ADR-0011** (both proposed).
 2. **DYL-132**: authorize the bounded edit on a Phase 5 class job copy, regenerate a pyromancer parent, or defer.
