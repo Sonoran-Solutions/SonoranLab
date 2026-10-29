@@ -12,12 +12,15 @@ import math
 import re
 import stat
 import subprocess
+from contextlib import contextmanager
+from contextvars import ContextVar
 from datetime import datetime
 from pathlib import Path
 from typing import Literal
 
 import yaml
 
+from sonoranlab import repo_inputs
 from sonoranlab.artifacts import require_regular_file, verify_raw, write_json
 from sonoranlab.artifacts import sha256_file as _sha256_file
 
@@ -191,6 +194,19 @@ def _bound_character(job: Path, manifest: dict) -> str | None:
     return character if isinstance(report, dict) and report.get("character") == character else None
 
 
+_GIT_ONLY: ContextVar[frozenset[str]] = ContextVar("review_git_only_inputs", default=frozenset())
+
+
+@contextmanager
+def git_only_inputs(recorded_paths: set[str]):
+    """Within this block, these recorded input paths are never opened: they bind only through git recovery."""
+    token = _GIT_ONLY.set(_GIT_ONLY.get() | frozenset(recorded_paths))
+    try:
+        yield
+    finally:
+        _GIT_ONLY.reset(token)
+
+
 def _provenance(job: Path) -> tuple[dict | None, list[str]]:
     """Check report/manifest/outputs/raw against disk; returns (binds from the current disk state, problems)."""
     problems: list[str] = []
@@ -229,8 +245,11 @@ def _provenance(job: Path) -> tuple[dict | None, list[str]]:
         problems.append("manifest.json has no profile path")
     else:
         p = Path(profile["path"])
-        if p.is_symlink() or not p.is_file():
-            problems.append(f"profile {p}: missing or not a regular file")
+        if profile["path"] in _GIT_ONLY.get() or p.is_symlink() or not p.is_file():
+            # Gone (e.g. a removed worktree) or not readable under the caller's roots: only the exact recorded bytes,
+            # recovered from this repository's git history by content hash, count. The path itself is not read.
+            if repo_inputs.recover(profile["path"], profile.get("sha256"), manifest.get("git")) is None:
+                problems.append(f"profile {p}: missing or not a regular file")
         elif sha256_file(p) != profile.get("sha256") and not _same_character_profile(
             p, profile.get("sha256"), manifest.get("git"), _bound_character(job, manifest)
         ):

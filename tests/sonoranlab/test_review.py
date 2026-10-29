@@ -749,3 +749,57 @@ def test_relabelled_manifest_character_cannot_pick_another_row(job):
     manifest_path.write_text(json.dumps(manifest))
     assert not production_usable(job)
     assert any("sha256 differs from manifest" in e["message"] and "profile" in e["message"] for e in review_errors(job))
+
+
+def _committed_profile(job, monkeypatch):
+    """The job's profile committed in a throwaway repo standing in for this repository; the manifest binds it."""
+    from sonoranlab import repo_inputs
+
+    manifest_path = job / "manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    repo = job.parent / "sl-repo"
+    (repo / "profiles").mkdir(parents=True)
+    profile = repo / "profiles/toy.yaml"
+    shutil.copyfile(manifest["profile"]["path"], profile)
+    git = ["git", "-C", str(repo), "-c", "user.name=t", "-c", "user.email=t@t"]
+    subprocess.run([*git, "init", "-q"], check=True)
+    subprocess.run([*git, "add", "-A"], check=True)
+    subprocess.run([*git, "commit", "-qm", "p"], check=True)
+    rev = subprocess.run([*git, "rev-parse", "HEAD"], check=True, capture_output=True, text=True).stdout.strip()
+    manifest["profile"] = {"path": str(profile), "sha256": hashlib.sha256(profile.read_bytes()).hexdigest()}
+    manifest["git"] = rev
+    manifest_path.write_text(json.dumps(manifest))
+    monkeypatch.setattr(repo_inputs, "_REPO", repo)
+    return profile
+
+
+def test_removed_worktree_profile_binds_through_git_recovery(job, monkeypatch):
+    from sonoranlab import repo_inputs
+
+    profile = _committed_profile(job, monkeypatch)
+    record_review(job, **PASS)
+    profile.unlink()  # the worktree that held it is gone; git still holds the exact bytes
+    assert review_errors(job) == [] and production_usable(job)
+    monkeypatch.setattr(repo_inputs, "_REPO", job.parent)  # a repository without that blob: nothing to recover
+    assert not production_usable(job)
+    assert any("profile" in e["message"] and "missing" in e["message"] for e in review_errors(job))
+
+
+def test_recovery_never_carries_an_approval_to_a_copy(job, monkeypatch):
+    profile = _committed_profile(job, monkeypatch)
+    record_review(job, **PASS)
+    profile.unlink()
+    copy = job.parent / "copied-job"
+    shutil.copytree(job, copy, symlinks=True)
+    assert production_usable(job) and not production_usable(copy)  # the review binds its own job path
+
+
+def test_git_only_inputs_are_never_opened(job, monkeypatch):
+    from sonoranlab.review import git_only_inputs
+
+    profile = _committed_profile(job, monkeypatch)
+    record_review(job, **PASS)
+    profile.write_text("id: something else entirely\n")  # outside the caller's roots: must not be read
+    assert not production_usable(job)  # read in place, the changed bytes fail
+    with git_only_inputs({str(profile)}):
+        assert production_usable(job)  # bound only through the recorded bytes in git

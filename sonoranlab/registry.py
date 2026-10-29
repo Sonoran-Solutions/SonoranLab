@@ -20,6 +20,7 @@ import yaml
 from jsonschema import Draft202012Validator
 from jsonschema.exceptions import ValidationError
 
+from sonoranlab import repo_inputs
 from sonoranlab.api import paths
 from sonoranlab.api.registry import Context, ToolError
 from sonoranlab.artifacts import require_regular_file, sha256_file
@@ -480,11 +481,8 @@ def _job_metadata(job: Path, ctx: Context) -> tuple[Path, dict, dict | None]:
     profile_path = manifest["profile"].get("path")
     if not isinstance(profile_path, str):
         raise ToolError("invalid_params", f"{job / 'manifest.json'}: missing profile path")
-    profile_file = Path(profile_path)
-    _protected(profile_file, ctx)
-    if profile_file.resolve() not in {p.path.resolve() for p in ctx.profiles()}:
-        paths.resolve_input(profile_file)
-    require_regular_file(profile_file)
+    if not _admit_profile(manifest, ctx, missing_ok=False):
+        require_regular_file(Path(profile_path))
     for relative in manifest["outputs"]:
         _job_file(job, relative)
     for name in manifest["inputs"]:
@@ -494,8 +492,28 @@ def _job_metadata(job: Path, ctx: Context) -> tuple[Path, dict, dict | None]:
     return job, manifest, animate
 
 
+def _admit_profile(manifest: dict, ctx: Context, *, missing_ok: bool) -> bool:
+    """Preflight a manifest's recorded profile before the review layer hashes it. True when it binds only through git
+    recovery (a removed worktree or a path outside the read roots: the exact recorded bytes are recovered from this
+    repository's history by content hash, and the path itself must not be opened)."""
+    recorded = manifest["profile"]["path"]
+    path = Path(recorded)
+    _protected(path, ctx)
+    if path.resolve() in {p.path.resolve() for p in ctx.profiles()}:
+        return False
+    try:
+        paths.resolve_input(path)
+        return False
+    except (ToolError, FileNotFoundError) as exc:
+        if isinstance(exc, FileNotFoundError) and missing_ok:
+            return False  # the review layer recovers it or reports the invalid binding
+        if repo_inputs.recover(recorded, manifest["profile"].get("sha256"), manifest.get("git")) is None:
+            raise
+        return True
+
+
 def _review(job: Path, ctx: Context, *, entry: dict | None = None) -> dict:
-    from sonoranlab.review import production_usable, review_errors
+    from sonoranlab.review import git_only_inputs, production_usable, review_errors
 
     if entry is not None:
         root = _job_directory(entry["job_dir"], ctx)
@@ -525,6 +543,7 @@ def _review(job: Path, ctx: Context, *, entry: dict | None = None) -> dict:
             }
 
     # Locate using the import evidence; callers never follow a newly edited animate pointer.
+    git_only: set[str] = set()
     manifest_path = job / "manifest.json"
     if manifest_path.exists():
         try:
@@ -534,15 +553,13 @@ def _review(job: Path, ctx: Context, *, entry: dict | None = None) -> dict:
                 raise
         else:
             profile = manifest.get("profile")
-            if isinstance(profile, dict) and isinstance(profile.get("path"), str):
-                path = Path(profile["path"])
-                _protected(path, ctx)
-                if path.resolve() not in {p.path.resolve() for p in ctx.profiles()}:
-                    # Missing provenance is reported by the review layer as an invalid binding.
-                    with suppress(FileNotFoundError):
-                        paths.resolve_input(path)
-    problems = review_errors(job)
-    usable = production_usable(job)
+            # Missing provenance is reported by the review layer as an invalid binding.
+            valid = isinstance(profile, dict) and isinstance(profile.get("path"), str)
+            if valid and _admit_profile(manifest, ctx, missing_ok=True):
+                git_only.add(profile["path"])
+    with git_only_inputs(git_only):
+        problems = review_errors(job)
+        usable = production_usable(job)
     exists = (job / "review.json").exists() or (job / "review.json").is_symlink()
     state = "none" if not exists else "pass" if usable else "invalid"
     if exists and {p["code"] for p in problems} == {"REVIEW_NOT_PASS"}:
@@ -593,13 +610,29 @@ def import_job(project: str, character: str, job_dir: str, *, ctx: Context) -> d
     from sonoranlab.profile import load_profile
 
     provenances = [provenance, manifest["profile"]] if manifest else [provenance]
+    rev = manifest.get("git") if manifest else None  # animate.json records no commit; its final job's manifest does
     for binding in provenances:
         source_profile = Path(binding["path"])
         _protected(source_profile, ctx)
-        require_regular_file(source_profile)
         if source_profile.resolve() != profile.path.resolve():
-            paths.resolve_input(source_profile)
+            try:
+                paths.resolve_input(source_profile)
+            except (ToolError, FileNotFoundError):
+                # Removed worktree / outside the read roots: only the recorded bytes recovered from git count, and
+                # the outside path is never opened (no template preflight needed: nothing is loaded from it).
+                recovered = repo_inputs.recover(binding["path"], binding.get("sha256"), rev)
+                if recovered is None:
+                    raise
+                raw = yaml.safe_load(recovered.data)
+                if not isinstance(raw, dict) or raw.get("id") != project:
+                    raise ToolError(
+                        "invalid_params", "Job profile provenance does not match the requested project"
+                    ) from None
+                continue
+            require_regular_file(source_profile)
             _confine_profile_templates(source_profile)
+        else:
+            require_regular_file(source_profile)
         # The repository profile (including its templates) was already loaded by _character.
         if load_profile(source_profile).id != project or sha256_file(source_profile) != binding.get("sha256"):
             raise ToolError("invalid_params", "Job profile provenance does not match the requested project")
