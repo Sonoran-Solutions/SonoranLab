@@ -247,7 +247,8 @@ def validate(
             tag = f"frame {idx} ({d}/{i})"
             contact = b is not None and lows[i] >= clip_low - 1
             fx = foot_x(f, lows[i]) if b else None
-            slide = foot_slide(anchor_mode, fx, anchor_x) if contact else None
+            # fall mode gates frame 0 (the standing still pose) whatever the later frames' foot line does
+            slide = foot_slide(anchor_mode, fx, anchor_x) if contact or (fall and i == 0 and fx is not None) else None
             body = abs(fx - (cb[0] + cb[2] + 1) / 2) if slide is not None else None
             prev = boxes[i - 1] if (i > 0 or (loop and len(fs) > 1)) else None
             drift = max(abs(p - q) for p, q in zip(b, prev, strict=True)) if b and prev else None

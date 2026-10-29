@@ -105,6 +105,12 @@ def select_once(
         info = {"rule": end, "threshold": threshold, "max_step": max(steps), "settled": bool(settled)}
         info |= {"search": [n_frames - 1, last], "steps": steps}
     picks = [round(k * e / (n_frames - 1)) for k in range(n_frames)]
+    if end == "settle" and settled:
+        # The held final pair must both be resting: spread the first n-1 picks over [0, E] and take the last one a
+        # stride later (every step after E is below the settle threshold), so fall_hold judges two resting frames.
+        stride = max(1, round(e / (n_frames - 2)))
+        picks = [round(k * e / (n_frames - 2)) for k in range(n_frames - 1)] + [min(last, e + stride)]
+        info["hold_pick"] = picks[-1]
     seam = first[e] if end == "return" else float(np.abs(small[picks[-1]] - small[picks[-2]]).mean())
     clip, files = _pick(frames, picks)
     return LoopPick(
