@@ -40,7 +40,10 @@ class LoopPick:
 
 END_RULES = ("return", "settle")
 MAX_ONCE_END = 64  # select_once never searches past this source frame (Wan clips are 33 frames)
-SETTLE_FRACTION = 0.2  # settled: every later consecutive step < this share of the clip's largest step
+SETTLE_FRACTION = 0.2  # fallback only (frames without alpha): every later step < this share of the largest step
+# settled (alpha frames): every later frame's silhouette is within this share of the final frame's, the same bound the
+# validator's fall_hold puts on the exported last pair (validate.FALL_HOLD_MAX_DELTA; kept equal by a test)
+SETTLE_SILHOUETTE = 0.02
 
 
 def _load(frames: list[Frame]) -> list[Image.Image]:
@@ -98,18 +101,33 @@ def select_once(
         e = min(range(lo, last + 1), key=first.__getitem__) if lo <= last else last
         info = {"rule": end, "peak": peak, "peak_delta": first[peak], "search": [lo, last], "end_delta": first[e]}
     else:
-        threshold = SETTLE_FRACTION * max(steps)
-        # the last frame has no later step to judge: it is the fallback, never "settled"
-        settled = [i for i in range(n_frames - 1, min(last, n - 2) + 1) if all(s < threshold for s in steps[i:])]
+        masks = [np.asarray(im)[..., 3] > 127 for im in ims[: last + 1]]
+        if any(m.any() and not m.all() for m in masks):
+            # Silhouette against the final frame, not step size: a body sliding slowly after it lands takes small
+            # steps that add up (live gun death seeds: "settled" by steps at frame 25, still 20% off the final pose).
+            final = masks[last]
+
+            def off(m: np.ndarray) -> float:
+                return float((m ^ final).sum() / max(1, (m | final).sum()))
+
+            to_final = [off(m) for m in masks]
+            settled = [i for i in range(n_frames - 1, last) if all(v <= SETTLE_SILHOUETTE for v in to_final[i:])]
+            info = {"rule": end, "metric": "silhouette_to_final", "threshold": SETTLE_SILHOUETTE}
+            info |= {"to_final": [round(v, 4) for v in to_final]}
+        else:
+            threshold = SETTLE_FRACTION * max(steps)
+            # the last frame has no later step to judge: it is the fallback, never "settled"
+            settled = [i for i in range(n_frames - 1, min(last, n - 2) + 1) if all(s < threshold for s in steps[i:])]
+            info = {"rule": end, "metric": "step", "threshold": threshold, "max_step": max(steps)}
         e = settled[0] if settled else last
-        info = {"rule": end, "threshold": threshold, "max_step": max(steps), "settled": bool(settled)}
-        info |= {"search": [n_frames - 1, last], "steps": steps}
+        info |= {"settled": bool(settled), "search": [n_frames - 1, last], "steps": steps}
     picks = [round(k * e / (n_frames - 1)) for k in range(n_frames)]
     if end == "settle" and settled:
         # The held final pair must both be resting: spread the first n-1 picks over [0, E] and take the last one a
         # stride later (every step after E is below the settle threshold), so fall_hold judges two resting frames.
         stride = max(1, round(e / (n_frames - 2)))
-        picks = [round(k * e / (n_frames - 2)) for k in range(n_frames - 1)] + [min(last, e + stride)]
+        hold = last if info["metric"] == "silhouette_to_final" else min(last, e + stride)  # both resting either way
+        picks = [round(k * e / (n_frames - 2)) for k in range(n_frames - 1)] + [hold]
         info["hold_pick"] = picks[-1]
     seam = first[e] if end == "return" else float(np.abs(small[picks[-1]] - small[picks[-2]]).mean())
     clip, files = _pick(frames, picks)
