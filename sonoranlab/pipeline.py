@@ -449,6 +449,7 @@ def run(
             max_colours=prof.palette.max_colors_per_cell,
             loop=clip.loop,
             anchor_mode=spec.anchor_mode,
+            validator_mode=clip.validator_mode,
             fringe_tolerance=prof.alpha.fringe_tolerance,
             mirror=dict(mirror),
             pre=pre,

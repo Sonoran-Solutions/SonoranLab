@@ -24,7 +24,7 @@ from PIL import Image
 
 from sonoranlab import sweep
 from sonoranlab.artifacts import sha256_file, write_json
-from sonoranlab.loop import write_loop
+from sonoranlab.loop import end_rule, write_loop
 from sonoranlab.pipeline import PipelineError
 from sonoranlab.profile import ProfileError, load_profile
 
@@ -173,8 +173,9 @@ def _attempt_records(gen: dict, planned: Sequence[Path]) -> list[dict]:
     return records
 
 
-def _carrier(ok: dict[str, Path], *, n_frames: int, cell: int, out: Path) -> Path:
-    """A flat dir of `<direction>_<k>.png`: each direction's first ok attempt, default loop pick, own integer scale."""
+def _carrier(ok: dict[str, Path], *, n_frames: int, cell: int, out: Path, once: str | None = None) -> Path:
+    """A flat dir of `<direction>_<k>.png`: each direction's first ok attempt, default pick (loop, or `once` end rule
+    for a non-looping clip), own integer scale."""
     carrier = out / "carrier"
     carrier.mkdir()
     for d, attempt in ok.items():
@@ -182,7 +183,7 @@ def _carrier(ok: dict[str, Path], *, n_frames: int, cell: int, out: Path) -> Pat
             scale = im.width // cell
         if scale < 1:
             raise ValueError(f"{attempt}: clip frames are smaller than the {cell} px cell")
-        pick = sweep.loop_candidates(attempt, n_frames=n_frames, size=cell * scale)[0].loop
+        pick = sweep.loop_candidates(attempt, n_frames=n_frames, size=cell * scale, once=once)[0].loop
         for p in write_loop(pick, sweep._clip_frames(attempt), out / "carrier-src" / d, d):
             shutil.copyfile(p, carrier / p.name)
     return carrier
@@ -293,7 +294,10 @@ def animate(
     }
     try:
         t = clock()
-        planned = sweep.plan_generation(character, anim, gen_dirs, seeds, ref, out / "gen", background="#808080")
+        motion = spec.animations[anim].prompt_motion
+        planned = sweep.plan_generation(
+            character, anim, gen_dirs, seeds, ref, out / "gen", background="#808080", motion=motion
+        )
         gen = sweep.run_generation(planned, need_gib=need_gib, repo=repo, exec_container=exec_container, runner=runner)
         records = _attempt_records(gen, planned)
         ok = [r for r in records if r["status"] == "ok"]
@@ -321,7 +325,8 @@ def animate(
 
         t = clock()
         n_frames = spec.animations[anim].frames
-        carrier = _carrier(first_ok, n_frames=n_frames, cell=spec.cell[0], out=out)
+        once = end_rule(spec.animations[anim])
+        carrier = _carrier(first_ok, n_frames=n_frames, cell=spec.cell[0], out=out, once=once)
         result = sweep.run_sweep(
             [Path(r["attempt_dir"]) for r in ok],
             profile=profile,

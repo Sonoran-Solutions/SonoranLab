@@ -82,3 +82,19 @@ Accepted by the owner on 2026-10-19: **H0 + H4 + the diagnostics, and F2**. Each
   weapon retention (samurai) and the east swing (oathguard). Open item 2 is closed by F2.
 - A frozen-file change (`2026-10-18.yaml` addendum) is not made retroactively. The new semantics apply from the Phase 2
   profile on, and Phase 1 scoring is unchanged.
+
+## Addendum 2026-10-29 — `fall` mode for death clips (owner: "New 'fall' rules (Recommended)", gun row only)
+
+A death clip ends lying down: its top and sides move by most of the body height, and its feet leave the anchor. The
+default gates would reject every real fall, and loosening the limits would weaken them for runs. Instead, a profile
+animation may set `validator_mode: fall` (explicit; never inferred from `hold_last`; only on `loop: false` clips).
+In fall mode, and only there:
+- `foot_slide` is gated on frame 0 only (the approved standing pose); later frames are reported.
+- `bbox_drift` is gated on the bottom edge and on the body core's centre x (same `max_bbox_drift_px`; 25 for gun);
+  the top/left/right edges are reported as warnings, not gated.
+- New gates per direction: `fall_final` (the last frame lies inside the cell padding and registration clipped none of
+  its pixels), `fall_hold` (the held last frame is settled: `frame_delta(second-to-last, last)` — the share of the
+  pair's opaque union whose alpha or colour differs — is at most 0.10) and `static_clip` (not every frame equals frame
+  0, mirroring the game's `--pixel-check` refusal of a repeated-still death row).
+- `opaque_area_cv` stays a warning; the loop rules already do not run for loop=False. No limit is loosened and no
+  other clip's rules change. `cast` uses the gun's existing gates unchanged.

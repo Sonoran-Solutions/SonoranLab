@@ -22,7 +22,7 @@ from PIL import Image
 
 from sonoranlab import pipeline
 from sonoranlab.artifacts import write_json
-from sonoranlab.loop import LoopPick, select_loop, write_loop
+from sonoranlab.loop import END_RULES, LoopPick, end_rule, select_loop, select_once, write_loop
 from sonoranlab.profile import HEX_RE, NAME_RE, load_profile
 from sonoranlab.slice import read_frame_dir
 from sonoranlab.validate import opening
@@ -79,10 +79,15 @@ def _clip_frames(attempt_dir: Path) -> list[Path]:
     return paths
 
 
-def loop_candidates(attempt_dir: Path, *, n_frames: int, size: int, windows: str = "default") -> list[Candidate]:
-    """Selector pick, plus distinct steady starts in `steady` mode (skip 6; seam endpoint must exist)."""
-    if windows not in {"default", "steady"} or n_frames < 1 or size < 1:
-        raise ValueError("windows must be default|steady; n_frames and size must be positive")
+def loop_candidates(
+    attempt_dir: Path, *, n_frames: int, size: int, windows: str = "default", once: str | None = None
+) -> list[Candidate]:
+    """Selector pick, plus distinct steady starts in `steady` mode (skip 6; seam endpoint must exist).
+
+    `once` (a `loop.end_rule`, for `loop: false` clips) selects with `select_once` instead: one window from frame 0,
+    and `steady` adds nothing (there is no loop seam to move)."""
+    if windows not in {"default", "steady"} or n_frames < 1 or size < 1 or once not in (None, *END_RULES):
+        raise ValueError("windows must be default|steady; n_frames and size must be positive; once an end rule")
     attempt_dir = Path(attempt_dir).resolve()
     frames = _clip_frames(attempt_dir)
     result = json.loads((attempt_dir / "result.json").read_text())
@@ -94,7 +99,10 @@ def loop_candidates(attempt_dir: Path, *, n_frames: int, size: int, windows: str
     seconds = float(timing.get("wall_s", timing.get("wall", math.nan)))  # RunRecord timing uses wall_s
     if isinstance(seed, bool) or not isinstance(seed, int) or seed < 0 or not math.isfinite(seconds) or seconds < 0:
         raise ValueError(f"{attempt_dir}: invalid seed or wall timing")
-    pick = select_loop(frames, n_frames=n_frames, size=size)
+    if once is None:
+        pick = select_loop(frames, n_frames=n_frames, size=size)
+    else:
+        pick = select_once(frames, n_frames=n_frames, size=size, end=once)
     source = {
         "kind": "clip",
         **{k: result.get(k) for k in ("workflow_source", "workflow_source_sha256", "workflow_patched_sha256")},
@@ -103,7 +111,7 @@ def loop_candidates(attempt_dir: Path, *, n_frames: int, size: int, windows: str
     }
     best = Candidate(direction, attempt_dir, seed, pick, seconds, source)
     candidates = [best]
-    if windows == "steady":
+    if windows == "steady" and once is None:
         small = []
         for path in frames:
             with Image.open(path) as im:
@@ -159,12 +167,16 @@ def _score(candidate: Candidate, report: dict, selected: list[Path], job: Path) 
     thin = sum(d["rule"] == "bbox_drift" and d.get("core_delta", math.inf) <= d["limit"] for d in failed)
     metrics, limits = report["directions"].get(direction, {}), report["limits"]
     ratios = []
+    ranked = metrics
+    if report.get("validator_mode") == "fall" and "fall" in metrics:  # rank on the gated fall measures
+        fall = metrics["fall"]
+        ranked = {"bbox_drift_max": fall["drift_max"], "foot_slide_max": fall["foot_slide_frame0"]}
     for metric, limit, gated in (
         ("bbox_drift_max", "max_bbox_drift_px", limits.get("bbox_drift_gated", True)),
         ("foot_slide_max", "max_foot_slide_px", report.get("anchor_mode") != "bbox_bottom"),
     ):
-        if gated and metrics.get(metric) is not None:
-            ratios.append(_ratio(metrics[metric], limits[limit]))
+        if gated and ranked.get(metric) is not None:
+            ratios.append(_ratio(ranked[metric], limits[limit]))
     return Score(
         candidate=candidate,
         direction_pass=not failures,
@@ -315,7 +327,11 @@ def run_sweep(
         if scale < 1:
             raise ValueError(f"{attempt}: clip frames are smaller than the {spec.cell[0]} px cell")
         candidates += loop_candidates(
-            attempt, n_frames=spec.animations[anim].frames, size=spec.cell[0] * scale, windows=windows
+            attempt,
+            n_frames=spec.animations[anim].frames,
+            size=spec.cell[0] * scale,
+            windows=windows,
+            once=end_rule(spec.animations[anim]),
         )
     if not candidates:
         raise ValueError("no candidates")
@@ -355,8 +371,12 @@ def plan_generation(
     stills_dir: Path,
     out_root: Path,
     background: str = "#808080",
+    motion: str | None = None,
 ) -> list[Path]:
-    """Write one Track E GenerateRequest JSON per direction/seed; never create its attempt dir or run generation."""
+    """Write one Track E GenerateRequest JSON per direction/seed; never create its attempt dir or run generation.
+
+    `motion` is the profile animation's `prompt_motion` (a non-run clip: "This character <motion>, facing <d>.");
+    without it a non-run clip keeps the generic "performing <anim> in place" text. Run keeps its Phase 1 prompts."""
     # The core AST gate permits no adapter import statements outside cli.py, even inside helpers.
     request_type = import_module("sonoranlab.comfy.adapters.base").GenerateRequest
     track_e = import_module("sonoranlab.comfy.adapters.track_e")
@@ -381,9 +401,12 @@ def plan_generation(
     paths = []
     for d in directions:
         for seed in seeds:
-            prompt = (
-                track_e.RUN_PROMPTS[d] if anim == "run" else f"This character performing {anim} in place, facing {d}."
-            )
+            if anim == "run":
+                prompt = track_e.RUN_PROMPTS[d]
+            elif motion:
+                prompt = f"This character {motion}, facing {d}."
+            else:
+                prompt = f"This character performing {anim} in place, facing {d}."
             if background.lower() != "#808080":
                 prompt = prompt.replace("grey background", f"{background} background")
             if anim != "run":

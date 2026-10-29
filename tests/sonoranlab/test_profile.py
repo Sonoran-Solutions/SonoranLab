@@ -353,3 +353,55 @@ def test_character_attempt_limit_override():
     assert prof.attempt_limit("gun") == 6
     assert prof.attempt_limit("thief") == prof.autonomy.max_attempts_per_animation == 3
     assert prof.attempt_limit("not-a-row") == 3
+
+
+# Twos Are Up's clip table for a full class (game repo characters.json): name, start column, frames, fps, loop.
+GAME_CLIPS = [("idle", 1, 4, 5, True), ("run", 5, 6, 10, True), ("cast", 11, 8, 10, False), ("death", 19, 6, 8, False)]
+
+
+def test_gun_cast_and_death_are_track_e_with_explicit_modes():
+    """Owner 2026-10-29: gun row only; death uses the fall validator, explicit, never inferred from hold_last."""
+    prof = load_profile(REAL, check_paths=False)
+    gun = prof.character("gun").animations
+    assert (gun["cast"].track_default, gun["cast"].validator_mode) == ("E", None)
+    assert (gun["death"].track_default, gun["death"].validator_mode, gun["death"].hold_last) == ("E", "fall", True)
+    assert gun["cast"].prompt_motion.startswith("raises the rifle to the shoulder, fires one shot")
+    assert gun["death"].prompt_motion == "is hit, staggers and collapses to the ground, ending lying still"
+    start, table = 1, []
+    for name in ("idle", "run", "cast", "death"):
+        a = gun[name]
+        table.append((name, start, a.frames, a.fps, a.loop))
+        start += a.frames
+    assert table == GAME_CLIPS and start == 25  # columns = sum(frames) + 1
+    for other in prof.characters:  # every other character is unchanged
+        if other != "gun":
+            anims = prof.character(other).animations
+            assert anims["cast"] == prof.animations["cast"] and anims["death"] == prof.animations["death"]
+            assert anims["death"].validator_mode is None and anims["cast"].track_default is None
+
+
+def test_new_animation_keys_keep_frozen_rows_stable():
+    """registry._spec (campaign character_row) omits unset new keys: rows frozen before them still compare equal."""
+    from sonoranlab.registry import _spec
+
+    prof = load_profile(REAL, check_paths=False)
+    old_keys = {"frames", "fps", "loop", "loop_from", "hold_last", "track_default", "template"}
+    assert all(set(a) == old_keys for a in _spec(prof, "thief")["animations"].values())
+    gun = _spec(prof, "gun")["animations"]
+    assert set(gun["run"]) == set(gun["idle"]) == old_keys
+    assert set(gun["death"]) == old_keys | {"validator_mode", "prompt_motion"}
+
+
+@pytest.mark.parametrize(
+    "override, msg",
+    [
+        ({"validator_mode": "hold"}, "validator_mode: 'hold' is not one of fall"),
+        ({"validator_mode": "fall", "loop": True}, "validator_mode: fall needs loop: false"),
+        ({"prompt_motion": " "}, "prompt_motion: expected 1-300 printable"),
+        ({"prompt_motion": "line\nbreak"}, "prompt_motion: expected 1-300 printable"),
+        ({"prompt_motion": 3}, "prompt_motion: 3 is not a str"),
+    ],
+)
+def test_validator_mode_and_prompt_motion_schema(make, override, msg):
+    path = make(lambda d: d["characters"]["hero"].update(animations={"channel": override}))
+    assert f"characters.hero.animations.channel.{msg}" in problems(path)

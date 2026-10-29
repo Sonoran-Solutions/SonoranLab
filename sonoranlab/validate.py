@@ -17,6 +17,14 @@ Diagnostics and hover metrics (validator study, benchmark/results/2026-10-19-pha
   foot_body     contact frames, anchor_mode foot: |foot_x - core bbox centre x| (foot vs the body, not the anchor).
   hover x-drift range of the core bbox centre x over a direction's frames (warn above hover_x_drift_warn_px).
   hover bob     range of the opaque centroid y over a direction's frames (warn below hover_min_bob_px).
+Fall mode (`validator_mode: fall`, death clips only, ADR-0008 fall addendum). A falling body legitimately moves its
+top and sides and its feet leave the anchor, so: foot_slide is gated on frame 0 only (the standing still pose);
+bbox_drift is gated on the bottom edge and the core centre x only (`fall_drift` = max of the two, same limit), the
+top/left/right edges are reported as warnings. Three gates are added per direction:
+  fall_final    the last frame lies inside the cell padding and registration clipped none of its pixels.
+  fall_hold     frame_delta(second-to-last, last) <= FALL_HOLD_MAX_DELTA: the held last frame is a settled pose.
+  static_clip   not every frame equals frame 0 (the game's --pixel-check refuses a repeated-still death row).
+Every other rule, limit and warning is unchanged; loop rules never run for loop=False.
 Diagnostics are reported, never gated. `pass` is True iff `failures` is empty.
 """
 
@@ -42,6 +50,14 @@ SCOPE = "technical; does not judge readability or style - a 1x human review is s
 CHAIN_NOTE = (
     "frames[].pre and registration record what the processing chain changed (provenance, not verdicts); "
     "they are not proof that the raw poses were consistent"
+)
+VALIDATOR_MODES = ("fall",)
+# fall_hold: at most 10% of the last pair's opaque union may differ (alpha or colour). A moving clip's steps differ in
+# far more (a run step changes most of the limbs); 10% leaves room for re-quantisation noise on a resting body.
+FALL_HOLD_MAX_DELTA = 0.10
+FALL_NOTE = (
+    "validator_mode fall: foot_slide gated on frame 0 only; bbox_drift gated on bottom edge and core centre x only "
+    "(top/left/right reported); fall_final, fall_hold and static_clip gated (ADR-0008 fall addendum)"
 )
 F2_NOTE = "foot_slide: not computed or gated for anchor_mode bbox_bottom (ADR-0008 F2); hover warnings instead"
 
@@ -121,6 +137,7 @@ def validate(
     max_colours: int,
     loop: bool,
     anchor_mode: str = "foot",
+    validator_mode: str | None = None,
     gate_bbox_drift: bool = True,
     fringe_tolerance: int = 0,
     mirror: Mapping[str, str] | None = None,
@@ -137,9 +154,12 @@ def validate(
     `stills` are final-resolution cells; only the shared cell rules apply (no clip/anchor rules).
     `accessory` {"colours": [[r, g, b], ...], "min_pixels": 1, "min_share": 0.9}: warn when fewer frames show it.
     `pre` (per frame) and `registration` (per direction) are the chain's records: copied into the report, and a
-    registration with clipped_px is a failure."""
+    registration with clipped_px is a failure. `validator_mode` "fall" applies the fall rules (module docstring)."""
     if anchor_mode not in ANCHOR_MODES:
         raise ValueError(f"anchor_mode {anchor_mode!r}: the validator knows {', '.join(ANCHOR_MODES)}")
+    if validator_mode not in (None, *VALIDATOR_MODES) or (validator_mode == "fall" and loop):
+        raise ValueError(f"validator_mode {validator_mode!r}: expected None or fall (fall needs loop=False)")
+    fall = validator_mode == "fall"
     hover = anchor_mode == "bbox_bottom"
     keys = LIMIT_KEYS + (HOVER_KEYS if hover else ())
     lim = {k: getattr(limits, k, None) for k in keys}
@@ -247,7 +267,12 @@ def validate(
                 r["accessory_pixels"] = sum(tuple(c) in acc[0] for c in f[f[..., 3] == 255, :3].tolist())
             r["pre"] = dict(pre[d][i]) if pre and d in pre and i < len(pre[d]) else None
             issues = r["issues"]
-            if slide is not None and slide > max_slide:
+            if fall:
+                prev_cb = cores[i - 1] if prev and cb else None
+                r["fall_drift"] = (
+                    max(abs(b[3] - prev[3]), abs((cb[0] + cb[2]) - (prev_cb[0] + prev_cb[2])) / 2) if prev_cb else None
+                )
+            if slide is not None and slide > max_slide and (not fall or i == 0):
                 issues.append(
                     f"foot_slide: {tag} foot {slide:g}px from anchor x {anchor_x} ({body:g}px from the body core), "
                     f"limit {max_slide:g}"
@@ -256,7 +281,24 @@ def validate(
                     {"index": idx, "direction": d, "frame": i, "rule": "foot_slide", "value": slide, "limit": max_slide}
                     | {"gated": True, "foot_x": fx, "anchor_x": anchor_x, "foot_body": body}
                 )
-            if drift is not None and drift > max_drift:
+            if fall and drift is not None:
+                deltas = dict(zip(EDGES, (abs(p - q) for p, q in zip(b, prev, strict=True)), strict=True))
+                fd = r["fall_drift"]
+                if fd > max_drift:
+                    issues.append(
+                        f"bbox_drift: {tag} bottom edge or body core centre moved {fd:g}px (fall), limit {max_drift:g}"
+                    )
+                    diagnostics.append(
+                        {"index": idx, "direction": d, "frame": i, "rule": "bbox_drift", "value": fd}
+                        | {"limit": max_drift, "gated": True, "edge": "bottom/core_centre_x", "edge_deltas": deltas}
+                        | {"core_delta": abs((cb[0] + cb[2]) - (prev_cb[0] + prev_cb[2])) / 2, "seam": False}
+                    )
+                if over := [e for e in ("left", "top", "right") if deltas[e] > max_drift]:
+                    warnings.append(
+                        f"bbox_drift: {tag} {'/'.join(over)} edge moved {max(deltas[e] for e in over)}px, "
+                        f"limit {max_drift:g} (not gated in fall mode)"
+                    )
+            elif drift is not None and drift > max_drift:
                 deltas = [abs(p - q) for p, q in zip(b, prev, strict=True)]
                 e = int(np.argmax(deltas))
                 pcb = cores[i - 1]
@@ -309,6 +351,8 @@ def validate(
             cyc["hover_bob_px"] = _rng([round(float(np.nonzero(m)[0].mean()), 2) for m in masks])
         if not cyc["lowest_row_ok"]:
             failures.append(f"foot_line: {d} clip lowest opaque row {clip_low}, expected {foot_y}")
+        if fall:
+            failures += _fall_gates(d, fs, boxes, clipped, cyc, recs, w, h, padding)
         cv, cv_lim = cyc["opaque_area_cv"], lim["opaque_area_cv_warn"]
         if cv is not None and cv > cv_lim:
             warnings.append(f"opaque_area_cv: {d} {cv:.3f} > {cv_lim:g}; can mean a lost accessory")
@@ -348,7 +392,7 @@ def validate(
         "scope": SCOPE,
         "anchor_mode": anchor_mode,
         "limits": {**lim, "source": limits_source, "bbox_drift_gated": gate_bbox_drift},
-        "notes": [F2_NOTE] if hover else [],
+        "notes": ([F2_NOTE] if hover else []) + ([FALL_NOTE] if fall else []),
         "frame_count": {
             "expected": frames * len(directions),
             "actual": sum(len(clips.get(d, [])) for d in directions),
@@ -371,8 +415,33 @@ def validate(
         },
         "registration": {d: dict(v) for d, v in (registration or {}).items()},
     }
+    if fall:  # default-mode reports keep their exact keys
+        report["validator_mode"] = "fall"
+        report["limits"]["fall_hold_max_delta"] = FALL_HOLD_MAX_DELTA
     assert report["pass"] is (not report["failures"]), "a report with failures can never pass"
     return report
+
+
+def _fall_gates(d, fs, boxes, clipped, cyc, recs, w, h, padding) -> list[str]:
+    """fall_final, fall_hold and static_clip for one direction (module docstring); records metrics in `cyc`."""
+    out = []
+    b, lost = boxes[-1], clipped[len(fs) - 1] if len(clipped) >= len(fs) else 0
+    inside = b is not None and b[0] >= padding and b[1] >= padding and b[2] <= w - 1 - padding
+    inside = inside and b[3] <= h - 1 - padding
+    if not inside or lost:
+        out.append(f"fall_final: {d} last frame bbox {b} must lie inside padding {padding} with no clipped px ({lost})")
+    same = all(f.shape == fs[0].shape for f in fs)
+    hold = frame_delta(fs[-2], fs[-1]) if len(fs) > 1 and same else None
+    if hold is not None and hold > FALL_HOLD_MAX_DELTA:
+        out.append(f"fall_hold: {d} last two frames differ in {hold:.3f} of their pixels > {FALL_HOLD_MAX_DELTA:g}")
+    static = same and all(np.array_equal(f, fs[0]) for f in fs[1:])
+    if static:
+        out.append(f"static_clip: {d} is a repeated still (every frame equals frame 0)")
+    gated = [r["fall_drift"] for r in recs if r.get("fall_drift") is not None]
+    slide0 = recs[0]["foot_slide"] if recs else None
+    cyc["fall"] = {"drift_max": max(gated, default=None), "foot_slide_frame0": slide0, "hold_delta": hold}
+    cyc["fall"] |= {"final_inside": inside and not lost, "static": static}
+    return out
 
 
 def read_stills(stills_dir: Path, order: Sequence[str]) -> tuple[dict[str, np.ndarray], list[Path]]:

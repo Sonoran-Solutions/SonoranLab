@@ -627,20 +627,44 @@ def _attempt_usage(project: str, character: str, clip: str, jobs: list[dict]) ->
 # Request fields read only when building the delivery manifest (generation never reads them; reference prep's use is
 # already bound through the reference hashes), so changing one does not make earlier candidates stale.
 DELIVERY_ONLY_REQUEST_KEYS = frozenset({"height_m"})
+# The request's clip list is the plan: it picks which clips are generated and delivered, never how one clip is
+# generated, so adding a clip (gun cast/death) keeps the other clips' candidates current. Delivery still requires the
+# exact request (`exact` in _view), and check_delivery requires every planned clip.
+PLAN_ONLY_REQUEST_KEYS = frozenset({"clips"})
 
 
-def _binding(frozen: dict) -> tuple:
-    request = {k: v for k, v in frozen["request"].items() if k not in DELIVERY_ONLY_REQUEST_KEYS}
-    return frozen["references"]["hashes"], frozen["profile"]["character_row"], classreq.request_sha256(request)
+def _binding(frozen: dict, clip: str | None = None) -> tuple:
+    """What a candidate is bound to: reference hashes, the frozen character row and the request without delivery/plan
+    keys. With `clip`, the row's animations are narrowed to that clip: one clip's candidates are generated, processed
+    and validated from the shared row fields and their own animation entry only."""
+    request = {
+        k: v
+        for k, v in frozen["request"].items()
+        if k not in DELIVERY_ONLY_REQUEST_KEYS and k not in PLAN_ONLY_REQUEST_KEYS
+    }
+    row = frozen["profile"]["character_row"]
+    if clip is not None:
+        row = {**row, "animations": {clip: row.get("animations", {}).get(clip)}}
+    return frozen["references"]["hashes"], row, classreq.request_sha256(request)
 
 
-def _composed_approvals(events: list[dict], current: set, campaign_id: str, ctx: Context) -> dict[str, dict]:
-    """{composed job id: {clip: input job}} for recorded current-revision compose_sheet jobs of this campaign whose
-    owner review is production usable now (recomputed via the import's review) and whose sheet is unchanged."""
+def _current(revisions: list[dict], clip: str | None = None) -> set[int]:
+    """Revisions whose binding (for `clip`, or the whole row) equals the latest revision's."""
+    want = _binding(revisions[-1], clip)
+    return {r["revision"] for r in revisions if _binding(r, clip) == want}
+
+
+def _composed_approvals(events: list[dict], revisions: list[dict], campaign_id: str, ctx: Context) -> dict[str, dict]:
+    """{composed job id: {clip: input job}} for recorded compose_sheet jobs of this campaign whose revision is current
+    for every clip they contain, whose owner review is production usable now (recomputed via the import's review) and
+    whose sheet is unchanged."""
     out = {}
     for event in events:
         data = event["data"]
-        if event["type"] != "composed" or data.get("revision") not in current:
+        inputs = data.get("inputs")
+        if event["type"] != "composed" or not isinstance(inputs, dict) or not inputs:
+            continue
+        if any(data.get("revision") not in _current(revisions, clip) for clip in inputs):
             continue
         try:
             job = manager.get(data["job_id"])
@@ -804,8 +828,9 @@ def _view(path: Path, ctx: Context) -> dict:
     for event in events:
         if event["type"] == "candidate_decision":
             decisions[event["data"]["job_id"]] = event["data"] | {"at": event["at"]}
-    # Candidates, selections, reviews and delivery count only when bound to the current frozen inputs.
-    current = {r["revision"] for r in revisions if _binding(r) == _binding(frozen)}
+    # Candidates, selections and reviews count only when bound to the current frozen inputs of their clip; delivery
+    # only for the whole current binding and the exact request.
+    current = _current(revisions)
     # A bundle bakes every request field (height_m included) into the game manifest: delivery needs the exact request.
     exact = {
         r["revision"] for r in revisions if r["revision"] in current and r["request_sha256"] == frozen["request_sha256"]
@@ -813,7 +838,7 @@ def _view(path: Path, ctx: Context) -> dict:
     attempts = []
     for attempt in _attempts(events).values():
         a = _classify(attempt, revisions[attempt["revision"] - 1], ctx)
-        a["current"] = a["revision"] in current
+        a["current"] = a["revision"] in _current(revisions, a["clip"])
         a["resumed"] = a["class"] in RESUMABLE and bool({a["key"], a["job_id"]} & resumed)
         prompts = (a.get("job") or {}).get("prompts", 0)
         a["consumed"] = a["class"] not in NOT_CONSUMED and not (a["class"] == "cancelled" and not prompts)
@@ -823,7 +848,7 @@ def _view(path: Path, ctx: Context) -> dict:
     gate, gate_detail = _gate(frozen, ctx)
     clips = {}
     plan = frozen["clips"]
-    composed = _composed_approvals(events, current, frozen["campaign_id"], ctx)
+    composed = _composed_approvals(events, revisions, frozen["campaign_id"], ctx)
     for clip in [*plan, *sorted({a["clip"] for a in attempts} - set(plan))]:
         mine = [a for a in attempts if a["clip"] == clip]
         base = frozen["budget"].get(clip, {}).get("max_seeds", 0)

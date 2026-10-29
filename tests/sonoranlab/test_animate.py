@@ -317,3 +317,30 @@ def test_cli_maps_args_and_exit(tmp_path, monkeypatch, capsys):
     monkeypatch.undo()
     assert main([*argv, "--track", "C"]) == 2
     assert "Track E" in capsys.readouterr().err
+
+
+def test_non_loop_fall_clip_end_to_end(tmp_path):
+    """A gun-style death (loop false, validator_mode fall, prompt_motion): profile motion in every request, select_once
+    picks for the carrier and the sweep, the fall validator on the final job, a clip table without a hold field."""
+    death = {"frames": 3, "fps": 8, "loop": False, "hold_last": True, "track_default": "E"}
+    death |= {"validator_mode": "fall", "prompt_motion": "is hit and collapses, ending lying still"}
+    (tmp_path / "p").mkdir()  # run() rewrites tmp_path/toy.yaml
+    prof = toy_profile(tmp_path / "p", lambda d: d["animations"].update(death=death))
+    fake = Fake()
+    res = run(tmp_path, fake, profile=prof, anim="death")
+    assert res["exit"] == 0 and res["outcome"] == "pass", res
+    out = tmp_path / "out"
+    prompts = {json.loads(p.read_text())["prompt"] for p in (out / "gen/requests").glob("*.json")}
+    assert prompts == {
+        f"This character is hit and collapses, ending lying still, facing {d}. Static camera, flat solid #808080 "
+        "background, 2D game sprite animation."
+        for d in GEN
+    }
+    carrier = json.loads((out / "carrier-src/east/loop.json").read_text())
+    assert carrier["window"] == "settle" and carrier["picks"][0] == 0 and carrier["picks"][-1] == 11
+    report = json.loads(Path(res["verdict"]["report"]).read_text())
+    assert report["validator_mode"] == "fall" and all("fall" in report["directions"][d] for d in GEN)
+    side = json.loads(next((out / "sweep/final/job/export").rglob("*.sonoranlab.json")).read_text())
+    assert side["characters_json_entry"]["clips"] == [
+        {"name": "death", "start": 1, "frames": 3, "fps": 8, "loop": False}
+    ]

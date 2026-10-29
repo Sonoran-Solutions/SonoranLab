@@ -76,6 +76,18 @@ it picks `cast` while casting or shooting, so a Phase 5 sheet without `cast`/`de
 delivery with known missing clips** in the bundle, never as a playable class. Attack/cast/death/hurt, rigging,
 training and UI are Phase 6 or later.
 
+**Amendment 2026-10-29 (gun only).** Owner request: "prioritize producing the Gun's cast and death clips ... Twos are
+up is ready to implement the Gun class and needs those animation". Owner choices: death rules "New 'fall' rules
+(Recommended)"; scope "Gun row only (Recommended)"; budget "≤3 seeds per clip (Recommended)"; prompts "Proposed text
+(Recommended)". The gun row (`characters.gun.animations`) makes `cast` (8 frames, 10 fps, loop false) and `death`
+(6 frames, 8 fps, loop false) Track E with profile `prompt_motion` text, and `death` uses `validator_mode: fall`
+(ADR-0008 fall addendum). A class request may list a clip whose *effective* track for that character is E; every
+other character keeps the frozen pilot clips (`run`, `idle`), and Track E stays the only supported track. Non-loop
+clips start at the approved still (frame 0) and are sampled to an end frame chosen in code (`loop.select_once`). A
+campaign revision may add clips: the request's `clips` list is plan-only and the character row is bound per clip, so
+the gun's approved run/idle selections stay current while cast/death get the owner's 3-seed budget. No hold field is
+emitted (the game holds a non-loop clip's last frame); delivery needs every planned clip and the exact request.
+
 Every exported sheet: eight rows in profile order; five generated directions; north-west/west/south-west animation
 rows mirrored from north-east/east/south-east; column 0 = the eight approved stills, pixel-exact; unchanged palette,
 alpha and validator limits.

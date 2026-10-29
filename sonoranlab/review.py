@@ -138,17 +138,20 @@ def _export_files(job: Path) -> dict[str, str]:
     return files
 
 
-def _same_character_profile(path: Path, sha: object, rev: object, character: object) -> bool:
-    """A changed profile file still binds a job when only *other* characters' rows changed.
+def _same_character_profile(path: Path, sha: object, rev: object, bound: tuple[str, list[str]] | None) -> bool:
+    """A changed profile file still binds a job when only *other* characters' rows, or only the row's overrides of
+    *other* clips, changed.
 
     The recorded file is recovered from git at the job's recorded commit and must hash to the recorded sha256 (so the
     comparison is against exactly the bytes the job used); then every top-level setting and this job's character row
-    must be identical. Anything unverifiable is a mismatch.
+    must be identical, the row's `animations` overrides compared for the job's own clips only (`bound` = character,
+    clips). Anything unverifiable is a mismatch.
     """
     if not (isinstance(sha, str) and isinstance(rev, str) and re.fullmatch(r"[0-9a-f]{40}", rev)):
         return False
-    if not isinstance(character, str) or not character:
+    if bound is None:
         return False
+    character, clips = bound
     try:
         r = subprocess.run(
             ["git", "-C", str(path.parent), "show", f"{rev}:./{path.name}"], capture_output=True, timeout=10
@@ -169,6 +172,11 @@ def _same_character_profile(path: Path, sha: object, rev: object, character: obj
     old_row, new_row = (
         {k: v for k, v in row.items() if k not in _ADMISSION_ONLY_ROW_KEYS} for row in (old_row, new_row)
     )
+    for row in (old_row, new_row):
+        over = row.pop("animations", None) or {}
+        if not isinstance(over, dict):
+            return False
+        row["animations"] = {c: over[c] for c in clips if c in over}
     return _canonical(old) == _canonical(new) and _canonical(old_row) == _canonical(new_row)
 
 
@@ -181,14 +189,19 @@ def _canonical(value: object) -> str:
     return json.dumps(value, sort_keys=True, default=repr)
 
 
-def _bound_character(job: Path, manifest: dict) -> str | None:
-    """The manifest's character, only when the validated report agrees (a relabelled manifest cannot pick a row)."""
+def _bound_character(job: Path, manifest: dict) -> tuple[str, list[str]] | None:
+    """(character, clips) of the manifest, only when the validated report agrees (a relabelled manifest cannot pick a
+    row or a clip). A composed job's animation is its clips joined by '+'."""
     try:
         report = _load(job / "report.json")
     except ValueError:
         return None
-    character = manifest.get("character")
-    return character if isinstance(report, dict) and report.get("character") == character else None
+    character, animation = manifest.get("character"), manifest.get("animation")
+    if not (isinstance(report, dict) and isinstance(character, str) and character and isinstance(animation, str)):
+        return None
+    if (report.get("character"), report.get("animation")) != (character, animation) or not animation:
+        return None
+    return character, animation.split("+")
 
 
 def _provenance(job: Path) -> tuple[dict | None, list[str]]:
