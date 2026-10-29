@@ -22,7 +22,7 @@ top and sides and its feet leave the anchor, so: foot_slide is gated on frame 0 
 bbox_drift is gated on the bottom edge and the core centre x only (`fall_drift` = max of the two, same limit), the
 top/left/right edges are reported as warnings. Three gates are added per direction:
   fall_final    the last frame lies inside the cell padding and registration clipped none of its pixels.
-  fall_hold     frame_delta(second-to-last, last) <= FALL_HOLD_MAX_DELTA: the held last frame is a settled pose.
+  fall_hold     silhouette_delta(second-to-last, last) <= FALL_HOLD_MAX_DELTA: the held last frame is a settled pose.
   static_clip   not every frame equals frame 0 (the game's --pixel-check refuses a repeated-still death row).
 Every other rule, limit and warning is unchanged; loop rules never run for loop=False.
 Diagnostics are reported, never gated. `pass` is True iff `failures` is empty.
@@ -52,9 +52,10 @@ CHAIN_NOTE = (
     "they are not proof that the raw poses were consistent"
 )
 VALIDATOR_MODES = ("fall",)
-# fall_hold: at most 10% of the last pair's opaque union may differ (alpha or colour). A moving clip's steps differ in
-# far more (a run step changes most of the limbs); 10% leaves room for re-quantisation noise on a resting body.
-FALL_HOLD_MAX_DELTA = 0.10
+# fall_hold: at most 2% of the last pair's opaque union may change SHAPE (alpha). Colour is ignored: Track E frames of a
+# body at rest re-quantise differently (approved gun/thief idle pairs differ in 24-38% of pixels by colour but at most
+# 1.1% by silhouette). Owner 2026-10-29: "Silhouette <= 2% (Recommended)", about twice the approved idles.
+FALL_HOLD_MAX_DELTA = 0.02
 FALL_NOTE = (
     "validator_mode fall: foot_slide gated on frame 0 only; bbox_drift gated on bottom edge and core centre x only "
     "(top/left/right reported); fall_final, fall_hold and static_clip gated (ADR-0008 fall addendum)"
@@ -113,6 +114,12 @@ def frame_delta(a: np.ndarray, b: np.ndarray) -> float:
     union = (a[..., 3] > 0) | (b[..., 3] > 0)
     diff = (a != b).any(-1) & union
     return float(diff.sum() / max(1, union.sum()))
+
+
+def silhouette_delta(a: np.ndarray, b: np.ndarray) -> float:
+    """Share of the two frames' opaque union whose opacity differs (shape change; colour ignored)."""
+    ma, mb = a[..., 3] > 0, b[..., 3] > 0
+    return float((ma ^ mb).sum() / max(1, (ma | mb).sum()))
 
 
 def _protrusion(b: list[int], cb: list[int]) -> list[int]:
@@ -432,9 +439,9 @@ def _fall_gates(d, fs, boxes, clipped, cyc, recs, w, h, padding) -> list[str]:
     if not inside or lost:
         out.append(f"fall_final: {d} last frame bbox {b} must lie inside padding {padding} with no clipped px ({lost})")
     same = all(f.shape == fs[0].shape for f in fs)
-    hold = frame_delta(fs[-2], fs[-1]) if len(fs) > 1 and same else None
+    hold = silhouette_delta(fs[-2], fs[-1]) if len(fs) > 1 and same else None
     if hold is not None and hold > FALL_HOLD_MAX_DELTA:
-        out.append(f"fall_hold: {d} last two frames differ in {hold:.3f} of their pixels > {FALL_HOLD_MAX_DELTA:g}")
+        out.append(f"fall_hold: {d} last two frames' silhouettes differ in {hold:.3f} > {FALL_HOLD_MAX_DELTA:g}")
     static = same and all(np.array_equal(f, fs[0]) for f in fs[1:])
     if static:
         out.append(f"static_clip: {d} is a repeated still (every frame equals frame 0)")

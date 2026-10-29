@@ -741,7 +741,7 @@ def test_fall_mode_passes_a_falling_figure_the_default_rules_reject():
     assert "validator_mode" not in default and "fall_hold_max_delta" not in default["limits"]  # default unchanged
     rep = fall_validate(frames)
     assert rep["pass"], rep["failures"]
-    assert rep["validator_mode"] == "fall" and rep["limits"]["fall_hold_max_delta"] == 0.10
+    assert rep["validator_mode"] == "fall" and rep["limits"]["fall_hold_max_delta"] == 0.02
     assert any("top edge moved 3px" in w and "not gated" in w for w in rep["warnings"])  # reported, not gated
     fall = rep["directions"]["east"]["fall"]
     assert fall == {
@@ -776,7 +776,7 @@ def test_fall_gates_fail(case, rule):
         frames[5] = fall_frame(8, 23, 25)
         frames[5][25:29, 30] = (*FALL_PAL[0], 255)  # an arm reaches into the right padding
     elif case == "not_settled":
-        frames[5] = fall_frame(8, 23, 25, colour=0)  # same silhouette, every pixel recoloured: still moving
+        frames[5] = fall_frame(10, 25, 25)  # the body is still sliding: its shape moves 2 px
     else:
         frames = [fall_frame(*FALL_POSES[0])] * 6
     rep = fall_validate(frames, **kw)
@@ -797,3 +797,12 @@ def test_fall_mode_gates_frame0_even_when_frame0_is_not_a_contact_frame():
     frames[0] = np.roll(frames[0], -2, axis=0)
     rep = fall_validate(frames)
     assert any(m.startswith("foot_slide: frame 0 ") for m in rep["failures"]), rep["failures"]
+
+
+def test_fall_hold_ignores_colour_shimmer_on_a_resting_body():
+    # Track E re-quantises a resting body differently frame to frame: same shape, every pixel recoloured -> held
+    frames = [fall_frame(*p) for p in FALL_POSES]
+    frames[5] = fall_frame(8, 23, 25, colour=0)
+    rep = fall_validate(frames)
+    assert rep["pass"], rep["failures"]
+    assert rep["directions"]["east"]["fall"]["hold_delta"] == 0.0
