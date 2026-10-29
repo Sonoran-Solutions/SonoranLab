@@ -195,19 +195,26 @@ class BuildDelivery:
         staged = {k: _staged(params[k], k, ctx) for k in ("base_manifest", "import_template")}
         return profile, composed, frozen, staged
 
-    def validate(self, params: dict) -> tuple[dict, dict]:
-        profile, composed, frozen, staged = self._inputs(params, Context())
+    def _snapshot(self, params: dict) -> tuple[dict, dict, tuple]:
+        inputs = profile, composed, frozen, staged = self._inputs(params, Context())
         files = [profile.path, composed / "review.json", composed / "report.json", *staged.values()]
         hashes = {str(p): sha256_file(p) for p in files} | {"request": frozen["request_sha256"]}
-        return {**params, "character": frozen["character"], "anim": "delivery"}, hashes
+        return {**params, "character": frozen["character"], "anim": "delivery"}, hashes, inputs
+
+    def validate(self, params: dict) -> tuple[dict, dict]:
+        return self._snapshot(params)[:2]
 
     def run(self, job: dict, ctx) -> dict:
+        with campaign.delivery_hold(job["params"]["campaign_id"]):  # no decision or revision until the bundle exists
+            return self._build(job, ctx)
+
+    def _build(self, job: dict, ctx) -> dict:
         from sonoranlab import deliver
 
-        params, hashes = self.validate(job["params"])
+        # One snapshot: the request checked against the frozen input hashes is the one the bundle is built from.
+        params, hashes, (profile, composed, frozen, staged) = self._snapshot(job["params"])
         if hashes != job["input_hashes"]:
             raise ToolError("refused", "Frozen job inputs changed before execution")
-        profile, composed, frozen, staged = self._inputs(params, Context())
         work = paths._confine(ctx.output_dir, (paths.state_root(),))
         store.atomic(work / "request.json", frozen["request"], exclusive=True)  # the admitted, frozen request
         ctx.set_stage("check")

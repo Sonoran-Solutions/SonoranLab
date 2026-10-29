@@ -205,3 +205,44 @@ def test_delivery_binding_is_rechecked_at_execution(lab):
     with pytest.raises(ToolError, match="current revision"):  # what run() hit: its first step re-validates
         executor("build_delivery").validate(job["params"])
     assert not (store.output(job) / "bundle/bundle.json").exists()
+
+
+def test_campaign_cannot_change_while_a_bundle_is_built(lab):
+    cid, ref, _, _ = _approved(lab)
+    with campaign.delivery_hold(cid):  # held by BuildDelivery.run from the authorization check to the bundle
+        busy = _revise_raw(lab, cid, ref, display_name="Hero v4")
+        assert busy["error"]["code"] == "conflict" and "campaign_busy" in busy["error"]["message"]
+    assert ok(_revise_raw(lab, cid, ref, display_name="Hero v4"))["revision"] == 2  # released afterwards
+
+
+def _revise_raw(lab, cid, ref, **request):
+    params = {"project": "toy", "request": lab.request | request, "reference_id": ref, "revise": cid}
+    return call("campaign_create", params)
+
+
+def test_readiness_ignores_bundles_of_superseded_selections(lab, monkeypatch):
+    from sonoranlab.api.tools import delivery
+
+    cid, _, _, a = _approved(lab)
+    request_sha = campaign._view(campaign._find(cid), lab.ctx)["_revisions"][-1]["request_sha256"]
+    real = campaign._composed_approvals
+    old = {"idle": "job-20261028T000000Z-0000000a", "run": "job-20261028T000000Z-0000000b"}  # earlier selections
+
+    def with_old_sheet(*args, **kw):
+        return real(*args, **kw) | {"job-old-sheet": old}
+
+    monkeypatch.setattr(campaign, "_composed_approvals", with_old_sheet)
+    ready = {"bundles": [{"states": {"READY_TO_INSTALL": True}}]}
+    monkeypatch.setattr(delivery, "delivery_status", lambda **k: ready)
+    bundle = {
+        "kind": "build_delivery",
+        "state": "succeeded",
+        "job_id": "b-old",
+        "input_hashes": {"request": request_sha},
+    }
+    bundle["params"] = {"campaign_id": cid, "composed": "job-old-sheet"}
+    real_jobs = campaign.manager.reconcile_all
+    monkeypatch.setattr(campaign.manager, "reconcile_all", lambda: [*real_jobs(), bundle])
+    assert status(cid)["state"] == "ARTIFACT_APPROVED"  # the old sheet's bundle does not make this READY
+    bundle["params"]["composed"] = a.composed["job"]  # a bundle of the current sheet does
+    assert status(cid)["state"] == "READY_TO_INSTALL"

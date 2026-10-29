@@ -731,6 +731,25 @@ def check_delivery(campaign_id: str, composed_job: str, ctx: Context) -> dict:
     return view["_revisions"][-1]
 
 
+@contextmanager
+def delivery_hold(campaign_id: str):
+    """Hold the campaign mutation lock while a bundle is checked and built, so no decision or revision can land
+    between the authorization check and the bundle (waits briefly for another writer)."""
+    path = _find(campaign_id)
+    with ExitStack() as stack:
+        for _ in range(120):
+            try:
+                stack.enter_context(_writer(path))
+                break
+            except ToolError as exc:
+                if not exc.error["message"].startswith("campaign_busy"):
+                    raise
+                time.sleep(0.5)
+        else:
+            raise ToolError("conflict", "campaign_busy: could not hold the campaign for delivery", field="campaign_id")
+        yield
+
+
 def record_composed(campaign_id: str, params: dict, job_id: str, artifact_id: str, sheet_sha256: str, ctx: Context):
     """Append the `composed` event under the writer lock (waits briefly if another writer holds it)."""
     path = _find(campaign_id)
@@ -881,7 +900,9 @@ def _view(path: Path, ctx: Context) -> dict:
         ]
         if state == "ARTIFACT_APPROVED":
             # Bundles give STAGED/READY only; INSTALLED comes only from an owner CLI record.
-            found = [_bundle_state(frozen["campaign_id"], set(composed), frozen["request_sha256"], jobs, ctx)]
+            # Only sheets that contain every current selection count (check_delivery's rule).
+            live = {j for j, ins in composed.items() if ins == {c: clips[c]["selected"] for c in plan}}
+            found = [_bundle_state(frozen["campaign_id"], live, frozen["request_sha256"], jobs, ctx)]
             found += [DELIVERY[d] for d in delivered[-1:]]
             order = list(DELIVERY.values())
             state = max((f for f in found if f), key=order.index, default=state)
