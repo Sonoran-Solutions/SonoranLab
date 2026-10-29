@@ -140,3 +140,24 @@ def test_parity_on_real_relay_sentinel_frames() -> None:
         assert info["shift_px"] == winfo["shift_px"] and info["clipped_px"] == winfo["clipped_px"], d
         checked += 1
     assert checked
+
+
+def test_anchor_frame_keeps_a_non_loop_clip_where_its_start_pose_stands():
+    """A cast throws the rifle forward in later frames: the median bbox centre moves right, which would shift the whole
+    clip left (the character jumps when it starts shooting). anchor_frame=0 places it by the start pose instead."""
+
+    def frame(rifle: int) -> np.ndarray:
+        f = np.zeros((40, 40, 4), np.uint8)
+        f[10:38, 16:24] = (200, 40, 40, 255)  # body: centre x 20
+        if rifle:
+            f[18:20, 24 : 24 + rifle] = (30, 60, 220, 255)
+        return f
+
+    frames = [frame(0), frame(12), frame(12), frame(12), frame(0)]
+    _, info_m = register_clip(frames, (40, 40), foot_y=37, anchor_x=20)
+    by_start, info_s = register_clip(frames, (40, 40), foot_y=37, anchor_x=20, anchor_frame=0)
+    assert info_m["shift_px"][0] == -6 and "anchor_frame" not in info_m  # loop clips: unchanged rule
+    assert info_s["shift_px"][0] == 0 and info_s["anchor_frame"] == 0
+    assert np.array_equal(by_start[0], frames[0])  # the start pose is not moved
+    with pytest.raises(ValueError, match="anchor_frame"):
+        register_clip(frames, (40, 40), foot_y=37, anchor_x=20, anchor_frame=5)

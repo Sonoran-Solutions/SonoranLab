@@ -431,7 +431,12 @@ def run(
     registered, reg = {}, {}
     for d, fs in staged["04_clean"].items():
         registered[d], reg[d] = register_clip(
-            fs, spec.cell, foot_y=spec.foot_y, anchor_x=spec.anchor_x, mode=spec.anchor_mode
+            fs,
+            spec.cell,
+            foot_y=spec.foot_y,
+            anchor_x=spec.anchor_x,
+            mode=spec.anchor_mode,
+            anchor_frame=None if clip.loop or spec.anchor_mode == "rig" else 0,  # non-loop: stay where the still stands
         )
     outputs |= artifacts.write_stage(job, "05_registered", registered)
     try:

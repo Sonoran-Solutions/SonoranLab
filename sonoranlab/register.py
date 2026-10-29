@@ -42,6 +42,7 @@ def register_clip(
     anchor_x: int,
     mode: str = "foot",
     anchors: list[tuple[float, float]] | None = None,
+    anchor_frame: int | None = None,
 ) -> tuple[list[np.ndarray], dict]:
     """Register one clip (one direction) into `cell` = (width, height) frames; returns (frames, info).
 
@@ -52,6 +53,10 @@ def register_clip(
     `foot_y`. Frames may be any size; output is exactly the cell. Pixels pushed outside it are counted per frame in
     `clipped_px` (the validator turns nonzero into a failure). Info: `mode`, `shift_px` [dx, dy], `raw_lowest_rows`,
     `raw_shifts_px` (the shift each frame alone would need, to tell model drift from a fixed clip), `clipped_px`.
+    `anchor_frame`: dx comes from that frame alone instead of the median. A non-looping clip (cast, death) starts
+    from the approved still pose at frame 0 and must stay where the still and idle stand; a median over an action
+    that throws a weapon or the body sideways would shift the whole clip and the character would jump when the action
+    starts. dy is unchanged (the clip's lowest row on the foot line).
     An empty frame returns blank cells and `{"error": "empty frame", "shift_px": None, "empty_frames": [i, ...]}`.
     """
     if mode not in MODES:
@@ -77,12 +82,15 @@ def register_clip(
         xs, ys = [float(a[0]) for a in anchors], [float(a[1]) for a in anchors]
     else:
         xs, ys = [(b[0] + b[2] + 1) / 2 for b in boxes], lowest
-    dx = round_half_up(anchor_x - float(np.median(xs)))
+    if anchor_frame is not None and not 0 <= anchor_frame < len(frames):
+        raise ValueError(f"anchor_frame {anchor_frame} is outside the clip's {len(frames)} frames")
+    dx = round_half_up(anchor_x - (xs[anchor_frame] if anchor_frame is not None else float(np.median(xs))))
     dy = round_half_up(foot_y - max(ys))
     out = [_place(f, cw, ch, dx, dy) for f in frames]
     return out, {
         "mode": mode,
         "shift_px": [dx, dy],
+        **({"anchor_frame": anchor_frame} if anchor_frame is not None else {}),
         "raw_lowest_rows": lowest,
         "raw_shifts_px": [
             [round_half_up(anchor_x - x), round_half_up(foot_y - y)] for x, y in zip(xs, ys, strict=True)
