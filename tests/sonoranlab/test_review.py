@@ -863,7 +863,11 @@ def test_profile_inside_the_read_roots_is_read_in_place_without_git(job, monkeyp
     def no_git(*args, **kwargs):
         raise AssertionError("git consulted for a readable profile")
 
+    recover = repo_inputs.recover
     monkeypatch.setattr(repo_inputs, "recover", no_git)
     assert production_usable(job)
-    profile.write_text(profile.read_text() + "# drifted\n")
-    assert not production_usable(job)  # read in place, a drift breaks the binding (no git fallback here)
+    monkeypatch.setattr(repo_inputs, "recover", recover)  # a mismatch may consult git (the same-row equivalence)
+    doc = yaml.safe_load(profile.read_text())
+    doc["alpha"]["threshold"] -= 1
+    profile.write_text(yaml.safe_dump(doc))
+    assert not production_usable(job)  # read in place, a shared-setting drift breaks the binding

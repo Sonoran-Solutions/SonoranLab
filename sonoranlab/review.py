@@ -140,24 +140,31 @@ def _export_files(job: Path) -> dict[str, str]:
     return files
 
 
-def _same_character_profile(path: Path, sha: object, rev: object, character: object) -> bool:
+def same_character_profile(current: Path, recorded: object, rev: object, character: object) -> bool:
     """A changed profile file still binds a job when only *other* characters' rows changed.
 
-    The recorded file is recovered from git at the job's recorded commit and must hash to the recorded sha256 (so the
-    comparison is against exactly the bytes the job used); then every top-level setting and this job's character row
-    must be identical. Anything unverifiable is a mismatch.
+    The bytes the job used are recovered from git at the job's recorded commit (this repository's history by content
+    hash, else the repository holding `current`) and must hash to the recorded sha256, so the comparison is against
+    exactly those bytes; then every top-level setting and this job's character row (bar admission-only keys) must be
+    identical in `current`. Anything unverifiable is a mismatch. Shared by review, import and repair admission.
     """
+    if not isinstance(recorded, dict) or not isinstance(character, str) or not character:
+        return False
+    sha = recorded.get("sha256")
     if not (isinstance(sha, str) and isinstance(rev, str) and re.fullmatch(r"[0-9a-f]{40}", rev)):
         return False
-    if not isinstance(character, str) or not character:
-        return False
     try:
-        r = subprocess.run(
-            ["git", "-C", str(path.parent), "show", f"{rev}:./{path.name}"], capture_output=True, timeout=10
-        )
-        if r.returncode != 0 or hashlib.sha256(r.stdout).hexdigest() != sha:
-            return False
-        old, new = yaml.safe_load(r.stdout), yaml.safe_load(path.read_bytes())
+        found = repo_inputs.recover(recorded.get("path"), sha, rev)
+        if found:
+            data = found.data
+        else:
+            r = subprocess.run(
+                ["git", "-C", str(current.parent), "show", f"{rev}:./{current.name}"], capture_output=True, timeout=10
+            )
+            if r.returncode != 0 or hashlib.sha256(r.stdout).hexdigest() != sha:
+                return False
+            data = r.stdout
+        old, new = yaml.safe_load(data), yaml.safe_load(current.read_bytes())
     except (OSError, subprocess.SubprocessError, yaml.YAMLError):
         return False
     if not (isinstance(old, dict) and isinstance(new, dict)):
@@ -183,7 +190,7 @@ def _canonical(value: object) -> str:
     return json.dumps(value, sort_keys=True, default=repr)
 
 
-def _bound_character(job: Path, manifest: dict) -> str | None:
+def bound_character(job: Path, manifest: dict) -> str | None:
     """The manifest's character, only when the validated report agrees (a relabelled manifest cannot pick a row)."""
     try:
         report = _load(job / "report.json")
@@ -252,8 +259,8 @@ def _provenance(job: Path) -> tuple[dict | None, list[str]]:
             pass
         elif gone:
             problems.append(f"profile {p}: missing or not a regular file")
-        elif sha256_file(p) != profile.get("sha256") and not _same_character_profile(
-            p, profile.get("sha256"), manifest.get("git"), _bound_character(job, manifest)
+        elif sha256_file(p) != profile.get("sha256") and not same_character_profile(
+            p, profile, manifest.get("git"), bound_character(job, manifest)
         ):
             problems.append(f"profile {p}: sha256 differs from manifest")
     try:

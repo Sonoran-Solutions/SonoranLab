@@ -595,23 +595,20 @@ def _confine_profile_templates(source: Path) -> None:
                 require_regular_file(path)
 
 
-def import_job(project: str, character: str, job_dir: str, *, ctx: Context) -> dict:
-    profile = _character(project, character, ctx)
-    job = _job_directory(job_dir, ctx)
-    artifacts_root = paths.state_root() / "artifacts"
-    if job.is_relative_to(artifacts_root) and not job.is_relative_to(artifacts_root / project / character):
-        raise ToolError("path_refused", "Job belongs to another project or character")
-    current, manifest, animate = _job_metadata(job, ctx)
-    inputs = animate["inputs"] if animate else manifest
-    if inputs.get("character") != character:
-        raise ToolError("invalid_params", "Job character differs from requested character")
-    provenance = inputs.get("profile")
+def _admit_profile_provenance(
+    project: str, profile, current: Path, manifest: dict, animate: dict | None, ctx: Context
+) -> dict:
+    """The job's recorded profile bindings (animate.json and the final manifest) identify `project`. Reads nothing
+    outside the read roots and writes nothing."""
+    provenance = (animate["inputs"] if animate else manifest).get("profile")
     if not isinstance(provenance, dict) or not isinstance(provenance.get("path"), str):
         raise ToolError("invalid_params", "Job has no profile provenance")
     # A synthetic or historical profile copy must still identify the same project.
     from sonoranlab.profile import load_profile
+    from sonoranlab.review import bound_character, same_character_profile
 
     provenances = [provenance, manifest["profile"]] if manifest else [provenance]
+    character_bound = bound_character(current, manifest) if manifest else None  # report and manifest must agree
     for binding in provenances:
         # animate.json records its own repo_rev; borrow the final manifest's commit only for an identical binding.
         if manifest and _same_binding(binding, manifest["profile"]):
@@ -639,9 +636,27 @@ def import_job(project: str, character: str, job_dir: str, *, ctx: Context) -> d
             _confine_profile_templates(source_profile)
         else:
             require_regular_file(source_profile)
-        # The repository profile (including its templates) was already loaded by _character.
-        if load_profile(source_profile).id != project or sha256_file(source_profile) != binding.get("sha256"):
+        # The repository profile (including its templates) was already loaded by _character. A file edited since the
+        # job ran still binds when only other characters' rows changed (the review layer's equivalence).
+        if load_profile(source_profile).id != project or (
+            sha256_file(source_profile) != binding.get("sha256")
+            and not same_character_profile(source_profile, binding, rev, character_bound)
+        ):
             raise ToolError("invalid_params", "Job profile provenance does not match the requested project")
+    return provenance
+
+
+def import_job(project: str, character: str, job_dir: str, *, ctx: Context) -> dict:
+    profile = _character(project, character, ctx)
+    job = _job_directory(job_dir, ctx)
+    artifacts_root = paths.state_root() / "artifacts"
+    if job.is_relative_to(artifacts_root) and not job.is_relative_to(artifacts_root / project / character):
+        raise ToolError("path_refused", "Job belongs to another project or character")
+    current, manifest, animate = _job_metadata(job, ctx)
+    inputs = animate["inputs"] if animate else manifest
+    if inputs.get("character") != character:
+        raise ToolError("invalid_params", "Job character differs from requested character")
+    provenance = _admit_profile_provenance(project, profile, current, manifest, animate, ctx)
     if manifest and manifest.get("character") != character:
         raise ToolError("invalid_params", "Final job character differs from requested character")
     for relative, expected in manifest.get("outputs", {}).items():

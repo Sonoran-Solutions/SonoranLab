@@ -242,3 +242,60 @@ def test_identical_animate_binding_uses_the_final_jobs_commit(setup, job, monkey
         job, monkeypatch, tmp_path_factory, versions=[""], final=0, animate_binding=("final-wt/profiles/toy.yaml", 0)
     )
     assert registry.import_job("toy", "hero", str(outer), ctx=ctx)["artifact_id"].startswith("import-")
+
+
+def _edited_repo_profile(setup, job, monkeypatch, edit):
+    """The job ran against the repository profile (with a second character) at a recorded commit; the profile has
+    since been edited in place by `edit`."""
+    from sonoranlab import repo_inputs
+
+    ctx, _, _ = setup
+    profile = ctx.repo / "profiles/toy.yaml"
+    doc = yaml.safe_load(profile.read_text())
+    doc["characters"]["villain"] = dict(doc["characters"]["hero"])
+    (rev,) = _repo_with(ctx.repo / "git", yaml.safe_dump(doc))  # this repository's history; profiles/ has no git
+    profile.write_text(yaml.safe_dump(doc))
+    manifest_path = job / "manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    manifest["profile"] = {"path": str(profile), "sha256": sha256_file(profile)}
+    manifest["git"] = rev
+    manifest_path.write_text(json.dumps(manifest))
+    monkeypatch.setattr(repo_inputs, "_REPO", ctx.repo / "git")
+    edit(doc)
+    profile.write_text(yaml.safe_dump(doc))
+
+
+def test_import_admits_a_profile_changed_only_in_another_characters_row(setup, job, monkeypatch):
+    ctx, _, _ = setup
+    _edited_repo_profile(
+        setup, job, monkeypatch, lambda d: d["characters"]["villain"].update(max_attempts_per_animation=6)
+    )
+    assert registry.import_job("toy", "hero", str(job), ctx=ctx)["artifact_id"].startswith("import-")
+
+
+@pytest.mark.parametrize(
+    "edit",
+    [
+        lambda d: d["characters"]["hero"].update(cell=d["characters"]["hero"]["cell"] + 1),
+        lambda d: d["autonomy"].update(max_seeds_per_attempt=2),
+    ],
+)
+def test_import_refuses_an_own_row_or_shared_setting_change(setup, job, monkeypatch, edit):
+    ctx, _, _ = setup
+    _edited_repo_profile(setup, job, monkeypatch, edit)
+    with pytest.raises(ToolError) as exc:
+        registry.import_job("toy", "hero", str(job), ctx=ctx)
+    assert exc.value.error["code"] == "invalid_params" and "requested project" in exc.value.error["message"]
+
+
+def test_import_relabelled_report_gets_no_row_equivalence(setup, job, monkeypatch):
+    ctx, _, _ = setup
+    _edited_repo_profile(setup, job, monkeypatch, lambda d: d["characters"]["villain"].update(cell=99))
+    report = json.loads((job / "report.json").read_text())
+    report["character"] = "villain"  # report and manifest disagree: the equivalence has no row to trust
+    (job / "report.json").write_text(json.dumps(report))
+    manifest = json.loads((job / "manifest.json").read_text())
+    manifest["outputs"]["report.json"] = sha256_file(job / "report.json")
+    (job / "manifest.json").write_text(json.dumps(manifest))
+    with pytest.raises(ToolError, match="requested project"):
+        registry.import_job("toy", "hero", str(job), ctx=ctx)

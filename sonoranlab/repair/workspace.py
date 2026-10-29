@@ -41,6 +41,7 @@ from sonoranlab.repair.confine import (
     verify_destination,
 )
 from sonoranlab.repair.runtime import AsepriteConverter, no_symlinks, seed_home
+from sonoranlab.review import bound_character, same_character_profile
 
 SCHEMA = "sonoranlab.repair/1"
 
@@ -89,8 +90,11 @@ def _parent_hashes(parent: Path, sources: dict[str, Path], profile: Profile, cha
         raise Refused("repair requires an exported parent job")
     if manifest.get("character") != character or manifest.get("animation") != anim:
         raise Refused("parent character/animation does not match the repair")
-    if manifest.get("profile", {}).get("sha256") != sha256_file(profile.path):
-        raise Refused("parent profile sha256 differs")
+    recorded = manifest.get("profile", {})
+    if recorded.get("sha256") != sha256_file(profile.path) and not same_character_profile(
+        profile.path, recorded, manifest.get("git"), bound_character(parent, manifest)
+    ):
+        raise Refused("parent profile sha256 differs")  # beyond another character's row
     paths = [parent / "report.json", parent / "manifest.json"]
     if (parent / "review.json").exists():
         paths.append(parent / "review.json")
