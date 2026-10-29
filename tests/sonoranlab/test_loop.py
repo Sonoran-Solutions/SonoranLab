@@ -112,8 +112,9 @@ def test_select_once_return_ignores_the_unmoved_run_up() -> None:
 def test_select_once_fall_ends_when_motion_settles_golden() -> None:
     pick = select_once(once_clip("fall"), n_frames=6, size=48, end="settle")
     assert pick.end["settled"] is True and pick.end["end"] == 15  # the last tipping step ends at frame 15
-    # golden: 5 picks over [0, 15], then one resting frame a stride later, so the held final pair is two resting frames
-    assert pick.picks == [0, 4, 8, 11, 15, 19] and pick.end["hold_pick"] == 19
+    # golden: 5 picks over [0, 15], then the clip's final frame, so the held final pair is two resting frames
+    assert pick.picks == [0, 4, 8, 11, 15, 32] and pick.end["hold_pick"] == 32
+    assert pick.end["metric"] == "silhouette_to_final"
     assert pick.loop_seam_score == 0 and len(pick.end["steps"]) == 32  # resting pair: no motion between them
 
 
@@ -144,3 +145,24 @@ def test_end_rule_is_explicit() -> None:
     assert end_rule(Animation(8, 10, False)) == "return"
     assert end_rule(Animation(6, 8, False, hold_last=True)) == "return"  # hold_last never implies fall
     assert end_rule(Animation(6, 8, False, hold_last=True, validator_mode="fall")) == "settle"
+
+
+def test_select_once_settle_waits_for_a_slow_slide_to_stop() -> None:
+    """Live gun death seeds: after landing the body slid ~1 px a frame. Each step is small (the step rule called it
+    settled), but the slide adds up; settling is judged against the final silhouette instead."""
+    frames = []
+    for i in range(33):
+        a = np.zeros((64, 64, 4), np.uint8)
+        t = min(max(i - 5, 0), 10) / 10
+        h, w = round(40 - 32 * t), round(8 + 32 * t)
+        x = 32 - w // 2 + (min(i, 26) - 15 if i > 15 else 0)  # lands at 15, slides right 1 px/frame until 26
+        a[60 - h : 60, x : x + w] = (200, 40, 40, 255)
+        frames.append(Image.fromarray(a))
+    pick = select_once(frames, n_frames=6, size=48, end="settle")
+    assert pick.end["settled"] and pick.end["end"] >= 25 and pick.picks[-1] == 32
+
+
+def test_settle_bound_matches_the_validator_hold_bound() -> None:
+    from sonoranlab import loop, validate
+
+    assert loop.SETTLE_SILHOUETTE == validate.FALL_HOLD_MAX_DELTA
