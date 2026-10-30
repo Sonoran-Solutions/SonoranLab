@@ -27,21 +27,27 @@ def parse_hex(background: str) -> tuple[int, int, int]:
 
 
 def prepare_start_image(
-    still_rgba: Path, cell: int, out: Path, *, background: str = "#808080", scale: int = 3
+    still_rgba: Path, cell: int, out: Path, *, background: str = "#808080", scale: int = 3, canvas: int | None = None
 ) -> dict[str, Any]:
-    """Exclusively create `out` (RGB PNG, canvas x canvas). Refuses a still that is not cell x cell or has no alpha."""
+    """Exclusively create `out` (RGB PNG, canvas x canvas). Refuses a still that is not cell x cell or has no alpha.
+
+    `canvas` (default gen_canvas(cell, scale)) may be larger than the scaled still: a fall clip keeps the x3 canvas and
+    places the still at x2, centred, so the body has background room to land in (profile `start_scale`)."""
     bg = parse_hex(background)
+    canvas = gen_canvas(cell, scale) if canvas is None else canvas
+    if canvas < cell * scale:
+        raise ValueError(f"canvas {canvas} is smaller than the still at x{scale} ({cell * scale})")
     with Image.open(still_rgba) as im:
         if im.size != (cell, cell):
             raise ValueError(f"{still_rgba}: still is {im.width}x{im.height}, expected {cell}x{cell}")
         if "A" not in im.getbands() and "transparency" not in im.info:
             raise ValueError(f"{still_rgba}: still has no alpha channel (expected an RGBA cell-size still)")
         big = im.convert("RGBA").resize((cell * scale,) * 2, Image.NEAREST)
-    canvas = gen_canvas(cell, scale)
     flat = Image.new("RGBA", big.size, (*bg, 255))
     flat.alpha_composite(big)
     page = Image.new("RGB", (canvas, canvas), bg)
-    page.paste(flat.convert("RGB"), ((canvas - big.width) // 2, (canvas - big.height) // 2))
+    offset = ((canvas - big.width) // 2, (canvas - big.height) // 2)
+    page.paste(flat.convert("RGB"), offset)
     with open(out, "xb") as f:
         page.save(f, format="PNG")
     return {
@@ -49,6 +55,8 @@ def prepare_start_image(
         "sha256": hashlib.sha256(out.read_bytes()).hexdigest(),
         "canvas": canvas,
         "background": background,
+        "scale": scale,
+        "offset": list(offset),
     }
 
 

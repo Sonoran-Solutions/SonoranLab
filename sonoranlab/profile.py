@@ -83,6 +83,9 @@ class Animation:
     template: Path | None = None  # templates/poses/<name> dir holding template.yaml
     validator_mode: str | None = None  # None = the default rules; "fall" = ADR-0008 fall addendum (explicit only)
     prompt_motion: str | None = None  # Track E motion text for a non-run clip; None keeps the generic prompt
+    # Track E: integer scale of the approved still on the unchanged round16(cell*3) canvas (None = x3, the canvas
+    # filling the frame); a smaller scale leaves background room around it, and processing downscales by it
+    start_scale: int | None = None
 
 
 @dataclass(frozen=True)
@@ -527,7 +530,8 @@ def _directions(raw: dict, errs: list[str]) -> Directions | None:
 
 
 ANIM_KEYS = ("frames", "fps", "loop", "loop_from", "hold_last", "track_default", "template")
-ANIM_KEYS += ("validator_mode", "prompt_motion")
+ANIM_KEYS += ("validator_mode", "prompt_motion", "start_scale")
+MAX_START_SCALE = 3  # the Track E canvas is round16(cell * 3); a still placed bigger would not fit
 
 
 def _animation(a: Any, where: str, base: Path, errs: list[str], *, parent: Animation | None = None) -> Animation | None:
@@ -547,11 +551,12 @@ def _animation(a: Any, where: str, base: Path, errs: list[str], *, parent: Anima
         "template": _path(_val(a, where, "template", "str", errs, required=False), base),
         "validator_mode": _val(a, where, "validator_mode", "str", errs, choices=VALIDATOR_MODES, required=False),
         "prompt_motion": _val(a, where, "prompt_motion", "str", errs, required=False),
+        "start_scale": _val(a, where, "start_scale", "int", errs, lo=1, hi=MAX_START_SCALE, required=False),
     }
     motion = vals["prompt_motion"]
     if motion is not None and (not motion.strip() or len(motion) > MAX_PROMPT_MOTION or not motion.isprintable()):
         errs.append(f"{where}.prompt_motion: expected 1-{MAX_PROMPT_MOTION} printable characters on one line")
-    nullable = ("loop_from", "track_default", "template", "validator_mode", "prompt_motion")
+    nullable = ("loop_from", "track_default", "template", "validator_mode", "prompt_motion", "start_scale")
     vals = {k: v for k, v in vals.items() if k in a and (v is not None or k in nullable)}
     if req and any(k not in vals for k in ("frames", "fps", "loop")):
         return None

@@ -251,6 +251,14 @@ class TrackE:
             if fmt != "PNG" or mode != "RGB" or size[0] % 16:
                 raise bad(f"source_image without alpha must be an RGB PNG with a multiple-of-16 edge ({fmt} {mode})")
             kind, cell, canvas = "canvas", None, size[0]
+        # start_scale keeps the x3 canvas (same width/height, so the same Wan latent tokens and memory) and only
+        # places the still smaller on it; it never widens the canvas
+        scale = r.start_scale
+        if scale is not None:
+            if isinstance(scale, bool) or not isinstance(scale, int) or not 1 <= scale <= 3:
+                raise bad(f"start_scale must be an int in 1..3 (the canvas is the x3 canvas), got {scale!r}")
+            if kind != "still":
+                raise bad("start_scale places an RGBA still; this source_image is already a canvas")
         if canvas > MAX_CANVAS:
             raise bad(f"canvas {canvas} exceeds {MAX_CANVAS}")
         out = Path(r.out_dir).resolve()
@@ -266,6 +274,7 @@ class TrackE:
             kind=kind,
             cell=cell,
             canvas=canvas,
+            scale=scale,
             attempt=attempt,
             staging=staging,
         )
@@ -373,7 +382,11 @@ class TrackE:
         src = Path(request.source_image)
         shutil.copyfile(src, out / "source" / f"source_image{src.suffix}")
         start = out / "source" / "start_image.png"
-        if plan.kind == "still":
+        if plan.kind == "still" and plan.scale is not None:
+            prep = prepare_start_image(
+                src, plan.cell, start, background=request.background, scale=plan.scale, canvas=plan.canvas
+            )
+        elif plan.kind == "still":
             prep = prepare_start_image(src, plan.cell, start, background=request.background)
         else:
             shutil.copyfile(src, start)
@@ -381,7 +394,7 @@ class TrackE:
         plan.staging.parent.mkdir(parents=True, exist_ok=True)
         plan.staging.mkdir()  # exclusive: an attempt id is staged once
         shutil.copyfile(start, plan.staging / "start_image.png")
-        return {
+        source = {
             "kind": plan.kind,
             "cell": plan.cell,
             "canvas": prep["canvas"],
@@ -390,6 +403,9 @@ class TrackE:
             "source_sha256": _sha(src),
             "staged": str(plan.staging / "start_image.png"),
         }
+        if plan.scale is not None:  # provenance of the placement; default-scale results keep their exact keys
+            source |= {"start_scale": prep["scale"], "placement": prep["offset"]}
+        return source
 
     def _collect(self, record: RunRecordLike, out: Path, res: RawResult) -> None:
         """Copy every output into its subdir (frames in counter order), hash the copy, keep partials on failure."""

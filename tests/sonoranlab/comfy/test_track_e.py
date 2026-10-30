@@ -205,6 +205,48 @@ def test_canvas_for_samurai_cell(env) -> None:
     assert (env.client.calls[0]["values"]["width"], env.client.calls[0]["values"]["height"]) == (560, 560)
 
 
+def test_start_scale_places_the_still_smaller_on_the_same_canvas(env) -> None:
+    """Fall clips (profile start_scale): the gun's 160 px cell keeps the 480 px canvas, so WanImageToVideo gets the same
+    width/height (same latent tokens, same admitted memory); the still sits at x2, centred, with 80 px of room each
+    side. Recorded in request.json and checks.source; a default request carries neither key."""
+    still = write_still(env.tmp / "gun.png", 160)
+    default = adapter(env).generate(request(env, source_image=still, out_dir=env.tmp / "attempts" / "x3"))
+    fall = adapter(env).generate(
+        request(env, source_image=still, anim="death", prompt="falls", start_scale=2, out_dir=env.tmp / "attempts/x2")
+    )
+    assert default.status == fall.status == "ok"
+    v3, v2 = (c["values"] for c in env.client.calls)
+    assert (v3["width"], v3["height"]) == (v2["width"], v2["height"]) == (480, 480)
+    assert {
+        k: v for k, v in v3.items() if k not in ("start_image", "prompt") and not k.startswith("output_prefix")
+    } == {k: v for k, v in v2.items() if k not in ("start_image", "prompt") and not k.startswith("output_prefix")}
+    assert "start_scale" not in json.loads((default.request.out_dir / "request.json").read_text())
+    assert "start_scale" not in default.checks["source"] and "placement" not in default.checks["source"]
+    assert json.loads((fall.request.out_dir / "request.json").read_text())["start_scale"] == 2
+    assert (fall.checks["source"]["start_scale"], fall.checks["source"]["placement"]) == (2, [80, 80])
+    assert RawResult.from_json(json.loads((fall.request.out_dir / "result.json").read_text())).request.start_scale == 2
+    with Image.open(fall.request.out_dir / "source/start_image.png") as im:
+        px = np.asarray(im)
+    body = np.argwhere((px != 128).any(-1))  # write_still: opaque square at still (4..155) -> x2 at 80+8 .. 80+311
+    assert (body.min(0).tolist(), body.max(0).tolist()) == ([88, 88], [391, 391])
+    assert (px[:, :88] == 128).all() and (px[:, 392:] == 128).all()  # background room left and right
+
+
+@pytest.mark.parametrize("kw", [{"start_scale": 4}, {"start_scale": 0}, {"start_scale": True}])
+def test_start_scale_refusals(env, kw) -> None:
+    req = request(env, **kw)
+    with pytest.raises(ValueError, match="start_scale"):
+        adapter(env).generate(req)
+    assert not req.out_dir.exists() and env.client.calls == []
+
+
+def test_start_scale_refuses_a_canvas_source(env) -> None:
+    posed = env.tmp / "posed.png"
+    Image.new("RGB", (64, 64), (10, 20, 30)).save(posed)
+    with pytest.raises(ValueError, match="already a canvas"):
+        adapter(env).generate(request(env, source_image=posed, start_scale=2))
+
+
 @pytest.mark.parametrize("direction", DIRS)
 def test_default_prompt_per_direction(env, direction: str) -> None:
     adapter(env).generate(request(env, direction=direction))

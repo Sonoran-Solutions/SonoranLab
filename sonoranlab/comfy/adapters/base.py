@@ -37,11 +37,15 @@ class GenerateRequest:
     background: str = DEFAULT_BACKGROUND
     control_image: Path | None = None  # C: Track D OpenPose render (image1, native keypoints)
     workflow: str | None = None  # repo-relative workflow override; None = the adapter's default
+    # E: integer scale of the still on the unchanged canvas (profile `start_scale`); None = the default x3 placement
+    start_scale: int | None = None
 
     def to_json(self) -> dict[str, Any]:
         d = dataclasses.asdict(self)
         for k in ("source_image", "out_dir", "control_image"):
             d[k] = None if d[k] is None else str(d[k])
+        if d["start_scale"] is None:  # added later: requests without it keep their exact JSON
+            del d["start_scale"]
         return d
 
     @classmethod

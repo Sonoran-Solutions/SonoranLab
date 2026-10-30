@@ -20,6 +20,7 @@ from PIL import Image
 
 from sonoranlab.cli import main
 from sonoranlab.profile import load_palette, load_profile, sha256_file
+from sonoranlab.register import register_clip
 from sonoranlab.slice import pack_sheet
 from sonoranlab.validate import foot_slide, frame_digest, opening, read_frames, validate
 
@@ -806,3 +807,64 @@ def test_fall_hold_ignores_colour_shimmer_on_a_resting_body():
     rep = fall_validate(frames)
     assert rep["pass"], rep["failures"]
     assert rep["directions"]["east"]["fall"]["hold_delta"] == 0.0
+
+
+def _fall_raw(x1s: list[int], width: int = 48) -> list[np.ndarray]:
+    """Raw (pre-registration) frames wider than the 32 px cell: frame 0 stands at x 14..17 (centre 16 = anchor_x),
+    then the body tips over to the right, growing to x 14..x1, bottom row 28 throughout; the last pose is held."""
+    tops = [13, 16, 19, 22, 25, 25]
+    out = []
+    for x1, y0 in zip(x1s, tops, strict=True):
+        f = np.zeros((32, width, 4), np.uint8)
+        f[y0:29, 14 : x1 + 1] = (*FALL_PAL[1], 255)
+        out.append(f)
+    return out
+
+
+def _fit_and_validate(raw: list[np.ndarray], limits=None) -> dict:
+    """pipeline.run's fall path: frame-0 anchor with fit_padding, then the fall validator with the registration."""
+    reg, info = register_clip(raw, (32, 32), foot_y=28, anchor_x=16, anchor_frame=0, fit_padding=2)
+    limits = limits or SimpleNamespace(
+        max_foot_slide_px=5, max_bbox_drift_px=8, opaque_area_cv_warn=10.0, loop_closure_ratio_warn=1.29
+    )
+    return fall_validate(reg, registration={"east": info}, limits=limits)
+
+
+def test_fall_fit_shift_passes_with_a_start_offset_warning():
+    """Frame-0 anchoring would clip the lying body at the right edge (x 33 > 29); fit, then anchor moves the clip 4 px
+    left, every frame lies inside, and the 4 px jump from the still's anchor is reported for a 1x judgement."""
+    raw = _fall_raw([17, 20, 24, 28, 33, 33])
+    unfit, info0 = register_clip(raw, (32, 32), foot_y=28, anchor_x=16, anchor_frame=0)
+    before = fall_validate(
+        unfit,
+        registration={"east": info0},
+        limits=SimpleNamespace(**vars(FALL_LIMITS) | {"max_foot_slide_px": 5, "max_bbox_drift_px": 8}),
+    )
+    assert {m.split(":")[0] for m in before["failures"]} >= {"touches_edge", "fall_final", "registration"}
+    rep = _fit_and_validate(raw)
+    assert rep["pass"], rep["failures"]
+    assert rep["registration"]["east"]["fit"] == {"padding": 2, "offset_px": -4, "fits": True}
+    assert rep["directions"]["east"]["fall"]["start_offset_px"] == -4
+    assert rep["directions"]["east"]["fall"]["foot_slide_frame0"] == 4.0  # frame 0 now stands 4 px left of anchor
+    (warn,) = [w for w in rep["warnings"] if w.startswith("fall_start_offset")]
+    assert "east death start offset -4 px from the still's anchor" in warn
+
+
+def test_fall_fit_cannot_rescue_an_unfittable_clip_or_hide_a_large_jump():
+    wide = _fall_raw([17, 22, 28, 36, 47, 47])  # union x 14..47 = 34 px > the 28 px inside the padding
+    rep = _fit_and_validate(wide)
+    assert not rep["pass"] and rep["registration"]["east"]["fit"] == {"padding": 2, "offset_px": 0, "fits": False}
+    assert {m.split(":")[0] for m in rep["failures"]} >= {"touches_edge", "fall_final", "registration"}
+    assert not [w for w in rep["warnings"] if w.startswith("fall_start_offset")]
+    far = _fall_raw([17, 22, 28, 33, 38, 38])  # fits only with a 9 px shift: frame 0's foot_slide gate (5) fails it
+    rep = _fit_and_validate(far)
+    assert rep["registration"]["east"]["fit"]["offset_px"] == -9
+    assert [m.split(":")[0] for m in rep["failures"]] == ["foot_slide"]
+    assert any(w.startswith("fall_start_offset") for w in rep["warnings"])
+
+
+def test_fall_report_without_a_fit_record_is_unchanged():
+    """Composed/finalized re-validation of older fall reports (no `fit`) and every non-fall report keep their keys."""
+    rep = fall_validate([fall_frame(*p) for p in FALL_POSES], registration={"east": {"clipped_px": [0] * 6}})
+    assert "start_offset_px" not in rep["directions"]["east"]["fall"]
+    assert not [w for w in rep["warnings"] if w.startswith("fall_start_offset")]

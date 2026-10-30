@@ -733,7 +733,7 @@ def _review_directory(entry: dict, ctx: Context) -> Path:
 
 
 # Animation keys added after rows were frozen: omitted while unset, so existing frozen character rows stay identical.
-_OPTIONAL_ANIMATION_KEYS = ("validator_mode", "prompt_motion")
+_OPTIONAL_ANIMATION_KEYS = ("validator_mode", "prompt_motion", "start_scale")
 
 
 def _spec(profile, character: str) -> dict:

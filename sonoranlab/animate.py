@@ -173,17 +173,22 @@ def _attempt_records(gen: dict, planned: Sequence[Path]) -> list[dict]:
     return records
 
 
-def _carrier(ok: dict[str, Path], *, n_frames: int, cell: int, out: Path, once: str | None = None) -> Path:
+def _carrier(
+    ok: dict[str, Path],
+    *,
+    n_frames: int,
+    cell: int,
+    out: Path,
+    once: str | None = None,
+    start_scale: int | None = None,
+) -> Path:
     """A flat dir of `<direction>_<k>.png`: each direction's first ok attempt, default pick (loop, or `once` end rule
-    for a non-looping clip), own integer scale."""
+    for a non-looping clip), own integer scale (or the whole canvas with `start_scale`)."""
     carrier = out / "carrier"
     carrier.mkdir()
     for d, attempt in ok.items():
-        with Image.open(sweep._clip_frames(attempt)[0]) as im:  # same scale rule as run_sweep
-            scale = im.width // cell
-        if scale < 1:
-            raise ValueError(f"{attempt}: clip frames are smaller than the {cell} px cell")
-        pick = sweep.loop_candidates(attempt, n_frames=n_frames, size=cell * scale, once=once)[0].loop
+        size = sweep.clip_size(attempt, cell, start_scale)  # same size rule as run_sweep
+        pick = sweep.loop_candidates(attempt, n_frames=n_frames, size=size, once=once)[0].loop
         for p in write_loop(pick, sweep._clip_frames(attempt), out / "carrier-src" / d, d):
             shutil.copyfile(p, carrier / p.name)
     return carrier
@@ -296,7 +301,15 @@ def animate(
         t = clock()
         motion = spec.animations[anim].prompt_motion
         planned = sweep.plan_generation(
-            character, anim, gen_dirs, seeds, ref, out / "gen", background="#808080", motion=motion
+            character,
+            anim,
+            gen_dirs,
+            seeds,
+            ref,
+            out / "gen",
+            background="#808080",
+            motion=motion,
+            start_scale=spec.animations[anim].start_scale,
         )
         gen = sweep.run_generation(planned, need_gib=need_gib, repo=repo, exec_container=exec_container, runner=runner)
         records = _attempt_records(gen, planned)
@@ -326,7 +339,8 @@ def animate(
         t = clock()
         n_frames = spec.animations[anim].frames
         once = end_rule(spec.animations[anim])
-        carrier = _carrier(first_ok, n_frames=n_frames, cell=spec.cell[0], out=out, once=once)
+        start_scale = spec.animations[anim].start_scale
+        carrier = _carrier(first_ok, n_frames=n_frames, cell=spec.cell[0], out=out, once=once, start_scale=start_scale)
         result = sweep.run_sweep(
             [Path(r["attempt_dir"]) for r in ok],
             profile=profile,

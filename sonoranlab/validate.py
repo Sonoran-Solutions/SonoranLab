@@ -24,6 +24,8 @@ top/left/right edges are reported as warnings. Three gates are added per directi
   fall_final    the last frame lies inside the cell padding and registration clipped none of its pixels.
   fall_hold     silhouette_delta(second-to-last, last) <= FALL_HOLD_MAX_DELTA: the held last frame is a settled pose.
   static_clip   not every frame equals frame 0 (the game's --pixel-check refuses a repeated-still death row).
+A registration `fit` offset (register_clip fit_padding: the clip was shifted to keep the lying body inside the cell)
+is reported as a `fall_start_offset` warning, never gated: frame 0 then stands that far from the still's anchor.
 Every other rule, limit and warning is unchanged; loop rules never run for loop=False.
 Diagnostics are reported, never gated. `pass` is True iff `failures` is empty.
 """
@@ -361,6 +363,14 @@ def validate(
             failures.append(f"foot_line: {d} clip lowest opaque row {clip_low}, expected {foot_y}")
         if fall:
             failures += _fall_gates(d, fs, boxes, clipped, cyc, recs, w, h, padding)
+            fit = ((registration or {}).get(d) or {}).get("fit")
+            if fit is not None:
+                cyc["fall"]["start_offset_px"] = off = fit.get("offset_px", 0)
+                if off:
+                    warnings.append(
+                        f"fall_start_offset: {d} death start offset {off:+d} px from the still's anchor (registration "
+                        "fit the clip inside the cell; frame 0 jumps that far from the idle; judge it at 1x)"
+                    )
         cv, cv_lim = cyc["opaque_area_cv"], lim["opaque_area_cv_warn"]
         if cv is not None and cv > cv_lim:
             warnings.append(f"opaque_area_cv: {d} {cv:.3f} > {cv_lim:g}; can mean a lost accessory")
