@@ -23,6 +23,16 @@ failing test; the slow region is the pre-existing `tests/sonoranlab/jobs` plus t
 hosted runs took 15.5 min (`b41d487`) and 18 min (#66 at `2363c2b`, all green). The cap is raised to 40 min in
 `db7867c`/`bcd928e` (#68/#65); that file is the only change between the tested code tree and the PR heads.
 
+Final hosted CI (2026-10-30): #52–#61, #65, #66 (combined, 30.5 min), #67 and #68 are green on both jobs. Three
+intermediate stacked PRs stay red by construction, and none of them is a separate defect:
+- #62 (`71fd442`) and #64 (`9198158`): 5 failures, all in `tests/sonoranlab/smoke/test_job.py`. These come from the
+  newclass fake executor leaking into later smoke tests through the global executor cache. #65 (`b41d487`) fixes it,
+  with a regression test, which is why #65 onwards and the combined tree are green.
+- #63 (`e37856e`): hit the old 25-min cap carrying the same code.
+
+Merging in the stated order makes the tree green at #65. Rewriting the stacked history to make each intermediate head
+green was not done.
+
 Integration-only commits (no focused branch): `698f813` gives the repair test fixture report an `animation`; it is
 needed once #67 and #68 meet, because `bound_character` checks character and clips. The `review.py` merge
 resolution in `c08d0f0` combines #67's shared `same_character_profile` with #68's per-clip bound.
