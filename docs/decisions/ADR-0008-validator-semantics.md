@@ -100,3 +100,11 @@ In fall mode, and only there:
   0, mirroring the game's `--pixel-check` refusal of a repeated-still death row).
 - `opaque_area_cv` stays a warning; the loop rules already do not run for loop=False. No limit is loosened and no
   other clip's rules change. `cast` uses the gun's existing gates unchanged.
+- **Registration: fit, then anchor** (amended 2026-10-29 with the owner's "Widen the canvas for fall clips"). A fall
+  clip is still registered on frame 0's anchor. If the union of all its frames' boxes would then leave the cell
+  padding horizontally, and is narrow enough to fit, the whole clip moves by the minimum horizontal amount that keeps
+  every frame inside (`registration.<dir>.fit.offset_px`); if no shift can fit it, it stays frame-0 anchored and
+  `touches_edge`/`fall_final` fail it. A non-zero offset is reported as a `fall_start_offset` WARNING ("death start
+  offset N px from the still's anchor") and as `fall.start_offset_px`, so the owner judges the jump at 1×. Frame 0's
+  `foot_slide` gate is unchanged and is measured against the cell anchor, so an offset larger than
+  `max_foot_slide_px` minus frame 0's own slide still fails. Loop clips and `cast` never fit.

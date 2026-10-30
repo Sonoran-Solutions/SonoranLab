@@ -88,6 +88,17 @@ campaign revision may add clips: the request's `clips` list is plan-only and the
 the gun's approved run/idle selections stay current while cast/death get the owner's 3-seed budget. No hold field is
 emitted (the game holds a non-loop clip's last frame); delivery needs every planned clip and the exact request.
 
+**Amendment 2026-10-29 (gun death room).** Six live gun death seeds lost the lying body (120–137 px wide at cell
+scale) past the source frame's left/right edge: Track E placed the still at ×3 on the round16(cell×3) = 480 px canvas,
+so the standing figure filled the frame. Owner decision: "Widen the canvas for fall clips, grant 3 more death seeds
+(cap to 9), and compose the full 4-clip sheet only when death passes." As implemented: the gun's `death` sets profile
+`start_scale: 2` — the canvas stays 480×480 (Wan `WanImageToVideo` width/height and therefore latent tokens and the
+admitted 40 + 8 GiB run window are unchanged) and the still is placed at ×2, centred, leaving 80 px of background
+each side; processing divides the frames by 2 (240 px at cell scale) and registration places them into the 160 px
+cell. Fall clips register "fit, then anchor" (ADR-0008 fall addendum). The gun row's `max_attempts_per_animation`
+is 9 (was 6); each clip's campaign seed budget still bounds it, and the 3-seed grant is recorded by the coordinator.
+Run, idle and cast requests and processing are unchanged.
+
 Every exported sheet: eight rows in profile order; five generated directions; north-west/west/south-west animation
 rows mirrored from north-east/east/south-east; column 0 = the eight approved stills, pixel-exact; unchanged palette,
 alpha and validator limits.
@@ -157,7 +168,7 @@ here. Samurai, oathguard and pyromancer are regression baselines, not new classe
 | O2 | Accept this ADR | **accepted 2026-10-29** with the amendments above |
 | O3 | Trial classes gun, thief, engineer; Codex creates the references | given 2026-10-28 |
 | O4 | Each class request and its eight-still reference set (hash-bound) | given 2026-10-28: "Approve all three" (gun-v3, thief-v3-dp6, engineer-v3); engineer `height_m` amended to 1.74 on 2026-10-28 ("Set height_m to 1.74") |
-| O5 | Profile rows for gun/thief/engineer | given 2026-10-28: "Approve rows" (gun 160, thief 144, engineer 144, default limits); gun `max_attempts_per_animation: 6` on 2026-10-28 |
+| O5 | Profile rows for gun/thief/engineer | given 2026-10-28: "Approve rows" (gun 160, thief 144, engineer 144, default limits); gun `max_attempts_per_animation: 6` on 2026-10-28; 9 and death `start_scale: 2` on 2026-10-29 ("Widen the canvas for fall clips, grant 3 more death seeds (cap to 9)") |
 | O6 | Live generation budget per class | given 2026-10-28: "≤3 seeds per clip"; gun run +3 ("Grant 3 more seeds") |
 | O7 | Track C live window (DYL-127) | given 2026-10-28: host ComfyUI kept off for Phase 5 |
 | O8 | Game read + private staged copies + disposable snapshot (DYL-131/133) | given 2026-10-28 |
