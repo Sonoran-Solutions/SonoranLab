@@ -166,3 +166,8 @@ def test_settle_bound_matches_the_validator_hold_bound() -> None:
     from sonoranlab import loop, validate
 
     assert loop.SETTLE_SILHOUETTE == validate.FALL_HOLD_MAX_DELTA
+
+
+def test_select_once_settle_with_two_frames() -> None:
+    pick = select_once(once_clip("fall"), n_frames=2, size=48, end="settle")
+    assert pick.picks == [0, 32] and pick.end["settled"]
