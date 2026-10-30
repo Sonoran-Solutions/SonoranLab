@@ -125,9 +125,10 @@ def select_once(
     if end == "settle" and settled:
         # The held final pair must both be resting: spread the first n-1 picks over [0, E] and take the last one a
         # stride later (every step after E is below the settle threshold), so fall_hold judges two resting frames.
-        stride = max(1, round(e / (n_frames - 2)))
+        spans = max(1, n_frames - 2)  # a 2-frame clip is [frame 0, hold]
+        stride = max(1, round(e / spans))
         hold = last if info["metric"] == "silhouette_to_final" else min(last, e + stride)  # both resting either way
-        picks = [round(k * e / (n_frames - 2)) for k in range(n_frames - 1)] + [hold]
+        picks = [round(k * e / spans) for k in range(n_frames - 1)] + [hold]
         info["hold_pick"] = picks[-1]
     seam = first[e] if end == "return" else float(np.abs(small[picks[-1]] - small[picks[-2]]).mean())
     clip, files = _pick(frames, picks)
