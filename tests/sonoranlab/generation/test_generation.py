@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 import yaml
+from comfy.birefnet_fixture import write_birefnet
 from test_animate import Fake
 from test_pipeline import GEN, ORDER, stills_dir, toy_profile
 
@@ -33,6 +34,10 @@ def setup(tmp_path, monkeypatch):
     (repo / "profiles/toy.yaml").write_text(yaml.safe_dump(data))
     shutil.copytree(REPO / "workflows", repo / "workflows")
     shutil.copytree(REPO / "templates", repo / "templates")
+    # Synthetic BiRefNet files + models.tsv (DYL-125 admission check); never the host's ~/sonoranlab-work.
+    (repo / "env").mkdir()
+    monkeypatch.setenv("SONORANLAB_WORK", str(tmp_path / "work"))
+    write_birefnet(tmp_path / "work", repo / "env/models.tsv")
     ctx = Context(repo)
     monkeypatch.setattr(paths, "Context", lambda: ctx)
     monkeypatch.setattr(generation, "Context", lambda: ctx)
@@ -82,6 +87,7 @@ def setup(tmp_path, monkeypatch):
     target = repo / "templates/poses/idle/east"
     target.mkdir(parents=True)
     shutil.copyfile(repo / "templates/poses/run/east/pose_000.png", target / "pose_000.png")
+    shutil.copyfile(repo / "templates/poses/run/template.yaml", target.parent / "template.yaml")
     return ctx, animate, pose, approval
 
 

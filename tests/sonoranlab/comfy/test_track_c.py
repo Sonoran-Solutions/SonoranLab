@@ -11,11 +11,14 @@ import pytest
 from PIL import Image
 
 from sonoranlab import cli
+from sonoranlab.comfy import provenance
 from sonoranlab.comfy.adapters import track_c
 from sonoranlab.comfy.adapters.base import DEFAULT_BACKGROUND, GenerateRequest, RawResult
 from sonoranlab.comfy.adapters.track_c import POSE_PROMPTS, QWEN_NEED_GIB, TrackC
 from sonoranlab.comfy.adapters.track_e import guarded_argv
 from sonoranlab.prep import start_image_from_rgba
+
+from .birefnet_fixture import work_untouched, write_birefnet
 
 DIRS = ["north", "north-east", "east", "south-east", "south"]
 
@@ -113,6 +116,7 @@ def env(tmp_path: Path):
         still=write_still(tmp_path / "still.png"),
         pose=write_pose(tmp_path / "pose.png"),
         client=FakeClient(work / "output"),
+        models_tsv=write_birefnet(work),
     )
 
 
@@ -132,7 +136,7 @@ def request(env, **kw) -> GenerateRequest:
 
 
 def adapter(env) -> TrackC:
-    return TrackC(env.client, work_root=env.work, workflow=object(), timeout_s=99)
+    return TrackC(env.client, work_root=env.work, workflow=object(), timeout_s=99, models_tsv=env.models_tsv)
 
 
 def test_success_layout_and_values(env) -> None:
@@ -315,7 +319,7 @@ def test_malformed_request_writes_nothing(env, kw) -> None:
     req = request(env, **kw)
     with pytest.raises(ValueError):
         adapter(env).generate(req)
-    assert not req.out_dir.exists() and not env.work.exists() and env.client.calls == []
+    assert not req.out_dir.exists() and work_untouched(env.work) and env.client.calls == []
 
 
 def test_malformed_inputs_written_nothing(env) -> None:
@@ -328,14 +332,14 @@ def test_malformed_inputs_written_nothing(env) -> None:
         req = request(env, **kw)
         with pytest.raises(ValueError):
             adapter(env).generate(req)
-        assert not req.out_dir.exists() and not env.work.exists() and env.client.calls == []
+        assert not req.out_dir.exists() and work_untouched(env.work) and env.client.calls == []
 
 
 def test_default_prompt_refused_on_a_non_grey_background(env) -> None:
     req = request(env, background="#ff00ff")
     with pytest.raises(ValueError, match="grey"):
         adapter(env).generate(req)
-    assert not req.out_dir.exists() and not env.work.exists()
+    assert not req.out_dir.exists() and work_untouched(env.work)
 
 
 def test_existing_out_dir_and_staging_refused(env) -> None:
@@ -379,6 +383,7 @@ def cli_env(env, monkeypatch, lease_window):
     monkeypatch.setattr(cli, "_exec", lambda *a: pytest.fail("CLI test must remain inside the fake guard"))
     monkeypatch.setenv("SONORANLAB_WORK", str(env.work))
     monkeypatch.setattr(track_c, "load_workflow", lambda p: object())
+    monkeypatch.setattr(provenance, "MODELS_TSV", env.models_tsv)
     made = {}
 
     def make(base_url, output_root, exec_container=None):
@@ -422,6 +427,8 @@ def test_submission_is_persisted_before_the_prompt_is_posted(env) -> None:
             seen.update(sub=sub, prompt_id=prompt_id)
             return super().run(workflow, values, timeout_s=timeout_s, expect=expect, prompt_id=prompt_id)
 
-    res = TrackC(Recording(env.work / "output"), work_root=env.work, workflow=object()).generate(req)
+    res = TrackC(
+        Recording(env.work / "output"), work_root=env.work, workflow=object(), models_tsv=env.models_tsv
+    ).generate(req)
     assert seen["sub"]["prompt_id"] == seen["prompt_id"] == res.prompt_id
     assert seen["sub"]["state"] == "submitting"

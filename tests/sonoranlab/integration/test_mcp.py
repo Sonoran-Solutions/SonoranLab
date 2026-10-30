@@ -25,6 +25,7 @@ CORE = {
     "job_result",
     "get_artifact",
     "check_review",
+    "check_class_request",
     "import_job",
     "register_character",
     "validate",
@@ -35,8 +36,22 @@ CORE = {
     "process",
     "export_godot",
     "godot_check",
+    "smoke_render",
     "cancel_job",
     "retry_job",
+    # DYL-129 campaign ledger
+    "campaign_create",
+    "campaign_status",
+    "campaign_submit",
+    "campaign_decide",
+    "campaign_escalate",
+    "campaign_report",
+    "campaign_note",
+    # DYL-130 /new-class
+    "view_artifact",
+    "compose_sheet",
+    "build_delivery",
+    "delivery_status",
 }
 REPAIR = {"prepare_repair", "inspect_repair", "inspect_repair_diff", "finalize_repair", "abort_repair"}
 READ = {
@@ -50,7 +65,10 @@ READ = {
     "job_result",
     "get_artifact",
     "check_review",
+    "check_class_request",
 }
+CAMPAIGN_READ = {"campaign_status", "campaign_report"}  # read-only too; exercised in tests/sonoranlab/campaign
+NEWCLASS_READ = {"view_artifact", "delivery_status"}  # read-only too; exercised in tests/sonoranlab/newclass
 BASE = {"project": "toy", "character": "hero", "anim": "idle"}
 
 
@@ -102,9 +120,11 @@ def test_project_registration_and_editor_discovery(lab):
                     assert tool.input_schema["additionalProperties"] is False
                     assert tool.output_schema == ENVELOPE_SCHEMA
                     assert tool.annotations.model_dump(by_alias=True, exclude_none=True) == {
-                        "readOnlyHint": name in READ or name.startswith("inspect_repair"),
+                        "readOnlyHint": name in READ | CAMPAIGN_READ | NEWCLASS_READ
+                        or name.startswith("inspect_repair"),
                         "destructiveHint": False,
-                        "idempotentHint": name in READ or name.startswith("inspect_repair"),
+                        "idempotentHint": name in READ | CAMPAIGN_READ | NEWCLASS_READ
+                        or name.startswith("inspect_repair"),
                     }
                 discovered.append({k: v.model_dump() for k, v in tools.items()})
                 for name, params in (
@@ -372,12 +392,15 @@ def test_offline_reads_review_tampering_and_godot_unavailable(lab, tamper):
                 "job_result": {"job_id": job},
                 "get_artifact": {"ref": job + ":report.json"},
                 "check_review": {"job": imported["artifact_id"]},
+                "check_class_request": {"project": "toy", "request": {}},
             }
             assert set(cases) == READ
             for name, params in cases.items():
                 result = await call(client, name, params)
                 if name == "check_review":
                     assert result["production_usable"]
+                if name == "check_class_request":
+                    assert result["status"] == "invalid"
             assert (await call(client, "job_status", {"job_id": job}))["human"]["production_usable"]
             checked = (await call(client, "godot_check", BASE | {"source": job + ":export/hero/hero.png"}))["job_id"]
             await status(client, checked)
@@ -417,3 +440,35 @@ def test_stdout_protocol_stderr_logging_and_bounded_worker_log(lab, caplog):
 
     run_async(exercise)
     assert not any("parse" in r.message.lower() or "invalid json" in r.message.lower() for r in caplog.records)
+
+
+def test_get_character_merges_native_and_imported_history(lab):
+    """DYL-126: one logical entry per job over real stdio, identical to `sonoranlab api get_character`."""
+
+    async def exercise():
+        async with lab.client(INTEGRATION_MODE="real") as (client, _):
+            await lab.references(client)
+            job = await submit_process(lab, client, stills=str(lab.stills))
+            await status(client, job)
+            imported = await call(client, "import_job", lab.base | {"job_dir": str(lab.output(job))})
+            params = lab.base | {"jobs_limit": 1}
+            character = await call(client, "get_character", params)
+            assert character["job_count"] == 1 and not character["jobs_truncated"]
+            (entry,) = character["jobs"]
+            assert entry["id"] == job and entry["source"] == "native+import" and entry["status"] == "ok"
+            assert imported["artifact_id"] in entry["aliases"] and entry["state"] == "succeeded"
+            assert entry["human"] == {"review": "none", "production_usable": False}
+            response = await client.call_tool("get_character", params)
+            proc = subprocess.run(
+                [str(REPO / ".venv/bin/sonoranlab"), "api", "get_character", "--params", "-"],
+                input=json.dumps(params),
+                env=lab.env,
+                cwd=REPO,
+                text=True,
+                capture_output=True,
+                timeout=30,
+            )
+            assert proc.returncode == 0, proc.stdout + proc.stderr
+            assert response.structured_content == json.loads(proc.stdout)
+
+    run_async(exercise)

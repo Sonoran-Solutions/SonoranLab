@@ -797,3 +797,31 @@ def test_broker_checkpoint_then_stop_then_finalize(saved):
     result = mod.finalize(repair, out)
     assert result["ok"], result
     assert read_json(out / "repair-manifest.json")["operations"]["had_session"]
+
+
+@pytest.mark.parametrize("equivalent", [True, False])
+def test_profile_changed_only_in_another_row_is_finalized_by_the_shared_rule(saved, monkeypatch, equivalent):
+    """finalize uses import/prepare's equivalence when the repair's profile differs from the parent's recorded one."""
+    repair, _, profile, out = saved
+    seen = []
+
+    def rule(current, recorded, rev, bound):
+        seen.append(recorded.get("sha256"))
+        return equivalent
+
+    monkeypatch.setattr(mod, "same_character_profile", rule)
+    with open(profile.path, "a") as f:
+        f.write("# another character's row changed after the parent ran\n")
+    doc = read_json(repair / "repair.json")
+    recorded = doc["profile"]["sha256"]
+    doc["profile"]["sha256"] = sha256_file(profile.path)
+    persist(repair / "repair.json", doc)
+    if equivalent:
+        try:
+            mod.finalize(repair, out)
+        except Denied as exc:
+            assert "profile_hash_mismatch" not in str(exc)
+    else:
+        with pytest.raises(Denied, match="profile_hash_mismatch"):
+            mod.finalize(repair, out)
+    assert seen == [recorded]

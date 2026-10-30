@@ -73,6 +73,13 @@ Notes on the caveats above:
   unlicensed `1038lab/BiRefNet` mirror. We pre-place the official files instead,
   and RMBG loads them: the F16 weights are a drop-in for its F32 mirror. Verified in
   the DYL-67 operational test, online and offline.
+  Runs verify them (DYL-125, `sonoranlab/comfy/provenance.py`): Track E and
+  Track C hash the copies the container loads (`$WORK/RMBG/BiRefNet`, mounted
+  as `models/RMBG`) against rows B1-B1c at job admission and again in the
+  adapter before submission, and refuse on a missing, unreadable or mismatched
+  file. `birefnet.py` also verifies as RMBG's load-time rewrite of B1a
+  (`from .BiRefNet_config` -> `from BiRefNet_config`). Hashes are cached per
+  (path, size, mtime_ns, inode) in `$WORK/cache/model-sha256.json`.
 - **Depth Anything V2 (P3).** `DepthAnythingV2Preprocessor` defaults to `vitl`,
   which is CC-BY-NC-4.0 and would be downloaded on first use. Only Small (vits)
   is allowed; every workflow must pin it.
@@ -154,6 +161,18 @@ renders derived from CC0 rigs may ship.
 |---|---|---|---|---|---|
 | R1 Quaternius Universal Base Characters [Standard], `Superhero_Male_FullBody` (glTF + `.bin`) | private `Sonoran-Solutions/Twos-Are-Up` @ `5a5561974b91` (parent of `3109b9a`, which deleted them), `assets/characters/quaternius/`; originally quaternius.itch.io, archive SHA-256 `fdbf1804c90d...` per the game's `SOURCE.md` | `Superhero_Male_FullBody.gltf` (`e2a68c400eedbaed172fc0f2de8e665df66ceccab27fcbcf2152682322405ce4`; image references repointed by the game, no geometry change), `.bin` (`459003f9745853ae562a85506a2b94dd56515c1f37728f9fa3d2ce1a3e4cd92f`) | CC0 1.0. `LICENSE_Universal_Base_Characters.txt` and the game's `SOURCE.md` (same commit); hashes match that `SOURCE.md` | Track D bake mannequin (grey override material; textures unused) | approved (default) |
 | R2 Quaternius Universal Animation Library [Standard], `UAL1_Standard.glb`, clip `Jog_Fwd_Loop` | same commit and folder; originally quaternius.itch.io, archive SHA-256 `cc73fc4e495b...` per the game's `SOURCE.md` | `UAL1_Standard.glb` (`69591853d817488edaa8fd9bf8fc1d821eaeaf789f8627b3cd23b41c4ed67997`, unmodified) | CC0 1.0. `LICENSE_Universal_Animation_Library.txt` and the game's `SOURCE.md` (same commit) | Run clip for `templates/poses/run/` (the game used the same clip for its 3D run) | approved (default) |
+
+## Reference preparation outside the stack (ADR-0011; not a model in the default stack)
+
+Phase 5 references for new classes may be prepared outside SonoranLab by owner direction (2026-10-28: "part of
+this phase will need to have codex create the reference images"). The route is OpenAI image generation through the
+Codex CLI (`image_gen`), used under [OpenAI's Terms of Use](https://openai.com/policies/terms-of-use/), the same
+basis the game already records for its design references (its `assets/pixel/v0/characters/SOURCE.md`). It is not
+an MCP tool and not part of the ADR-0006 default stack: its HD outputs only become candidate stills through the
+deterministic `sonoranlab refprep` conversion and carry no approval until the owner approves the exact still hashes.
+Every prompt, output file hash and attempt (including rejected ones) is kept in the private case provenance; the art
+itself is private and never committed here. Promoting any image model *into* SonoranLab needs a row above and its
+own decision.
 
 ## How to add a model
 

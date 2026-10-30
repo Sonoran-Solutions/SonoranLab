@@ -1,14 +1,17 @@
 """Production review is bound to the exact reviewed artifact; it cannot make a failed or altered job usable."""
 
 import builtins
+import hashlib
 import io
 import json
 import os
 import shutil
 import stat
+import subprocess
 from pathlib import Path
 
 import pytest
+import yaml
 from test_pipeline import process, raw_set, toy_profile
 
 from sonoranlab.artifacts import sha256_file
@@ -668,3 +671,217 @@ def test_shared_hasher_and_writer_stay_permissive_for_the_pipeline(tmp_path):
 def test_invisible_reviewer_is_refused(job, name):
     with pytest.raises(ValueError, match="REVIEW_REVIEWER_INVALID"):
         record_review(job, **{**PASS, "reviewer": name})
+
+
+def _git_profile(job, edit):
+    """Move the job's profile into a git repo, bind the manifest to that commit, then apply `edit` to the file."""
+    manifest_path = job / "manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    repo = job.parent / "profile-repo"
+    repo.mkdir()
+    doc = yaml.safe_load(Path(manifest["profile"]["path"]).read_text())
+    doc["characters"]["villain"] = dict(doc["characters"][manifest["character"]])
+    profile = repo / "toy.yaml"
+    profile.write_text(yaml.safe_dump(doc, sort_keys=False))
+    git = ["git", "-C", str(repo), "-c", "user.name=t", "-c", "user.email=t@t"]
+    subprocess.run([*git, "init", "-q"], check=True)
+    subprocess.run([*git, "add", "toy.yaml"], check=True)
+    subprocess.run([*git, "commit", "-qm", "p"], check=True)
+    rev = subprocess.run([*git, "rev-parse", "HEAD"], check=True, capture_output=True, text=True).stdout.strip()
+    manifest["profile"] = {"path": str(profile), "sha256": hashlib.sha256(profile.read_bytes()).hexdigest()}
+    manifest["git"] = rev
+    manifest_path.write_text(json.dumps(manifest))
+    record_review(job, **PASS)
+    assert production_usable(job)
+    edit(doc, manifest["character"])
+    profile.write_text(yaml.safe_dump(doc, sort_keys=False))
+    return manifest_path, manifest
+
+
+def test_other_characters_row_change_keeps_binding(job):
+    _git_profile(job, lambda doc, me: doc["characters"]["villain"].update(max_attempts_per_animation=6))
+    assert review_errors(job) == [] and production_usable(job)
+
+
+def test_own_admission_only_attempt_limit_keeps_binding(job):
+    _git_profile(job, lambda doc, me: doc["characters"][me].update(max_attempts_per_animation=6))
+    assert review_errors(job) == [] and production_usable(job)
+
+
+def test_own_row_override_of_another_clip_keeps_binding(job):
+    """Gun cast/death (2026-10-29): adding the row's overrides for other clips keeps this clip's job bound; an override
+    of the job's own clip breaks it (next test)."""
+    over = {"death": {"track_default": "E", "validator_mode": "fall"}}
+    _git_profile(job, lambda doc, me: doc["characters"][me].update(animations=over))
+    assert review_errors(job) == [] and production_usable(job)
+
+
+def test_own_row_override_of_the_jobs_clip_breaks_binding(job):
+    anim = json.loads((job / "report.json").read_text())["animation"]
+    _git_profile(job, lambda doc, me: doc["characters"][me].update(animations={anim: {"fps": 7}}))
+    assert not production_usable(job)
+
+
+@pytest.mark.parametrize(
+    "edit",
+    [
+        lambda doc, me: doc["characters"][me].update(cell=doc["characters"][me]["cell"] + 1),
+        lambda doc, me: doc["autonomy"].update(max_attempts_per_animation=6),
+        lambda doc, me: doc["characters"].pop(me),
+    ],
+    ids=["own-row", "shared-setting", "own-row-removed"],
+)
+def test_own_row_or_shared_setting_change_breaks_binding(job, edit):
+    _git_profile(job, edit)
+    assert not production_usable(job)
+
+
+@pytest.mark.parametrize("field", ["git", "sha256"])
+def test_unverifiable_recorded_profile_breaks_binding(job, field):
+    manifest_path, manifest = _git_profile(
+        job, lambda doc, me: doc["characters"]["villain"].update(max_attempts_per_animation=6)
+    )
+    if field == "git":
+        manifest["git"] = "0" * 40
+    else:
+        manifest["profile"]["sha256"] = "0" * 64
+    manifest_path.write_text(json.dumps(manifest))
+    assert not production_usable(job)
+
+
+def test_shared_setting_type_change_breaks_binding(job):
+    _git_profile(job, lambda doc, me: doc["canvas"].update(gen_scale=float(doc["canvas"]["gen_scale"])))
+    assert not production_usable(job)
+
+
+def test_relabelled_manifest_character_cannot_pick_another_row(job):
+    def edit(doc, me):
+        doc["characters"][me]["cell"] += 1  # the job's real row changes; the relabel points at an unchanged one
+
+    manifest_path, manifest = _git_profile(job, edit)
+    manifest["character"] = "villain"
+    manifest_path.write_text(json.dumps(manifest))
+    assert not production_usable(job)
+    assert any("sha256 differs from manifest" in e["message"] and "profile" in e["message"] for e in review_errors(job))
+
+
+def _committed_profile(job, monkeypatch):
+    """The job's profile committed in a throwaway repo standing in for this repository; the manifest binds it."""
+    from sonoranlab import repo_inputs
+
+    manifest_path = job / "manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    repo = job.parent / "sl-repo"
+    (repo / "profiles").mkdir(parents=True)
+    profile = repo / "profiles/toy.yaml"
+    shutil.copyfile(manifest["profile"]["path"], profile)
+    git = ["git", "-C", str(repo), "-c", "user.name=t", "-c", "user.email=t@t"]
+    subprocess.run([*git, "init", "-q"], check=True)
+    subprocess.run([*git, "add", "-A"], check=True)
+    subprocess.run([*git, "commit", "-qm", "p"], check=True)
+    rev = subprocess.run([*git, "rev-parse", "HEAD"], check=True, capture_output=True, text=True).stdout.strip()
+    manifest["profile"] = {"path": str(profile), "sha256": hashlib.sha256(profile.read_bytes()).hexdigest()}
+    manifest["git"] = rev
+    manifest_path.write_text(json.dumps(manifest))
+    monkeypatch.setattr(repo_inputs, "_REPO", repo)
+    return profile
+
+
+def test_removed_worktree_profile_binds_through_git_recovery(job, monkeypatch):
+    from sonoranlab import repo_inputs
+
+    profile = _committed_profile(job, monkeypatch)
+    record_review(job, **PASS)
+    profile.unlink()  # the worktree that held it is gone; git still holds the exact bytes
+    assert review_errors(job) == [] and production_usable(job)
+    monkeypatch.setattr(repo_inputs, "_REPO", job.parent)  # a repository without that blob: nothing to recover
+    assert not production_usable(job)
+    assert any("profile" in e["message"] and "missing" in e["message"] for e in review_errors(job))
+
+
+def test_recovery_never_carries_an_approval_to_a_copy(job, monkeypatch):
+    profile = _committed_profile(job, monkeypatch)
+    record_review(job, **PASS)
+    profile.unlink()
+    copy = job.parent / "copied-job"
+    shutil.copytree(job, copy, symlinks=True)
+    assert production_usable(job) and not production_usable(copy)  # the review binds its own job path
+
+
+def _outside_profile(job, monkeypatch):
+    """The recorded profile sits outside this checkout (a removed or foreign worktree); this repository's git holds the
+    exact recorded bytes under the same path suffix."""
+    committed = _committed_profile(job, monkeypatch)
+    outside = job.parent / "old-worktree/profiles/toy.yaml"
+    outside.parent.mkdir(parents=True)
+    shutil.copyfile(committed, outside)
+    manifest_path = job / "manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    manifest["profile"]["path"] = str(outside)
+    manifest_path.write_text(json.dumps(manifest))
+    monkeypatch.setenv("SONORANLAB_READ_ROOTS", str(job))  # the old worktree is outside the read roots
+    monkeypatch.setenv("SONORANLAB_STATE", str(job / "state"))
+    return outside
+
+
+def _never_open(monkeypatch, target):
+    target = Path(target).resolve()
+
+    def wrap(original):
+        def guard(path, *args, **kwargs):
+            if isinstance(path, (str, os.PathLike)):
+                assert Path(path).resolve() != target, f"{target} opened"
+            return original(path, *args, **kwargs)
+
+        return guard
+
+    for name in ("read_text", "read_bytes", "open"):
+        monkeypatch.setattr(Path, name, wrap(getattr(Path, name)))
+    monkeypatch.setattr(builtins, "open", wrap(builtins.open))
+
+
+def test_outside_profile_binds_only_through_git_and_is_never_opened(job, monkeypatch):
+    profile = _outside_profile(job, monkeypatch)
+    record_review(job, **PASS)
+    profile.write_text("id: something else entirely\n")  # outside this checkout: must not be read
+    _never_open(monkeypatch, profile)
+    assert review_errors(job) == [] and production_usable(job)  # bound only through the recorded bytes in git
+
+
+def test_compose_job_integrity_never_opens_an_outside_profile(job, monkeypatch):
+    from sonoranlab.compose import job_integrity
+
+    profile = _outside_profile(job, monkeypatch)
+    profile.write_text("id: something else entirely\n")
+    _never_open(monkeypatch, profile)
+    binds, problems = job_integrity(job)
+    assert binds is not None and problems == []
+
+
+def test_drifted_own_row_inside_the_checkout_still_breaks_binding(job, monkeypatch):
+    from sonoranlab import repo_inputs
+
+    _git_profile(job, lambda doc, me: doc["characters"][me].update(cell=doc["characters"][me]["cell"] + 1))
+    monkeypatch.setattr(repo_inputs, "_REPO", job.parent / "profile-repo")  # the profile is this checkout's own file
+    assert not production_usable(job)
+    assert any("sha256 differs from manifest" in e["message"] for e in review_errors(job))
+
+
+def test_profile_inside_the_read_roots_is_read_in_place_without_git(job, monkeypatch):
+    from sonoranlab import repo_inputs
+
+    profile = _outside_profile(job, monkeypatch)
+    record_review(job, **PASS)
+    monkeypatch.setenv("SONORANLAB_READ_ROOTS", str(job.parent))  # a readable worktree: no git, no subprocess
+
+    def no_git(*args, **kwargs):
+        raise AssertionError("git consulted for a readable profile")
+
+    recover = repo_inputs.recover
+    monkeypatch.setattr(repo_inputs, "recover", no_git)
+    assert production_usable(job)
+    monkeypatch.setattr(repo_inputs, "recover", recover)  # a mismatch may consult git (the same-row equivalence)
+    doc = yaml.safe_load(profile.read_text())
+    doc["alpha"]["threshold"] -= 1
+    profile.write_text(yaml.safe_dump(doc))
+    assert not production_usable(job)  # read in place, a shared-setting drift breaks the binding

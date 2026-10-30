@@ -1,0 +1,23 @@
+; Disposable Godot 4 project template for `sonoranlab smoke-render` (DYL-131). The tool copies this into OUT/project/;
+; nothing here is ever opened in the editor or installed into a game. Nearest filtering is the default, as in the
+; consuming game's pixel mode; native file logging is off so Godot writes no log outside the supervised stdout.
+config_version=5
+
+[application]
+config/name="SonoranLab side-by-side smoke render"
+config/features=PackedStringArray("4.7")
+
+[debug]
+file_logging/enable_file_logging=false
+
+[display]
+window/size/viewport_width=256
+window/size/viewport_height=256
+window/size/no_focus=true
+window/vsync/vsync_mode=0
+
+[rendering]
+textures/canvas_textures/default_texture_filter=0
+renderer/rendering_method="gl_compatibility"
+renderer/rendering_method.mobile="gl_compatibility"
+anti_aliasing/quality/msaa_3d=0

@@ -20,6 +20,7 @@ from PIL import Image
 
 from sonoranlab.cli import main
 from sonoranlab.profile import load_palette, load_profile, sha256_file
+from sonoranlab.register import register_clip
 from sonoranlab.slice import pack_sheet
 from sonoranlab.validate import foot_slide, frame_digest, opening, read_frames, validate
 
@@ -698,3 +699,172 @@ def test_shipped_relay_sentinel_triggers_no_hover_warning():
         max_colours=prof.palette.max_colors_per_cell, loop=anim.loop, anchor_mode=spec.anchor_mode,
     )  # fmt: skip
     assert rep["pass"] and not [w for w in rep["warnings"] if w.startswith("hover")], rep["warnings"]
+
+
+# ---------------------------------------------------------------- validator_mode fall (ADR-0008 fall addendum)
+
+FALL_PAL = np.array([(17, 13, 12), (200, 40, 40)], np.uint8)
+FALL_LIMITS = SimpleNamespace(
+    max_foot_slide_px=0.25, max_bbox_drift_px=2, opaque_area_cv_warn=10.0, loop_closure_ratio_warn=1.29
+)
+# (x0, x1, y0) of a body standing on row 28 of a 32 px cell, tipping over: the top drops 3 px a frame (> the 2 px
+# limit) and the half-pixel centre of the wider poses moves the foot 0.5 px (> 0.25); bottom and core centre stay.
+FALL_POSES = [(14, 17, 13), (13, 18, 16), (12, 20, 19), (10, 21, 22), (8, 23, 25), (8, 23, 25)]
+
+
+def fall_frame(x0: int, x1: int, y0: int, colour: int = 1) -> np.ndarray:
+    f = np.zeros((32, 32, 4), np.uint8)
+    f[y0:29, x0 : x1 + 1] = (*FALL_PAL[colour], 255)
+    return f
+
+
+def fall_validate(frames: list[np.ndarray], mode: str | None = "fall", **kw) -> dict:
+    args = {
+        "cell": (32, 32),
+        "frames": len(frames),
+        "directions": ["east"],
+        "palette": FALL_PAL,
+        "foot_y": 28,
+        "anchor_x": 16,
+        "padding": 2,
+        "limits": FALL_LIMITS,
+        "max_colours": 4,
+        "loop": False,
+        "validator_mode": mode,
+    }
+    return validate({"east": frames}, **(args | kw))
+
+
+def test_fall_mode_passes_a_falling_figure_the_default_rules_reject():
+    frames = [fall_frame(*p) for p in FALL_POSES]
+    default = fall_validate(frames, mode=None)
+    assert {m.split(":")[0] for m in default["failures"]} == {"bbox_drift", "foot_slide"}  # what a fall must do
+    assert "validator_mode" not in default and "fall_hold_max_delta" not in default["limits"]  # default unchanged
+    rep = fall_validate(frames)
+    assert rep["pass"], rep["failures"]
+    assert rep["validator_mode"] == "fall" and rep["limits"]["fall_hold_max_delta"] == 0.02
+    assert any("top edge moved 3px" in w and "not gated" in w for w in rep["warnings"])  # reported, not gated
+    fall = rep["directions"]["east"]["fall"]
+    assert fall == {
+        "drift_max": 0.5,
+        "foot_slide_frame0": 0.0,
+        "hold_delta": 0.0,
+        "final_inside": True,
+        "static": False,
+    }
+    assert rep["directions"]["east"]["foot_slide_max"] == 0.5  # later frames still reported
+
+
+def test_fall_mode_still_gates_frame0_foot_bottom_edge_and_core_centre():
+    shifted = [fall_frame(15, 18, 13), *[fall_frame(*p) for p in FALL_POSES[1:]]]
+    assert any(m.startswith("foot_slide: frame 0 ") for m in fall_validate(shifted)["failures"])
+    frames = [fall_frame(*p) for p in FALL_POSES]
+    frames[3] = fall_frame(13, 24, 22)  # core centre jumps 2.5 px right, then back
+    msgs = [m for m in fall_validate(frames)["failures"] if m.startswith("bbox_drift")]
+    assert len(msgs) == 2 and all("(fall)" in m for m in msgs)
+
+
+@pytest.mark.parametrize(
+    "case, rule",
+    [("clipped", "fall_final"), ("in_padding", "fall_final"), ("not_settled", "fall_hold"), ("static", "static_clip")],
+)
+def test_fall_gates_fail(case, rule):
+    frames = [fall_frame(*p) for p in FALL_POSES]
+    kw = {}
+    if case == "clipped":
+        kw["registration"] = {"east": {"clipped_px": [0, 0, 0, 0, 0, 3], "shift_px": [0, 0]}}
+    elif case == "in_padding":
+        frames[5] = fall_frame(8, 23, 25)
+        frames[5][25:29, 30] = (*FALL_PAL[0], 255)  # an arm reaches into the right padding
+    elif case == "not_settled":
+        frames[5] = fall_frame(10, 25, 25)  # the body is still sliding: its shape moves 2 px
+    else:
+        frames = [fall_frame(*FALL_POSES[0])] * 6
+    rep = fall_validate(frames, **kw)
+    assert not rep["pass"] and any(m.startswith(f"{rule}: east") for m in rep["failures"]), rep["failures"]
+
+
+def test_fall_mode_needs_a_non_looping_clip():
+    with pytest.raises(ValueError, match="fall needs loop=False"):
+        fall_validate([fall_frame(*p) for p in FALL_POSES], loop=True)
+    with pytest.raises(ValueError, match="validator_mode"):
+        fall_validate([fall_frame(*p) for p in FALL_POSES], mode="hold")
+
+
+def test_fall_mode_gates_frame0_even_when_frame0_is_not_a_contact_frame():
+    # frame 0 stands 2 px higher than the later poses (so it is not on the clip's lowest foot line) and 1 px off the
+    # anchor: the frame-0 gate must still fire (codex review of c9bddda)
+    frames = [fall_frame(15, 18, 11), *[fall_frame(*p) for p in FALL_POSES[1:]]]
+    frames[0] = np.roll(frames[0], -2, axis=0)
+    rep = fall_validate(frames)
+    assert any(m.startswith("foot_slide: frame 0 ") for m in rep["failures"]), rep["failures"]
+
+
+def test_fall_hold_ignores_colour_shimmer_on_a_resting_body():
+    # Track E re-quantises a resting body differently frame to frame: same shape, every pixel recoloured -> held
+    frames = [fall_frame(*p) for p in FALL_POSES]
+    frames[5] = fall_frame(8, 23, 25, colour=0)
+    rep = fall_validate(frames)
+    assert rep["pass"], rep["failures"]
+    assert rep["directions"]["east"]["fall"]["hold_delta"] == 0.0
+
+
+def _fall_raw(x1s: list[int], width: int = 48) -> list[np.ndarray]:
+    """Raw (pre-registration) frames wider than the 32 px cell: frame 0 stands at x 14..17 (centre 16 = anchor_x),
+    then the body tips over to the right, growing to x 14..x1, bottom row 28 throughout; the last pose is held."""
+    tops = [13, 16, 19, 22, 25, 25]
+    out = []
+    for x1, y0 in zip(x1s, tops, strict=True):
+        f = np.zeros((32, width, 4), np.uint8)
+        f[y0:29, 14 : x1 + 1] = (*FALL_PAL[1], 255)
+        out.append(f)
+    return out
+
+
+def _fit_and_validate(raw: list[np.ndarray], limits=None) -> dict:
+    """pipeline.run's fall path: frame-0 anchor with fit_padding, then the fall validator with the registration."""
+    reg, info = register_clip(raw, (32, 32), foot_y=28, anchor_x=16, anchor_frame=0, fit_padding=2)
+    limits = limits or SimpleNamespace(
+        max_foot_slide_px=5, max_bbox_drift_px=8, opaque_area_cv_warn=10.0, loop_closure_ratio_warn=1.29
+    )
+    return fall_validate(reg, registration={"east": info}, limits=limits)
+
+
+def test_fall_fit_shift_passes_with_a_start_offset_warning():
+    """Frame-0 anchoring would clip the lying body at the right edge (x 33 > 29); fit, then anchor moves the clip 4 px
+    left, every frame lies inside, and the 4 px jump from the still's anchor is reported for a 1x judgement."""
+    raw = _fall_raw([17, 20, 24, 28, 33, 33])
+    unfit, info0 = register_clip(raw, (32, 32), foot_y=28, anchor_x=16, anchor_frame=0)
+    before = fall_validate(
+        unfit,
+        registration={"east": info0},
+        limits=SimpleNamespace(**vars(FALL_LIMITS) | {"max_foot_slide_px": 5, "max_bbox_drift_px": 8}),
+    )
+    assert {m.split(":")[0] for m in before["failures"]} >= {"touches_edge", "fall_final", "registration"}
+    rep = _fit_and_validate(raw)
+    assert rep["pass"], rep["failures"]
+    assert rep["registration"]["east"]["fit"] == {"padding": 2, "offset_px": -4, "fits": True}
+    assert rep["directions"]["east"]["fall"]["start_offset_px"] == -4
+    assert rep["directions"]["east"]["fall"]["foot_slide_frame0"] == 4.0  # frame 0 now stands 4 px left of anchor
+    (warn,) = [w for w in rep["warnings"] if w.startswith("fall_start_offset")]
+    assert "east death start offset -4 px from the still's anchor" in warn
+
+
+def test_fall_fit_cannot_rescue_an_unfittable_clip_or_hide_a_large_jump():
+    wide = _fall_raw([17, 22, 28, 36, 47, 47])  # union x 14..47 = 34 px > the 28 px inside the padding
+    rep = _fit_and_validate(wide)
+    assert not rep["pass"] and rep["registration"]["east"]["fit"] == {"padding": 2, "offset_px": 0, "fits": False}
+    assert {m.split(":")[0] for m in rep["failures"]} >= {"touches_edge", "fall_final", "registration"}
+    assert not [w for w in rep["warnings"] if w.startswith("fall_start_offset")]
+    far = _fall_raw([17, 22, 28, 33, 38, 38])  # fits only with a 9 px shift: frame 0's foot_slide gate (5) fails it
+    rep = _fit_and_validate(far)
+    assert rep["registration"]["east"]["fit"]["offset_px"] == -9
+    assert [m.split(":")[0] for m in rep["failures"]] == ["foot_slide"]
+    assert any(w.startswith("fall_start_offset") for w in rep["warnings"])
+
+
+def test_fall_report_without_a_fit_record_is_unchanged():
+    """Composed/finalized re-validation of older fall reports (no `fit`) and every non-fall report keep their keys."""
+    rep = fall_validate([fall_frame(*p) for p in FALL_POSES], registration={"east": {"clipped_px": [0] * 6}})
+    assert "start_offset_px" not in rep["directions"]["east"]["fall"]
+    assert not [w for w in rep["warnings"] if w.startswith("fall_start_offset")]
