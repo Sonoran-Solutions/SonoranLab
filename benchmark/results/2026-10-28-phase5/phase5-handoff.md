@@ -1,8 +1,45 @@
 # Phase 5 senior-review handoff — New-class orchestration and game-ready asset delivery (DYL-123..135)
 
-**Status: REVISED after senior review — READY_FOR_SENIOR_RE-REVIEW** (§0). Nothing is merged, auto-merge is off,
+**Status: READY_FOR_SENIOR_RE-REVIEW** (revision 2, 2026-10-30; §0a then §0). Nothing is merged, auto-merge is off,
 Phase 6 is not started, no artwork was approved on the owner's behalf (every approval below quotes the owner), and
-the production game checkout was never written. Game installation: **HOLD**.
+the production game checkout was never written. Game installation: **HOLD**, pending the owner's per-bundle
+authorization.
+
+## 0a. Revision 2 (2026-10-30): owner-requested follow-ups completed
+
+**Tested code tree: `p5/integration` @ `65bebe4`.** Full suite (`fullsuite` attempt 6, 1027 s): ruff clean;
+`tests` 147 passed; `tests/sonoranlab` in one process: **2068 passed, 1 skipped** (the opt-in real-Godot smoke, not
+counted as a pass). The handoff commit on top touches docs only.
+
+| Work | Result | PR |
+|---|---|---|
+| Content-hash provenance resolver (O13) | Old jobs bind their profile through this repo's git history. The outside path is never opened, manifests are not rewritten, and approvals are never carried. Phase 4 gate job and Phase 3 import are production-usable again under their original reviews. Shared profile equivalence now covers import, repair prepare and finalize. | **#67** (`p5/provenance-resolver` @ 6229818, base `p5/base/313cbb3`) |
+| Gun `cast` + `death` (owner request) | Gun-only Track E clips, validator `fall` mode, non-loop registration, per-clip campaign binding, ×2 start room. 3 cast seeds and 7 death seeds, every failure kept. Owner approved the 4-clip sheet; bundle READY_TO_INSTALL at game **`fb712e7`** with the game's consumer check passing, `--pixel-check` included. [dyl134-gun-cast-death.md](dyl134-gun-cast-death.md) | **#68** (`p5/gun-cast-death` @ f862a04, base `p5/base/313cbb3`) |
+| DYL-132 live repair on a thief copy (O9) | **PASS end to end.** One contained gpt-6.1-sol edit of 6 px inside the authorized rect, then finalize. The child `import-8c775c12…` is unreviewed. [dyl132-repair.md](dyl132-repair.md) | (evidence; code fix in #67) |
+| Gun smoke dark-colour shift (O14) | Seven controlled renders: a deterministic Compatibility-renderer sRGB conversion. Owner: **gun-only exception**; tolerance unchanged; the smoke result stays FAIL, recorded as a known exception. [gun-dark-shift.md](gun-dark-shift.md) | ADR-0011 O14 in **#53** (@ a924905) |
+
+Integration-only commits (no focused branch): `698f813` gives the repair test fixture report an `animation`; it is
+needed once #67 and #68 meet, because `bound_character` checks character and clips. The `review.py` merge
+resolution in `c08d0f0` combines #67's shared `same_character_profile` with #68's per-clip bound.
+
+Updated delivery state:
+
+| Class | Bundle | Target | State |
+|---|---|---|---|
+| gun (idle/run/cast/death) | `job-20261030T024927Z-fbfbdd9f` | `fb712e7` (current game HEAD) | READY_TO_INSTALL; consumer PASS incl. `--pixel-check`; playable_class true per bundle (in-game runtime not exercised here) |
+| thief (idle/run) | `job-20261028T193409Z-03a9f3c1` | `dd4b2c1` (stale) | READY_TO_INSTALL for `dd4b2c1` only; rebuild at the current HEAD before any install (O11) |
+| engineer (idle/run) | `job-20261028T215606Z-51047b63` | `dd4b2c1` (stale) | same as thief |
+
+Owner input still open:
+1. Authorize installation of the gun bundle at `fb712e7`, owner-run `INSTALL.md`. The real checkout must be clean;
+   it had one uncommitted change when last read.
+2. Thief and engineer: rebuild at the game's current HEAD, stacked on gun's manifest row if gun installs first, then
+   a combined retest, per O11. Each still lacks cast/death (game fallback, O12).
+3. Review the DYL-132 child.
+4. Optional: a smoke-harness fix (compare against the known curve, or render Forward+) in place of per-character
+   exceptions.
+5. Follow-ups found live: the repair socket-path length, `--detach` env propagation, and relay journal volume.
+
 
 ## 0. Revision after senior review (2026-10-29)
 
@@ -88,7 +125,7 @@ INSTALLED (owner only).
 | Order | PR | Head branch @ sha | Base |
 |---|---|---|---|
 | 1 | #52 | p5/dyl-124-runner-race @ a2e9e64 | main (b42317f) |
-| 2 | #53 | p5/dyl-123-contract @ af6d7f3 | main |
+| 2 | #53 | p5/dyl-123-contract @ a924905 | main |
 | 3 | #54 | p5/dyl-125-birefnet-provenance @ ad92e9d | main |
 | 4 | #55 | p5/dyl-126-character-history @ e22db92 | main |
 | 5 | #56 | p5/dyl-127-pose-control @ 28e3c6b | #54 |
@@ -101,6 +138,8 @@ INSTALLED (owner only).
 | 12 | #63 | p5/dyl-129b-composed-review @ e37856e | p5/base/dd73493 |
 | 13 | #64 | p5/gun-attempt-limit @ 9198158 | p5/base/abb1c97 |
 | 14 | #65 | p5/live-run-fixes @ 4d8d34a | p5/base/f550c4c |
+| 15 | #67 | p5/provenance-resolver @ 6229818 | p5/base/313cbb3 |
+| 16 | #68 | p5/gun-cast-death @ f862a04 | p5/base/313cbb3 |
 
 `p5/base/<sha>` branches are snapshots of `p5/integration` at the commit each later branch was cut from, so each PR
 shows only its own commits. The integration merges resolved conflicts in `cli.py`, `api/tools/__init__.py`, docs/06
