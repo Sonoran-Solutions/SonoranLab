@@ -121,3 +121,13 @@ colours at 4x) on the synthetic fixture and on the 136 px relay_sentinel export 
 A later step: load the new SpriteFrames and one existing character side by side at 1x and 4x, play one cycle, and
 look at the screenshot. `render_animation.gd` is the starting point. Pixel-level problems are already gone by then;
 this is for "does the new class look like it belongs next to the old ones."
+
+## Class sheet delivery (Phase 5, DYL-133)
+
+Per-clip exports are combined by `sonoranlab compose` into one sheet per character (column 0 the approved stills,
+clips in the game's order) and re-validated; the owner's 1x review binds to that composed job. `sonoranlab deliver
+build` then stages a bundle: the sheet, a `.png.import` modelled on a sibling's (same lossless/no-mipmap `[params]`,
+paths re-pointed, deterministic uid; the earlier "no `.import` is written" rule still holds for `export godot`), and
+the patched `characters.json` with the full game entry (`standing_pixels` measured from the south still and checked
+against `round(height_m x 62)`, `height_m` from the class request, never guessed). Apply/verify/rollback run only in a
+disposable snapshot; the real checkout is the owner's (INSTALL.md). Runbook: `docs/runbooks/delivery.md`.
