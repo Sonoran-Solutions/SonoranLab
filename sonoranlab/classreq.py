@@ -30,7 +30,7 @@ from sonoranlab.profile import NAME_RE, Profile
 SCHEMA = "sonoranlab.class_request/1"
 RESULT_SCHEMA = "sonoranlab.class_request_check/1"
 STATUSES = ("invalid", "needs_reference_preparation", "needs_profile_row", "ready")  # precedence order
-SUPPORTED_TRACKS = ("E",)  # Phase 5 pilot: Track E clips only (run, idle)
+SUPPORTED_TRACKS = ("E",)  # Track E only; a clip qualifies by its effective track for the character (row overrides)
 MAX_TEXT = 4096  # characters per free-text field
 MAX_ITEMS = 64  # entries per list
 MAX_FILE = 256 * 1024  # bytes of a request file
@@ -447,7 +447,10 @@ def check(
         if clip not in anims:
             findings.append(_finding("unknown_clip", f"{clip!r} is not a profile animation ({', '.join(anims)})"))
         elif anims[clip].track_default not in SUPPORTED_TRACKS:
-            msg = f"{clip!r} has track_default {anims[clip].track_default}; Phase 5 supports Track E clips (run, idle)"
+            msg = (
+                f"{clip!r} has track_default {anims[clip].track_default} for {char}; only Track E clips are supported "
+                "(run, idle; a profile row may make another clip Track E, as the gun's cast and death)"
+            )
             findings.append(_finding("unsupported_clip", msg))
     stills, hashes, unreadable = read_stills(stills_dir, order)
     result["stills"]["files"] = hashes

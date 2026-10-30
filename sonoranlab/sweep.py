@@ -22,7 +22,7 @@ from PIL import Image
 
 from sonoranlab import pipeline
 from sonoranlab.artifacts import write_json
-from sonoranlab.loop import LoopPick, select_loop, write_loop
+from sonoranlab.loop import END_RULES, LoopPick, end_rule, select_loop, select_once, write_loop
 from sonoranlab.profile import HEX_RE, NAME_RE, load_profile
 from sonoranlab.slice import read_frame_dir
 from sonoranlab.validate import opening
@@ -79,10 +79,39 @@ def _clip_frames(attempt_dir: Path) -> list[Path]:
     return paths
 
 
-def loop_candidates(attempt_dir: Path, *, n_frames: int, size: int, windows: str = "default") -> list[Candidate]:
-    """Selector pick, plus distinct steady starts in `steady` mode (skip 6; seam endpoint must exist)."""
-    if windows not in {"default", "steady"} or n_frames < 1 or size < 1:
-        raise ValueError("windows must be default|steady; n_frames and size must be positive")
+def clip_size(attempt_dir: Path, cell: int, start_scale: int | None = None) -> int:
+    """Edge the selected HD frames are written at. Default: the clip's own integer scale (Track E: canvas
+    round16(cell*3) -> cell*3), not the profile's gen_scale: resizing a x3 clip to x4 would change PixelOE's input and
+    break parity with Phase 1/2 processing. With the clip's `start_scale` the frames keep the whole canvas (the room
+    around the still is the point) and the attempt must have been generated at that scale (pipeline divides by it)."""
+    attempt_dir = Path(attempt_dir).resolve()
+    with Image.open(_clip_frames(attempt_dir)[0]) as im:
+        width = im.width
+    if start_scale is None:
+        scale = width // cell
+        if scale < 1:
+            raise ValueError(f"{attempt_dir}: clip frames are smaller than the {cell} px cell")
+        return cell * scale
+    request = json.loads((attempt_dir / "result.json").read_text()).get("request") or {}
+    if request.get("start_scale") != start_scale:
+        raise ValueError(
+            f"{attempt_dir}: generated with start_scale {request.get('start_scale')!r}, the profile clip says "
+            f"{start_scale}; regenerate (processing divides the frames by the start scale)"
+        )
+    if width % start_scale or width // start_scale < cell:
+        raise ValueError(f"{attempt_dir}: {width} px frames are not a x{start_scale} canvas of the {cell} px cell")
+    return width
+
+
+def loop_candidates(
+    attempt_dir: Path, *, n_frames: int, size: int, windows: str = "default", once: str | None = None
+) -> list[Candidate]:
+    """Selector pick, plus distinct steady starts in `steady` mode (skip 6; seam endpoint must exist).
+
+    `once` (a `loop.end_rule`, for `loop: false` clips) selects with `select_once` instead: one window from frame 0,
+    and `steady` adds nothing (there is no loop seam to move)."""
+    if windows not in {"default", "steady"} or n_frames < 1 or size < 1 or once not in (None, *END_RULES):
+        raise ValueError("windows must be default|steady; n_frames and size must be positive; once an end rule")
     attempt_dir = Path(attempt_dir).resolve()
     frames = _clip_frames(attempt_dir)
     result = json.loads((attempt_dir / "result.json").read_text())
@@ -94,7 +123,10 @@ def loop_candidates(attempt_dir: Path, *, n_frames: int, size: int, windows: str
     seconds = float(timing.get("wall_s", timing.get("wall", math.nan)))  # RunRecord timing uses wall_s
     if isinstance(seed, bool) or not isinstance(seed, int) or seed < 0 or not math.isfinite(seconds) or seconds < 0:
         raise ValueError(f"{attempt_dir}: invalid seed or wall timing")
-    pick = select_loop(frames, n_frames=n_frames, size=size)
+    if once is None:
+        pick = select_loop(frames, n_frames=n_frames, size=size)
+    else:
+        pick = select_once(frames, n_frames=n_frames, size=size, end=once)
     source = {
         "kind": "clip",
         **{k: result.get(k) for k in ("workflow_source", "workflow_source_sha256", "workflow_patched_sha256")},
@@ -103,7 +135,7 @@ def loop_candidates(attempt_dir: Path, *, n_frames: int, size: int, windows: str
     }
     best = Candidate(direction, attempt_dir, seed, pick, seconds, source)
     candidates = [best]
-    if windows == "steady":
+    if windows == "steady" and once is None:
         small = []
         for path in frames:
             with Image.open(path) as im:
@@ -159,12 +191,16 @@ def _score(candidate: Candidate, report: dict, selected: list[Path], job: Path) 
     thin = sum(d["rule"] == "bbox_drift" and d.get("core_delta", math.inf) <= d["limit"] for d in failed)
     metrics, limits = report["directions"].get(direction, {}), report["limits"]
     ratios = []
+    ranked = metrics
+    if report.get("validator_mode") == "fall" and "fall" in metrics:  # rank on the gated fall measures
+        fall = metrics["fall"]
+        ranked = {"bbox_drift_max": fall["drift_max"], "foot_slide_max": fall["foot_slide_frame0"]}
     for metric, limit, gated in (
         ("bbox_drift_max", "max_bbox_drift_px", limits.get("bbox_drift_gated", True)),
         ("foot_slide_max", "max_foot_slide_px", report.get("anchor_mode") != "bbox_bottom"),
     ):
-        if gated and metrics.get(metric) is not None:
-            ratios.append(_ratio(metrics[metric], limits[limit]))
+        if gated and ranked.get(metric) is not None:
+            ratios.append(_ratio(ranked[metric], limits[limit]))
     return Score(
         candidate=candidate,
         direction_pass=not failures,
@@ -308,14 +344,12 @@ def run_sweep(
         raise ValueError("loop selection requires square cells")
     candidates = []
     for attempt in attempts:
-        # Loop frames keep the clip's own integer scale (Track E: canvas round16(cell*3) -> cell*3), not the profile's
-        # gen_scale: resizing a x3 clip to x4 would change PixelOE's input and break parity with Phase 1/2 processing.
-        with Image.open(_clip_frames(Path(attempt).resolve())[0]) as im:
-            scale = im.width // spec.cell[0]
-        if scale < 1:
-            raise ValueError(f"{attempt}: clip frames are smaller than the {spec.cell[0]} px cell")
         candidates += loop_candidates(
-            attempt, n_frames=spec.animations[anim].frames, size=spec.cell[0] * scale, windows=windows
+            attempt,
+            n_frames=spec.animations[anim].frames,
+            size=clip_size(attempt, spec.cell[0], spec.animations[anim].start_scale),
+            windows=windows,
+            once=end_rule(spec.animations[anim]),
         )
     if not candidates:
         raise ValueError("no candidates")
@@ -355,8 +389,14 @@ def plan_generation(
     stills_dir: Path,
     out_root: Path,
     background: str = "#808080",
+    motion: str | None = None,
+    start_scale: int | None = None,
 ) -> list[Path]:
-    """Write one Track E GenerateRequest JSON per direction/seed; never create its attempt dir or run generation."""
+    """Write one Track E GenerateRequest JSON per direction/seed; never create its attempt dir or run generation.
+
+    `motion` is the profile animation's `prompt_motion` (a non-run clip: "This character <motion>, facing <d>.");
+    without it a non-run clip keeps the generic "performing <anim> in place" text. Run keeps its Phase 1 prompts.
+    `start_scale` is the profile animation's (None keeps the x3 placement and the request JSON unchanged)."""
     # The core AST gate permits no adapter import statements outside cli.py, even inside helpers.
     request_type = import_module("sonoranlab.comfy.adapters.base").GenerateRequest
     track_e = import_module("sonoranlab.comfy.adapters.track_e")
@@ -381,9 +421,12 @@ def plan_generation(
     paths = []
     for d in directions:
         for seed in seeds:
-            prompt = (
-                track_e.RUN_PROMPTS[d] if anim == "run" else f"This character performing {anim} in place, facing {d}."
-            )
+            if anim == "run":
+                prompt = track_e.RUN_PROMPTS[d]
+            elif motion:
+                prompt = f"This character {motion}, facing {d}."
+            else:
+                prompt = f"This character performing {anim} in place, facing {d}."
             if background.lower() != "#808080":
                 prompt = prompt.replace("grey background", f"{background} background")
             if anim != "run":
@@ -398,6 +441,7 @@ def plan_generation(
                 seed=seed,
                 out_dir=out_root / "attempts" / f"{d}-{seed}",
                 background=background,
+                start_scale=start_scale,
             )
             paths.append(write_json(requests, f"{d}-{seed}.json", request.to_json()))
     return paths

@@ -461,3 +461,71 @@ def test_generation_cli_refuses_under_budget(tmp_path, capsys, monkeypatch, trac
     monkeypatch.setattr(subprocess, "run", lambda *a, **kw: pytest.fail("under-budget request must not run"))
     assert main(["sweep", "run", "--requests", str(path), "--repo", str(tmp_path), "--need-gib", need]) == 2
     assert f"Track {track} needs {minimum} GiB" in capsys.readouterr().err
+
+
+def test_plan_generation_prompt_motion(tmp_path):
+    """A non-run clip with the profile's prompt_motion gets that motion; run and motion-less clips are unchanged."""
+    stills = tmp_path / "stills"
+    stills.mkdir()
+    Image.fromarray(figure("east", 0)).save(stills / "still_east.png")
+
+    def prompt(anim, motion, name):
+        p = sweep.plan_generation("hero", anim, ["east"], [1], stills, tmp_path / name, motion=motion)[0]
+        return json.loads(p.read_text())["prompt"]
+
+    tail = " Static camera, flat solid #808080 background, 2D game sprite animation."
+    motion = "raises the rifle to the shoulder, fires one shot with a small recoil, then lowers it; feet stay planted"
+    assert prompt("cast", motion, "cast") == f"This character {motion}, facing east.{tail}"
+    assert prompt("cast", None, "plain") == f"This character performing cast in place, facing east.{tail}"
+    run = prompt("run", "ignored", "run")
+    assert run == prompt("run", None, "run2") and run.startswith("This character running in place, side view")
+
+
+def test_non_loop_clip_uses_select_once(tmp_path):
+    root = attempt(tmp_path / "attempt")
+    once = sweep.loop_candidates(root, n_frames=3, size=48, windows="steady", once="return")
+    assert len(once) == 1 and once[0].loop.window == "return" and once[0].loop.picks[0] == 0
+    loop = sweep.loop_candidates(root, n_frames=2, size=48)[0].loop
+    assert loop.window == "loop" and loop.end is None
+    with pytest.raises(ValueError, match="end rule"):
+        sweep.loop_candidates(root, n_frames=3, size=48, once="fall")
+
+
+REQUEST_KEYS = {
+    "track", "character", "anim", "direction", "source_image", "prompt", "seed", "out_dir", "settings", "background",
+    "control_image", "workflow",
+}  # fmt: skip
+
+
+def test_plan_generation_start_scale_only_where_the_profile_sets_it(tmp_path):
+    """Gun death (start_scale 2) records the scale in its requests; run/idle/cast requests keep their exact JSON."""
+    stills = tmp_path / "stills"
+    stills.mkdir()
+    Image.fromarray(figure("east", 0)).save(stills / "still_east.png")
+    texts = {}
+    for anim, scale in (("run", None), ("idle", None), ("cast", None), ("death", 2)):
+        (p,) = sweep.plan_generation("hero", anim, ["east"], [1], stills, tmp_path / anim, start_scale=scale)
+        texts[anim] = p.read_text()
+    for anim in ("run", "idle", "cast"):
+        doc = json.loads(texts[anim])
+        assert set(doc) == REQUEST_KEYS  # no start_scale key: the request JSON is byte-identical to before
+    death = json.loads(texts["death"])
+    assert set(death) == REQUEST_KEYS | {"start_scale"} and death["start_scale"] == 2
+    assert GenerateRequest.from_json(death).start_scale == 2
+
+
+def test_clip_size_keeps_the_canvas_and_refuses_a_scale_mismatch(tmp_path):
+    """Default clips: cell x their own integer scale (unchanged). start_scale clips: the whole canvas, only for an
+    attempt generated at that scale (an old x3 death attempt is not reprocessed at x2)."""
+    root = attempt(tmp_path / "a")
+    assert sweep.clip_size(root, CELL) == CELL * SCALE
+    with pytest.raises(ValueError, match="generated with start_scale None"):
+        sweep.clip_size(root, CELL, 2)
+    result = json.loads((root / "result.json").read_text())
+    result["request"]["start_scale"] = 2
+    (root / "result.json").write_text(json.dumps(result))
+    assert sweep.clip_size(root, CELL, 2) == CELL * SCALE  # 48 = canvas width, divisible by 2, >= cell at x2
+    with pytest.raises(ValueError, match="not a x3 canvas"):
+        result["request"]["start_scale"] = 3
+        (root / "result.json").write_text(json.dumps(result))
+        sweep.clip_size(root, CELL, 3)  # 48 / 3 = 16 < the 24 px cell

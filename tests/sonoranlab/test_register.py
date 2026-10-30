@@ -140,3 +140,71 @@ def test_parity_on_real_relay_sentinel_frames() -> None:
         assert info["shift_px"] == winfo["shift_px"] and info["clipped_px"] == winfo["clipped_px"], d
         checked += 1
     assert checked
+
+
+def test_anchor_frame_keeps_a_non_loop_clip_where_its_start_pose_stands():
+    """A cast throws the rifle forward in later frames: the median bbox centre moves right, which would shift the whole
+    clip left (the character jumps when it starts shooting). anchor_frame=0 places it by the start pose instead."""
+
+    def frame(rifle: int) -> np.ndarray:
+        f = np.zeros((40, 40, 4), np.uint8)
+        f[10:38, 16:24] = (200, 40, 40, 255)  # body: centre x 20
+        if rifle:
+            f[18:20, 24 : 24 + rifle] = (30, 60, 220, 255)
+        return f
+
+    frames = [frame(0), frame(12), frame(12), frame(12), frame(0)]
+    _, info_m = register_clip(frames, (40, 40), foot_y=37, anchor_x=20)
+    by_start, info_s = register_clip(frames, (40, 40), foot_y=37, anchor_x=20, anchor_frame=0)
+    assert info_m["shift_px"][0] == -6 and "anchor_frame" not in info_m  # loop clips: unchanged rule
+    assert info_s["shift_px"][0] == 0 and info_s["anchor_frame"] == 0
+    assert np.array_equal(by_start[0], frames[0])  # the start pose is not moved
+    with pytest.raises(ValueError, match="anchor_frame"):
+        register_clip(frames, (40, 40), foot_y=37, anchor_x=20, anchor_frame=5)
+
+
+def _lying(x0: int, x1: int, y0: int, width: int = 48) -> np.ndarray:
+    """A body occupying columns x0..x1 from row y0 down to row 28 of a `width` x 32 raw frame (wider than the cell,
+    as a start_scale clip's downscaled canvas is)."""
+    f = np.zeros((32, width, 4), np.uint8)
+    f[y0:29, x0 : x1 + 1] = (200, 40, 40, 255)
+    return f
+
+
+def fall_reg(frames, **kw):
+    return register_clip(frames, (32, 32), foot_y=28, anchor_x=16, anchor_frame=0, **kw)
+
+
+def test_fall_fit_moves_the_clip_by_the_minimum_that_keeps_every_frame_inside():
+    """Falls to the right: frame-0 anchoring would push the lying body past the right padding (x 33 > 29)."""
+    frames = [_lying(14, 17, 13), _lying(14, 24, 19), _lying(14, 33, 25), _lying(14, 33, 25)]
+    _, plain = fall_reg(frames)
+    assert plain["shift_px"] == [0, 0] and plain["clipped_px"][-1] > 0 and "fit" not in plain
+    out, info = fall_reg(frames, fit_padding=2)
+    assert info["shift_px"] == [-4, 0] and info["fit"] == {"padding": 2, "offset_px": -4, "fits": True}
+    assert info["clipped_px"] == [0, 0, 0, 0] and info["anchor_frame"] == 0
+    assert info["raw_shifts_px"] == plain["raw_shifts_px"]  # per-frame provenance is unchanged
+    xs = [np.nonzero(f[..., 3].any(0))[0] for f in out]
+    assert min(x.min() for x in xs) >= 2 and max(x.max() for x in xs) == 29  # touches the padding, not past it
+    _, info_l = fall_reg([f[:, ::-1] for f in frames], fit_padding=2)  # falling left: shifts right
+    assert info_l["fit"]["offset_px"] > 0 and info_l["clipped_px"] == [0, 0, 0, 0]
+
+
+def test_fall_fit_is_zero_when_the_clip_already_fits_and_never_forced_when_it_cannot():
+    fits = [_lying(14, 17, 13), _lying(12, 20, 19), _lying(10, 24, 25)]
+    _, info = fall_reg(fits, fit_padding=2)
+    assert info["fit"] == {"padding": 2, "offset_px": 0, "fits": True} and info["shift_px"] == [0, 0]
+    too_wide = [_lying(14, 17, 13), _lying(14, 30, 19), _lying(14, 45, 25)]  # union 32 px > the 28 px inside
+    _, plain = fall_reg(too_wide)
+    _, info = fall_reg(too_wide, fit_padding=2)
+    assert info["fit"] == {"padding": 2, "offset_px": 0, "fits": False}
+    assert info["shift_px"] == plain["shift_px"] and info["clipped_px"] == plain["clipped_px"]  # frame-0 anchored
+
+
+def test_fit_needs_a_frame_anchored_non_rig_clip():
+    """Loop clips (median anchoring) and rig clips never fit; pipeline passes fit_padding only for fall clips."""
+    frames = [_lying(14, 17, 13), _lying(14, 33, 25)]
+    with pytest.raises(ValueError, match="fit_padding"):
+        register_clip(frames, (32, 32), foot_y=28, anchor_x=16, fit_padding=2)
+    with pytest.raises(ValueError, match="fit_padding"):
+        fall_reg(frames, fit_padding=-1)

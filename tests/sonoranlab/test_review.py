@@ -708,6 +708,20 @@ def test_own_admission_only_attempt_limit_keeps_binding(job):
     assert review_errors(job) == [] and production_usable(job)
 
 
+def test_own_row_override_of_another_clip_keeps_binding(job):
+    """Gun cast/death (2026-10-29): adding the row's overrides for other clips keeps this clip's job bound; an override
+    of the job's own clip breaks it (next test)."""
+    over = {"death": {"track_default": "E", "validator_mode": "fall"}}
+    _git_profile(job, lambda doc, me: doc["characters"][me].update(animations=over))
+    assert review_errors(job) == [] and production_usable(job)
+
+
+def test_own_row_override_of_the_jobs_clip_breaks_binding(job):
+    anim = json.loads((job / "report.json").read_text())["animation"]
+    _git_profile(job, lambda doc, me: doc["characters"][me].update(animations={anim: {"fps": 7}}))
+    assert not production_usable(job)
+
+
 @pytest.mark.parametrize(
     "edit",
     [

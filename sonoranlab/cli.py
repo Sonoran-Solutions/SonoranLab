@@ -697,6 +697,7 @@ def export_godot_checked(args: argparse.Namespace, *, sheet_pixels=None, write: 
         max_colours=prof.palette.max_colors_per_cell,
         loop=anim_spec.loop,
         anchor_mode=spec.anchor_mode,
+        validator_mode=anim_spec.validator_mode,
         fringe_tolerance=prof.alpha.fringe_tolerance,
         mirror=dict(prof.directions.mirror_animations),
         registration=report.get("registration"),
@@ -764,6 +765,7 @@ def validation_report(args: argparse.Namespace, *, loaded=None) -> dict:
         "max_colours": prof.palette.max_colors_per_cell,
         "loop": anim.loop,
         "anchor_mode": spec.anchor_mode,
+        "validator_mode": anim.validator_mode,
         "fringe_tolerance": prof.alpha.fringe_tolerance,
         "mirror": dict(prof.directions.mirror_animations),
     }

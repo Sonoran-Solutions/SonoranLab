@@ -5,8 +5,9 @@ import json
 import numpy as np
 import pytest
 import yaml
-from classreq_fixtures import CELL, ORDER, still, write_request, write_stills
+from classreq_fixtures import CELL, ORDER, edit, still, write_request, write_stills
 from PIL import Image
+from test_pipeline import toy_profile
 
 from sonoranlab import classreq
 from sonoranlab.cli import main
@@ -234,3 +235,23 @@ def test_oversize_request_file_is_a_usage_error(tmp_path, profile, capsys):
     req = tmp_path / "r.yaml"
     req.write_text("silhouette: " + "x" * (classreq.MAX_FILE + 1))
     assert run(capsys, req, "--profile", profile)[0] == 2
+
+
+@pytest.mark.parametrize("row_override", [True, False])
+def test_clip_qualifies_by_its_effective_track_for_the_character(tmp_path, capsys, row_override):
+    """Gun cast/death (2026-10-29): a row override that makes a clip Track E admits it for that character only."""
+
+    def gun_like(doc):
+        edit(doc)
+        doc["animations"]["death"] = {"frames": 2, "fps": 8, "loop": False, "hold_last": True}
+        if row_override:
+            doc["characters"]["hero"]["animations"] = {"death": {"track_default": "E", "validator_mode": "fall"}}
+
+    profile = toy_profile(tmp_path, gun_like)
+    stills = write_stills(tmp_path / "stills")
+    req = write_request(tmp_path / "r.yaml", clips=["run", "idle", "death"])
+    result = run(capsys, req, "--profile", profile, "--stills", stills)[1]
+    if row_override:
+        assert result["status"] == "ready", result["findings"]
+    else:
+        assert result["status"] == "invalid" and [c for c, _ in codes(result)] == ["unsupported_clip"]
