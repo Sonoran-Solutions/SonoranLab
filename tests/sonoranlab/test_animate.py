@@ -41,6 +41,13 @@ class Fake:
         for i in range(12):
             paths.append(clip / f"rgba_{i:02}.png")
             f = figure(req.direction, i % 2, self.lift.get(req.direction, 0) if i % 2 else 0)
+            if req.start_scale:  # Track E keeps the x3 canvas and places the still at start_scale, centred
+                big, canvas = f.repeat(req.start_scale, 0).repeat(req.start_scale, 1), np.zeros((CELL * 3,) * 2 + (4,))
+                o = (CELL * 3 - big.shape[0]) // 2
+                canvas[o : o + big.shape[0], o : o + big.shape[1]] = big
+                f = canvas.astype(np.uint8)
+                Image.fromarray(f).save(paths[-1])
+                continue
             Image.fromarray(f.repeat(SCALE, 0).repeat(SCALE, 1)).save(paths[-1])
         RawResult(req, "ok", frames=paths, timing={"wall_s": 7.5}).write()
         return subprocess.CompletedProcess(argv, 0)
@@ -344,3 +351,24 @@ def test_non_loop_fall_clip_end_to_end(tmp_path):
     assert side["characters_json_entry"]["clips"] == [
         {"name": "death", "start": 1, "frames": 3, "fps": 8, "loop": False}
     ]
+
+
+def test_fall_clip_with_start_scale_end_to_end(tmp_path):
+    """Profile start_scale on the death clip: every request carries it, the carrier and final frames keep the whole x3
+    canvas (72 px for the 24 px cell), processing divides by 2, the fall clip registers with a fit record."""
+    death = {"frames": 3, "fps": 8, "loop": False, "hold_last": True, "track_default": "E"}
+    death |= {"validator_mode": "fall", "prompt_motion": "is hit and collapses, ending lying still", "start_scale": 2}
+    (tmp_path / "p").mkdir()
+    prof = toy_profile(tmp_path / "p", lambda d: d["animations"].update(death=death))
+    res = run(tmp_path, Fake(), profile=prof, anim="death")
+    assert res["exit"] == 0 and res["outcome"] == "pass", res
+    out = tmp_path / "out"
+    assert {json.loads(p.read_text())["start_scale"] for p in (out / "gen/requests").glob("*.json")} == {2}
+    assert json.loads((out / "carrier-src/east/loop.json").read_text())["size"] == CELL * 3
+    report = json.loads(Path(res["verdict"]["report"]).read_text())
+    assert report["params"]["scale"] == report["params"]["start_scale"] == 2
+    assert all(report["registration"][d]["fit"] == {"padding": 2, "offset_px": 0, "fits": True} for d in GEN)
+    idle = run(tmp_path, Fake(), profile=prof, anim="idle", out=tmp_path / "idle")  # same profile, other clip
+    assert idle["exit"] == 0
+    assert all("start_scale" not in json.loads(p.read_text()) for p in (tmp_path / "idle/gen/requests").glob("*"))
+    assert "start_scale" not in json.loads(Path(idle["verdict"]["report"]).read_text())["params"]

@@ -102,8 +102,10 @@ characters:
   gun:                    # Phase 5 new class (DYL-134); owner-approved row 2026-10-28; default limits (no own-clip calibration)
     cell: 160               #   refprep measured 118 px needed for the standing rifle; 160 leaves room for the run cycle
     anchor_mode: foot
-    max_attempts_per_animation: 6   # owner 2026-10-28: "(a) raise max_attempts_per_animation for gun's run to 6"
-                                    #   (row-level: also raises gun idle's attempt cap; its campaign budget stays 3)
+    max_attempts_per_animation: 9   # owner 2026-10-29: "Widen the canvas for fall clips, grant 3 more death seeds
+                                    #   (cap to 9), and compose the full 4-clip sheet only when death passes" (was 6,
+                                    #   owner 2026-10-28: "(a) raise max_attempts_per_animation for gun's run to 6").
+                                    #   Row-level cap only: each clip's own campaign seed budget still bounds it
     animations:             # owner 2026-10-29 (ADR-0011 amendment): gun-only Track E cast (shoot) and death
       cast:
         track_default: E
@@ -111,6 +113,8 @@ characters:
       death:
         track_default: E
         validator_mode: fall    # ADR-0008 fall addendum; explicit, never inferred from hold_last
+        start_scale: 2          # owner 2026-10-29 "Widen the canvas for fall clips": still at x2 on the same 480 px
+                                #   canvas (same Wan tokens/memory), 80 px of room each side for the lying body
         prompt_motion: "is hit, staggers and collapses to the ground, ending lying still"
     max_foot_slide_px: 30
     max_bbox_drift_px: 25

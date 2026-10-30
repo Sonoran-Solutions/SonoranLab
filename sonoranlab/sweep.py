@@ -79,6 +79,30 @@ def _clip_frames(attempt_dir: Path) -> list[Path]:
     return paths
 
 
+def clip_size(attempt_dir: Path, cell: int, start_scale: int | None = None) -> int:
+    """Edge the selected HD frames are written at. Default: the clip's own integer scale (Track E: canvas
+    round16(cell*3) -> cell*3), not the profile's gen_scale: resizing a x3 clip to x4 would change PixelOE's input and
+    break parity with Phase 1/2 processing. With the clip's `start_scale` the frames keep the whole canvas (the room
+    around the still is the point) and the attempt must have been generated at that scale (pipeline divides by it)."""
+    attempt_dir = Path(attempt_dir).resolve()
+    with Image.open(_clip_frames(attempt_dir)[0]) as im:
+        width = im.width
+    if start_scale is None:
+        scale = width // cell
+        if scale < 1:
+            raise ValueError(f"{attempt_dir}: clip frames are smaller than the {cell} px cell")
+        return cell * scale
+    request = json.loads((attempt_dir / "result.json").read_text()).get("request") or {}
+    if request.get("start_scale") != start_scale:
+        raise ValueError(
+            f"{attempt_dir}: generated with start_scale {request.get('start_scale')!r}, the profile clip says "
+            f"{start_scale}; regenerate (processing divides the frames by the start scale)"
+        )
+    if width % start_scale or width // start_scale < cell:
+        raise ValueError(f"{attempt_dir}: {width} px frames are not a x{start_scale} canvas of the {cell} px cell")
+    return width
+
+
 def loop_candidates(
     attempt_dir: Path, *, n_frames: int, size: int, windows: str = "default", once: str | None = None
 ) -> list[Candidate]:
@@ -320,16 +344,10 @@ def run_sweep(
         raise ValueError("loop selection requires square cells")
     candidates = []
     for attempt in attempts:
-        # Loop frames keep the clip's own integer scale (Track E: canvas round16(cell*3) -> cell*3), not the profile's
-        # gen_scale: resizing a x3 clip to x4 would change PixelOE's input and break parity with Phase 1/2 processing.
-        with Image.open(_clip_frames(Path(attempt).resolve())[0]) as im:
-            scale = im.width // spec.cell[0]
-        if scale < 1:
-            raise ValueError(f"{attempt}: clip frames are smaller than the {spec.cell[0]} px cell")
         candidates += loop_candidates(
             attempt,
             n_frames=spec.animations[anim].frames,
-            size=spec.cell[0] * scale,
+            size=clip_size(attempt, spec.cell[0], spec.animations[anim].start_scale),
             windows=windows,
             once=end_rule(spec.animations[anim]),
         )
@@ -372,11 +390,13 @@ def plan_generation(
     out_root: Path,
     background: str = "#808080",
     motion: str | None = None,
+    start_scale: int | None = None,
 ) -> list[Path]:
     """Write one Track E GenerateRequest JSON per direction/seed; never create its attempt dir or run generation.
 
     `motion` is the profile animation's `prompt_motion` (a non-run clip: "This character <motion>, facing <d>.");
-    without it a non-run clip keeps the generic "performing <anim> in place" text. Run keeps its Phase 1 prompts."""
+    without it a non-run clip keeps the generic "performing <anim> in place" text. Run keeps its Phase 1 prompts.
+    `start_scale` is the profile animation's (None keeps the x3 placement and the request JSON unchanged)."""
     # The core AST gate permits no adapter import statements outside cli.py, even inside helpers.
     request_type = import_module("sonoranlab.comfy.adapters.base").GenerateRequest
     track_e = import_module("sonoranlab.comfy.adapters.track_e")
@@ -421,6 +441,7 @@ def plan_generation(
                 seed=seed,
                 out_dir=out_root / "attempts" / f"{d}-{seed}",
                 background=background,
+                start_scale=start_scale,
             )
             paths.append(write_json(requests, f"{d}-{seed}.json", request.to_json()))
     return paths

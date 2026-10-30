@@ -5,7 +5,8 @@ Per direction, per frame (processing-v1; parity with benchmark/tools/process.py 
   -> alpha.remove_fringe -> palette.limit_colours -> alpha.compose
 then register.register_clip per direction -> validate -> contact sheet -> (PASS only) slice.pack_sheet (west rows
 mirrored from east) -> export.godot into JOB/export/. Every parameter comes from the profile (`processing:`, `alpha:`,
-`palette:`, the character row); the pixelize scale is inferred as raw frame edge / cell and must be an exact integer.
+`palette:`, the character row); the pixelize scale is inferred as raw frame edge / cell and must be an exact integer,
+except for a clip with `start_scale` (the still was placed at that scale on a larger canvas; frames divide by it).
 
 The inputs are byte-copied into JOB/raw/ first and the chain reads only those copies. Stages land in
 JOB/processed/{01_alpha,02_pixelize,03_palette,04_clean,05_registered}/. Nothing touches the network, ComfyUI or a GPU.
@@ -34,7 +35,7 @@ from sonoranlab.contact import contact_sheet
 from sonoranlab.export.godot import export_godot
 from sonoranlab.palette import limit_colours, snap
 from sonoranlab.pixelize import pixelize
-from sonoranlab.profile import load_palette, load_profile
+from sonoranlab.profile import Animation, load_palette, load_profile
 from sonoranlab.register import register_clip
 from sonoranlab.slice import pack_sheet, read_frame_dir, slice_sheet
 from sonoranlab.validate import validate
@@ -105,6 +106,17 @@ def _scale(size: tuple[int, int], cell: tuple[int, int], what: str) -> int:
             f"{what}: {w}x{h} is not an integer multiple of the {cw}x{ch} cell (scale = raw edge / cell, e.g. x3)"
         )
     return w // cw
+
+
+def _start_scale(size: tuple[int, int], cell: tuple[int, int], clip: Animation, what: str) -> int:
+    """The profile clip's `start_scale`: frames are the whole square generation canvas with the still placed at that
+    scale, so they downscale by it to a frame larger than the cell; registration places them into the cell."""
+    (w, h), s = size, clip.start_scale
+    if w != h or w % s or w // s < max(cell):
+        raise PipelineError(
+            f"{what}: {w}x{h} is not a square x{s} canvas of at least the {cell[0]}x{cell[1]} cell (start_scale {s})"
+        )
+    return s
 
 
 def _upstream(job: Path, names: list[str]) -> dict | None:
@@ -285,6 +297,8 @@ def run(
 
     # ---- find and size-check the inputs before the job dir exists
     sources: dict[str, Path] = {}
+    if sheet and clip.start_scale is not None:
+        raise PipelineError(f"--sheet: clip {anim} has start_scale {clip.start_scale}; it processes frame directories")
     if sheet:
         if not raw.is_file():
             raise PipelineError(f"{raw}: --sheet needs a sheet PNG file")
@@ -326,7 +340,7 @@ def run(
         if len(set(sizes.values())) > 1:
             raise PipelineError(f"{raw}: frames differ in size: {sorted(set(sizes.values()))}")
         name, size = next(iter(sizes.items()))
-        scale = _scale(size, spec.cell, name)
+        scale = _scale(size, spec.cell, name) if clip.start_scale is None else _start_scale(size, spec.cell, clip, name)
         sources |= {p.name: p for ps in found.values() for p in ps}
     still_names = []
     if stills is not None:
@@ -378,6 +392,7 @@ def run(
         "despill_px": pr.despill_px,
         "key_tol": pr.key_tol,
         "scale": scale,
+        **({"start_scale": clip.start_scale} if clip.start_scale is not None else {}),
         "alpha_threshold": prof.alpha.threshold,
         "bg_key": prof.alpha.bg_key,
         "fringe_passes": prof.alpha.fringe_passes,
@@ -437,6 +452,8 @@ def run(
             anchor_x=spec.anchor_x,
             mode=spec.anchor_mode,
             anchor_frame=None if clip.loop or spec.anchor_mode == "rig" else 0,  # non-loop: stay where the still stands
+            # fall: a body lying beside the anchor may need a minimal shift to stay in the cell (validator warns)
+            fit_padding=spec.padding if clip.validator_mode == "fall" else None,
         )
     outputs |= artifacts.write_stage(job, "05_registered", registered)
     try:

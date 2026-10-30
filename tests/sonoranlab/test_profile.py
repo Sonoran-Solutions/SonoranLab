@@ -348,9 +348,10 @@ def test_real_profile_with_paths():
 
 
 def test_character_attempt_limit_override():
-    """Owner-approved per-character override of autonomy.max_attempts_per_animation (Phase 5 gun run)."""
+    """Owner-approved per-character override of autonomy.max_attempts_per_animation (Phase 5 gun run: 6; 2026-10-29
+    "grant 3 more death seeds (cap to 9)")."""
     prof = load_profile(REAL, check_paths=False)
-    assert prof.attempt_limit("gun") == 6
+    assert prof.attempt_limit("gun") == 9
     assert prof.attempt_limit("thief") == prof.autonomy.max_attempts_per_animation == 3
     assert prof.attempt_limit("not-a-row") == 3
 
@@ -367,6 +368,12 @@ def test_gun_cast_and_death_are_track_e_with_explicit_modes():
     assert (gun["death"].track_default, gun["death"].validator_mode, gun["death"].hold_last) == ("E", "fall", True)
     assert gun["cast"].prompt_motion.startswith("raises the rifle to the shoulder, fires one shot")
     assert gun["death"].prompt_motion == "is hit, staggers and collapses to the ground, ending lying still"
+    # owner 2026-10-29 "Widen the canvas for fall clips": death only; every other gun clip keeps the x3 placement
+    assert gun["death"].start_scale == 2
+    assert all(gun[n].start_scale is None for n in ("idle", "run", "cast"))
+    assert all(
+        a.start_scale is None for c in prof.characters if c != "gun" for a in prof.character(c).animations.values()
+    )
     start, table = 1, []
     for name in ("idle", "run", "cast", "death"):
         a = gun[name]
@@ -389,7 +396,8 @@ def test_new_animation_keys_keep_frozen_rows_stable():
     assert all(set(a) == old_keys for a in _spec(prof, "thief")["animations"].values())
     gun = _spec(prof, "gun")["animations"]
     assert set(gun["run"]) == set(gun["idle"]) == old_keys
-    assert set(gun["death"]) == old_keys | {"validator_mode", "prompt_motion"}
+    assert set(gun["cast"]) == old_keys | {"prompt_motion"}
+    assert set(gun["death"]) == old_keys | {"validator_mode", "prompt_motion", "start_scale"}
 
 
 @pytest.mark.parametrize(
@@ -400,6 +408,9 @@ def test_new_animation_keys_keep_frozen_rows_stable():
         ({"prompt_motion": " "}, "prompt_motion: expected 1-300 printable"),
         ({"prompt_motion": "line\nbreak"}, "prompt_motion: expected 1-300 printable"),
         ({"prompt_motion": 3}, "prompt_motion: 3 is not a str"),
+        ({"start_scale": 0}, "start_scale: 0 is outside 1..3"),
+        ({"start_scale": 4}, "start_scale: 4 is outside 1..3"),
+        ({"start_scale": "2"}, "start_scale: '2' is not an integer"),
     ],
 )
 def test_validator_mode_and_prompt_motion_schema(make, override, msg):
