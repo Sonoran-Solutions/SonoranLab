@@ -128,12 +128,13 @@ def _refuse_protected(path: Path, roots: tuple[Path, ...], what: str) -> None:
 
 
 def godot_uid(seed: str) -> str:
-    """A deterministic `uid://` in Godot 4's text form (ResourceUID::id_to_text: base 34, a-z then 0-7)."""
+    """A deterministic `uid://` in Godot 4's text form (ResourceUID::id_to_text: base 34, a-y then 0-8; Godot 4.7.2
+    rewrote a `z`, and none of the game's 119 shipped uids contains `z` or `9`)."""
     n = int.from_bytes(hashlib.sha256(seed.encode()).digest()[:8], "big") & 0x7FFF_FFFF_FFFF_FFFF
     chars = ""
     while True:
         c = n % 34
-        chars = (chr(ord("a") + c) if c < 26 else chr(ord("0") + c - 26)) + chars
+        chars = (chr(ord("a") + c) if c < 25 else chr(ord("0") + c - 25)) + chars
         n //= 34
         if not n:
             return "uid://" + chars

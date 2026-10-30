@@ -9,7 +9,9 @@ set -euo pipefail
 [[ "${1:-}" == "--" ]] && shift
 : "${SLR_PRIV:?}" "${SLR_GODOT:?}" "${SLR_PROJ:?}"
 ulimit -f 65536   # no single file (shell log, Godot log, PNG) above 64 MiB
-mkdir -p "$SLR_PRIV"/{run,cfg,data,cache} && chmod 700 "$SLR_PRIV/run"
+mkdir -p "$SLR_PRIV"/{cfg,data,cache}
+# The Wayland socket path must fit sun_path (108 bytes), so the runtime dir cannot live under a deep job directory.
+run="$(mktemp -d "${TMPDIR:-/tmp}/slr.XXXXXX")" && trap 'rm -rf "$run"' EXIT
 cat > "$SLR_PRIV/bus.conf" <<'CONF'
 <!DOCTYPE busconfig PUBLIC "-//freedesktop//DTD D-Bus Bus Configuration 1.0//EN"
  "http://www.freedesktop.org/standards/dbus/1.0/busconfig.dtd">
@@ -28,7 +30,7 @@ WAYLAND_DISPLAY=slrender "$SLR_GODOT" --path "$SLR_PROJ" --display-driver waylan
 kill "$shell" 2>/dev/null; wait "$shell" 2>/dev/null || true
 exit $rc'
 env -i HOME="$HOME" PATH="$PATH" LANG="${LANG:-C.UTF-8}" USER="${USER:-sonoranlab}" \
-  XDG_RUNTIME_DIR="$SLR_PRIV/run" XDG_CONFIG_HOME="$SLR_PRIV/cfg" XDG_DATA_HOME="$SLR_PRIV/data" XDG_CACHE_HOME="$SLR_PRIV/cache" \
+  XDG_RUNTIME_DIR="$run" XDG_CONFIG_HOME="$SLR_PRIV/cfg" XDG_DATA_HOME="$SLR_PRIV/data" XDG_CACHE_HOME="$SLR_PRIV/cache" \
   GSETTINGS_BACKEND=memory LIBGL_ALWAYS_SOFTWARE=1 \
   SLR_PRIV="$SLR_PRIV" SLR_GODOT="$SLR_GODOT" SLR_PROJ="$SLR_PROJ" \
   dbus-run-session --config-file="$SLR_PRIV/bus.conf" -- bash -c "$inner" render "$@"
