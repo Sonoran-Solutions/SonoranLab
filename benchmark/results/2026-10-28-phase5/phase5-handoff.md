@@ -14,9 +14,14 @@ counted as a pass). The handoff commit on top touches docs only.
 | Work | Result | PR |
 |---|---|---|
 | Content-hash provenance resolver (O13) | Old jobs bind their profile through this repo's git history. The outside path is never opened, manifests are not rewritten, and approvals are never carried. Phase 4 gate job and Phase 3 import are production-usable again under their original reviews. Shared profile equivalence now covers import, repair prepare and finalize. | **#67** (`p5/provenance-resolver` @ 6229818, base `p5/base/313cbb3`) |
-| Gun `cast` + `death` (owner request) | Gun-only Track E clips, validator `fall` mode, non-loop registration, per-clip campaign binding, ×2 start room. 3 cast seeds and 7 death seeds, every failure kept. Owner approved the 4-clip sheet; bundle READY_TO_INSTALL at game **`fb712e7`** with the game's consumer check passing, `--pixel-check` included. [dyl134-gun-cast-death.md](dyl134-gun-cast-death.md) | **#68** (`p5/gun-cast-death` @ f862a04, base `p5/base/313cbb3`) |
+| Gun `cast` + `death` (owner request) | Gun-only Track E clips, validator `fall` mode, non-loop registration, per-clip campaign binding, ×2 start room. 3 cast seeds and 7 death seeds, every failure kept. Owner approved the 4-clip sheet; bundle READY_TO_INSTALL at game **`fb712e7`** with the game's consumer check passing, `--pixel-check` included. [dyl134-gun-cast-death.md](dyl134-gun-cast-death.md) | **#68** (`p5/gun-cast-death` @ db7867c, base `p5/base/313cbb3`) |
 | DYL-132 live repair on a thief copy (O9) | **PASS end to end.** One contained gpt-6.1-sol edit of 6 px inside the authorized rect, then finalize. The child `import-8c775c12…` is unreviewed. [dyl132-repair.md](dyl132-repair.md) | (evidence; code fix in #67) |
 | Gun smoke dark-colour shift (O14) | Seven controlled renders: a deterministic Compatibility-renderer sRGB conversion. Owner: **gun-only exception**; tolerance unchanged; the smoke result stays FAIL, recorded as a known exception. [gun-dark-shift.md](gun-dark-shift.md) | ADR-0011 O14 in **#53** (@ a924905) |
+
+Hosted CI: the `package` job was cancelled at its 25-min cap on #65 (`4d8d34a`) and #68 (`f862a04`), mid-suite with no
+failing test; the slow region is the pre-existing `tests/sonoranlab/jobs` plus the new campaign/newclass tests. Healthy
+hosted runs took 15.5 min (`b41d487`) and 18 min (#66 at `2363c2b`, all green). The cap is raised to 40 min in
+`db7867c`/`bcd928e` (#68/#65); that file is the only change between the tested code tree and the PR heads.
 
 Integration-only commits (no focused branch): `698f813` gives the repair test fixture report an `animation`; it is
 needed once #67 and #68 meet, because `bound_character` checks character and clips. The `review.py` merge
@@ -137,9 +142,9 @@ INSTALLED (owner only).
 | 11 | #62 | p5/dyl-130-new-class-skill @ 71fd442 | p5/base/eec2d79 |
 | 12 | #63 | p5/dyl-129b-composed-review @ e37856e | p5/base/dd73493 |
 | 13 | #64 | p5/gun-attempt-limit @ 9198158 | p5/base/abb1c97 |
-| 14 | #65 | p5/live-run-fixes @ 4d8d34a | p5/base/f550c4c |
+| 14 | #65 | p5/live-run-fixes @ bcd928e | p5/base/f550c4c |
 | 15 | #67 | p5/provenance-resolver @ 6229818 | p5/base/313cbb3 |
-| 16 | #68 | p5/gun-cast-death @ f862a04 | p5/base/313cbb3 |
+| 16 | #68 | p5/gun-cast-death @ db7867c | p5/base/313cbb3 |
 
 `p5/base/<sha>` branches are snapshots of `p5/integration` at the commit each later branch was cut from, so each PR
 shows only its own commits. The integration merges resolved conflicts in `cli.py`, `api/tools/__init__.py`, docs/06
