@@ -84,6 +84,25 @@ def build_parser() -> argparse.ArgumentParser:
     ct.add_argument("--scale", type=int, default=8)
     ct.set_defaults(func=contact)
 
+    sm = verbs.add_parser(
+        "smoke-render",
+        help="side-by-side Godot render, candidate beside siblings (docs/09); exit 0 pass, 1 fail, 3 no engine",
+    )
+    sm.add_argument("--profile", type=Path, required=True)
+    sm.add_argument("--candidate", type=Path, required=True, help="job/export dir holding <character>.sonoranlab.json")
+    sm.add_argument(
+        "--sibling",
+        action="append",
+        default=[],
+        metavar="ID=JOBDIR_OR_SHEET",
+        help="up to 3: an export dir, or a game sheet PNG / dir with its characters.json entry",
+    )
+    sm.add_argument("--out", type=Path, required=True, help="new empty dir outside the repo and the game checkout")
+    sm.add_argument("--shader", type=Path, help="the owner's private staged PixelStandee.gdshader (else no border)")
+    sm.add_argument("--godot", help="godot binary (default $GODOT, PATH, ~/.local/bin/godot)")
+    sm.add_argument("--timeout", type=float, default=600, help="wall-clock seconds for the supervised render")
+    sm.set_defaults(func=smoke_render_cmd)
+
     exp = verbs.add_parser("export", help="export a processed sheet").add_subparsers(dest="action", required=True)
     g = exp.add_parser(
         "godot", help="write the game-layout PNG, a SpriteFrames .tres and a provenance sidecar (docs/09)"
@@ -421,6 +440,38 @@ def contact(args: argparse.Namespace) -> int:
         return 2
     print(args.out)
     return 0
+
+
+def smoke_render_cmd(args: argparse.Namespace) -> int:
+    from sonoranlab.smoke import SmokeError, run_smoke
+
+    siblings: dict[str, Path] = {}
+    try:
+        for item in args.sibling:
+            label, sep, path = item.partition("=")
+            if not sep or not label or not path or label in siblings:
+                raise SmokeError(f"--sibling {item!r}: expected a unique ID=PATH")
+            siblings[label] = Path(path)
+        result = run_smoke(
+            profile=args.profile,
+            candidate=args.candidate,
+            siblings=siblings,
+            out=args.out,
+            shader=args.shader,
+            godot=args.godot,
+            timeout=args.timeout,
+        )
+    except SmokeError as e:
+        print(f"smoke-render: {e}", file=sys.stderr)
+        return 2
+    failed = [k for k, v in result["checks"].items() if not v["pass"]]
+    print(
+        json.dumps(
+            {k: result[k] for k in ("status", "engine", "border", "smoke_json")} | {"failed_checks": failed},
+            indent=2,
+        )
+    )
+    return result["exit"]
 
 
 def _parse_clip(spec: str) -> dict:
