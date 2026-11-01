@@ -164,9 +164,18 @@ planned pixels (refused before anything is written) and 32 MiB of PNG (extra ren
 **Objective checks** (`smoke.json` `checks`; every one must pass): `alpha_binary` and `no_baked_border` per sheet (no
 semi-transparent source pixel; no near-white silhouette ring), `frames_and_timing_match_manifest` (candidate clips vs the
 profile's animations), `mirrored_rows_exact`, `cells_uncropped`, `render_complete`, `all_stills_and_clip_frames_rendered`,
-`nearest_filtering` (every opaque source pixel equals its block in each render within 2 codes, dark channels below 48 within 6, and each source colour renders as exactly one colour everywhere; the first real run, Godot 4.7.2 + llvmpipe + the game's shader, showed dark channels 1-5 codes darker, e.g. (17,13,12) -> (13,8,7), 34 -> 32, 40 -> 39, >= 60 exact; the changed colours are listed in `colour_map_changed`) and `alpha_and_border` (render alpha binary; outside the sprite only the background, or with the
-shader a flat keyline ring then a flat outer ring of two different colours, observed colours recorded). The tolerance and
-the border-colour handling were chosen without a real run: confirm them on the first real render. `agent_recommendation`
+`nearest_filtering` (every opaque source pixel is converted through the Godot 4.7.2 `gl_compatibility` colour LUT,
+then compared with every pixel of its 1x/4x block within 2 codes on **every** channel; each source colour must render
+as exactly one colour everywhere). The LUT models sRGB->linear as
+`x * (x * (x * 0.305306011 + 0.682171111) + 0.012522878)` for `x = code/255`, then linear->sRGB as
+`max(1.055 * clip(linear,0,1) ** 0.416666667 - 0.055, 0)`, rounded to an 8-bit code, with no linear toe.
+This applies with or without `--shader`; source codes 0..7 map to 0. It matched all 527 measured colours across seven
+renders ([evidence](../benchmark/results/2026-10-28-phase5/gun-dark-shift.md)). `conversion` names the model;
+`max_deviation_observed` measures error from its prediction, while `max_raw_shift` records the informational shift
+from the source. `tolerance`, `bad_pixels`, `colour_map_changed` and `colours_rendered_as_several` record the remaining
+comparison facts. `alpha_and_border` requires binary render alpha and, outside the sprite, only the background or,
+with the shader, a flat keyline ring then a flat outer ring of two different colours (observed colours recorded).
+Border-colour handling is unchanged. `agent_recommendation`
 and `owner_style_acceptance` are always empty; style acceptance is the owner's.
 
 **Supervision.** The render runs `render.sh` (private headless GNOME Shell + llvmpipe, as `spriteframes_check/render.sh`)

@@ -135,7 +135,7 @@ def _rings(opaque: np.ndarray):
     return near(1) & ~opaque, near(2) & ~near(1)
 
 
-def fake_supervise(mode="ok", border_colors=((14, 11, 10), (255, 255, 255)), calls=None):
+def fake_supervise(mode="ok", border_colors=((14, 11, 10), (255, 255, 255)), calls=None, red_shift=0):
     """A stand-in for smoke.supervise that draws what the Godot script would (nearest, optional border)."""
 
     def fake(cmd, *, cwd, env, timeout, **kw):
@@ -174,9 +174,11 @@ def fake_supervise(mode="ok", border_colors=((14, 11, 10), (255, 255, 255)), cal
                     region[np.repeat(np.repeat(o, s, 0), s, 1)] = (*border_colors[1], 255)
                 opaque = up[..., 3] >= 128
                 region[opaque] = up[opaque]
-                if mode == "dark":  # the engine's colour path: dark channels come out a few codes darker, consistently
-                    px = region[opaque].astype(int)
-                    region[opaque, :3] = np.where(px[:, :3] < 48, np.maximum(px[:, :3] - 5, 0), px[:, :3])
+                region[opaque, :3] = smoke.COLOR_LUT[region[opaque, :3]]
+                region[opaque, 0] += red_shift
+                if mode == "split":
+                    # Split an upscaled block within tolerance: the colour-map rule must still reject it.
+                    region[opaque & (np.arange(region.shape[1]) % 2 == 0)[None, :], 0] += 1
                 if mode == "semi":
                     region[opaque & (np.arange(region.shape[1]) % 7 == 0)[None, :]] = (1, 2, 3, 128)
                 img[q["y"] * s : (q["y"] + c) * s, q["x"] * s : (q["x"] + c) * s] = region
