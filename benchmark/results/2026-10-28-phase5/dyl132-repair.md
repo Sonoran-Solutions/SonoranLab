@@ -27,4 +27,4 @@ Findings recorded for follow-up:
 - `repair session start --detach` does not pass `SONORANLAB_*` to its unit, yet still prints ok;
 - relay status polling journals about 8 requests/s (14 MB in 6 min).
 
-The child awaits the owner's review. Private evidence: `~/sonoranlab-work/phase5/dyl132/thief/`.
+The owner approved the child on 2026-11-01 ("Record that I approve the thief child"); `check_review` now reads production_usable true under its own review. This child proves the repair route; the delivered thief sheet does not contain its test edit. Private evidence: `~/sonoranlab-work/phase5/dyl132/thief/`.

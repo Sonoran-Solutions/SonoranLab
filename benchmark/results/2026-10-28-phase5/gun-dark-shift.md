@@ -22,3 +22,14 @@ gun only and those two colours in gun's approved sheets (`914dabb9…`, `862ef0c
 global tolerance stays at 6, and the smoke check still reports FAIL for these renders (a recorded exception, not a
 pass). A harness fix (compare against the known conversion curve, or render with Forward+) remains a possible
 follow-up. Private evidence: `~/sonoranlab-work/phase5/gun-dark-shift/`.
+
+## Harness fix (2026-11-01): supersedes the exception
+
+The owner asked (verbatim) to "complete the smoke harness fix". `nearest_filtering` now compares every channel with the
+renderer's predicted colour (`godot_gl_compatibility_lut`, tolerance 2) and the dark-channel allowance of 6 is gone, so
+a true dark error of 3-6 that used to pass now fails. The one-colour-one-render rule is unchanged.
+
+Real renders at `a59481f`: gun (`job-20261101T180722Z-79d3a168`), thief (`job-20261101T180809Z-b42937ba`), engineer
+(`job-20261101T180902Z-f59e20c3`): all 10/10, 0 bad pixels, 0 deviation from the prediction; raw shifts 7, 6, 6. The
+LUT models this harness's renderer only; a different renderer or Godot version would fail the check and need
+re-measuring, which is the intended behaviour.

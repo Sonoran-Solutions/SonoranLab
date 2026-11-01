@@ -1,9 +1,42 @@
 # Phase 5 senior-review handoff — New-class orchestration and game-ready asset delivery (DYL-123..135)
 
-**Status: READY_FOR_SENIOR_RE-REVIEW** (revision 2, 2026-10-30; §0a then §0). Nothing is merged, auto-merge is off,
+**Status: READY_FOR_SENIOR_RE-REVIEW** (revision 3, 2026-11-01; §0b, §0a, then §0). Nothing is merged, auto-merge is off,
 Phase 6 is not started, no artwork was approved on the owner's behalf (every approval below quotes the owner), and
 the production game checkout was never written. Game installation: **HOLD**, pending the owner's per-bundle
 authorization.
+
+## 0b. Revision 3 (2026-11-01)
+
+The owner (verbatim): "Record that I approve the thief child, rebuild the thief and engineer bundles at the game's
+current commit and complete the smoke harness fix as well".
+
+- **Thief repair child approved.** `import-8c775c12…` is production-usable under its own review. The delivered thief
+  sheet does not include its test edit.
+- **Smoke harness fixed** (**#70**): see [gun-dark-shift.md](gun-dark-shift.md). All three classes pass 10/10 on real
+  Godot. The gun-only exception is superseded (ADR-0011 O14).
+- **Bundles at the game's current commit `fb712e7`** (**#69** extends the shared profile equivalence to `deliver build`,
+  the fourth and last whole-file check on this path):
+
+| Class | Bundle | Consumer alone at `fb712e7` | State |
+|---|---|---|---|
+| gun (4 clips) | `job-20261030T024927Z-fbfbdd9f` | PASS incl. `--pixel-check` | READY_TO_INSTALL |
+| thief (idle/run) | `job-20261101T175831Z-31495ab1` | PASS; pixel check stops at its own missing death (known) | READY_TO_INSTALL, `playable_class: false` |
+| engineer (idle/run) | `job-20261101T175902Z-73c1b6ec` | PASS; same known stop | READY_TO_INSTALL, `playable_class: false` |
+
+These replace the `dd4b2c1` thief/engineer bundles in §0a. Each bundle appends to the same base manifest, so only the
+first one installed applies as built; the next must be rebuilt on the resulting commit.
+
+- **Combined retest (O11)** in a disposable clone (`e388264` gun, `f115af7` thief, `15576e1` engineer, each built on the
+  previous commit, never stacked on a dirty tree), consumer after each: gun PASS; gun+thief PASS with the known missing
+  death stop; gun+thief+engineer: tests, build, import and gallery pass, and **`--pixel-check` FAILS** because it stops
+  at thief's missing death clip before reaching engineer. Result: installing thief or engineer without death clips, or
+  the game-side fallback (O12), breaks the game's own pixel check. Gun alone does not.
+- **Real checkout:** at `fb712e7` with one untracked directory (`.codex/`), which `INSTALL.md`'s clean-tree check
+  refuses until it is removed or ignored.
+
+Validation for this revision: focused deliver 32 and smoke 53 (+1 opt-in skip) locally, real renders above, and hosted
+CI on #66, #69 and #70. The local full suite was not re-run: its evidence stays on `65bebe4`, and the code changed
+since is `deliver.py` and `smoke.py` only, covered by those tests and by the hosted full run on #66.
 
 ## 0a. Revision 2 (2026-10-30): owner-requested follow-ups completed
 
@@ -140,7 +173,7 @@ INSTALLED (owner only).
 | Order | PR | Head branch @ sha | Base |
 |---|---|---|---|
 | 1 | #52 | p5/dyl-124-runner-race @ a2e9e64 | main (b42317f) |
-| 2 | #53 | p5/dyl-123-contract @ a924905 | main |
+| 2 | #53 | p5/dyl-123-contract @ e0efd8a | main |
 | 3 | #54 | p5/dyl-125-birefnet-provenance @ ad92e9d | main |
 | 4 | #55 | p5/dyl-126-character-history @ e22db92 | main |
 | 5 | #56 | p5/dyl-127-pose-control @ 28e3c6b | #54 |
@@ -155,6 +188,8 @@ INSTALLED (owner only).
 | 14 | #65 | p5/live-run-fixes @ bcd928e | p5/base/f550c4c |
 | 15 | #67 | p5/provenance-resolver @ 6229818 | p5/base/313cbb3 |
 | 16 | #68 | p5/gun-cast-death @ db7867c | p5/base/313cbb3 |
+| 17 | #69 | p5/deliver-profile-equivalence @ 3ba648d | p5/base/b941d2a |
+| 18 | #70 | p5/smoke-conversion @ 62c344d | p5/base/b941d2a |
 
 `p5/base/<sha>` branches are snapshots of `p5/integration` at the commit each later branch was cut from, so each PR
 shows only its own commits. The integration merges resolved conflicts in `cli.py`, `api/tools/__init__.py`, docs/06
