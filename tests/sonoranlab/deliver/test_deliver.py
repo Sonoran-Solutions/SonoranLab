@@ -333,6 +333,25 @@ def test_build_refuses_an_existing_id(world, approved, tmp_path, capsys):
     assert "already exists in the base manifest" in capsys.readouterr().err
 
 
+@pytest.mark.parametrize("equivalent", [True, False])
+def test_build_uses_the_shared_profile_equivalence(world, approved, tmp_path, monkeypatch, capsys, equivalent):
+    """Another character's row changed after the sheet was composed: the bundle may still be built (shared rule)."""
+    from sonoranlab import review
+
+    original = world["profile"].read_bytes()
+    monkeypatch.setattr(review, "same_character_profile", lambda *a: equivalent)
+    monkeypatch.setattr(deliver, "same_character_profile", lambda *a: equivalent)
+    try:
+        world["profile"].write_bytes(original + b"# another character's row changed\n")
+        rc = main(build_args(world, approved, tmp_path / "b"))
+    finally:
+        world["profile"].write_bytes(original)
+    if equivalent:
+        assert rc == 0, capsys.readouterr().err
+    else:
+        assert rc == 2 and not (tmp_path / "b").exists()
+
+
 @pytest.mark.parametrize(
     ("over", "msg"),
     [
