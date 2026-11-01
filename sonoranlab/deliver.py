@@ -34,7 +34,7 @@ from sonoranlab import artifacts
 from sonoranlab.compose import TOOL as COMPOSE_TOOL
 from sonoranlab.profile import load_profile
 from sonoranlab.review import _load as load_strict_json
-from sonoranlab.review import review_errors
+from sonoranlab.review import bound_character, review_errors, same_character_profile
 
 SCHEMA = "sonoranlab.delivery_bundle/1"
 APPLY_SCHEMA = "sonoranlab.delivery_apply/1"
@@ -234,7 +234,9 @@ def build(
     params = manifest.get("params") or {}
     if params.get("tool") != COMPOSE_TOOL:
         raise DeliveryError("--composed must be a `sonoranlab compose` job (one sheet with every clip)")
-    if manifest["profile"]["sha256"] != _sha(profile):
+    if manifest["profile"]["sha256"] != _sha(profile) and not same_character_profile(
+        profile, manifest["profile"], manifest.get("git"), bound_character(composed, manifest)
+    ):
         raise DeliveryError("--profile differs from the profile the composed job was validated with")
     cid = manifest["character"]
     if not _ID.match(cid):
