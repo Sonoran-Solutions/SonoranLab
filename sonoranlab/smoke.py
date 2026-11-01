@@ -41,12 +41,23 @@ MARGIN, GAP, GROUP_GAP = 8, 8, 16  # 1x pixels: canvas margin, between character
 MAX_EDGE = 12288  # render pixels per image edge (llvmpipe textures are safe up to 16384)
 MAX_TOTAL_PIXELS = 300_000_000
 MAX_TOTAL_BYTES = 32 << 20
-COLOR_TOL = 2  # max channel deviation for source channels >= DARK_BELOW (sRGB round trip); observed max is recorded
-# Measured on the first real run (Godot 4.7.2, llvmpipe, the game's shader): dark sRGB channels come out darker by 1-5
-# codes ((17,13,12) -> (13,8,7), 34 -> 32, 40 -> 39, >= 60 exact), a fixed offset of about 0.0016 in linear light,
-# consistently for every pixel of a colour. It is the engine's colour path, not filtering, so dark channels get
-# DARK_TOL; filtering is judged separately by requiring one render colour per source colour (see `colour_map`).
-DARK_BELOW, DARK_TOL = 48, 6
+COLOR_TOL = 2  # max channel deviation from the renderer's predicted colour, including dark channels
+COLOR_CONVERSION = "godot_4.7.2_gl_compatibility_srgb_polynomial_pow"
+
+
+def godot_gl_compatibility_lut() -> np.ndarray:
+    """8-bit colour round trip in Godot 4.7.2's gl_compatibility renderer (plain and standee shaders).
+
+    sRGB->linear uses a polynomial; linear->sRGB uses a power with no linear toe. Measured against 527 real
+    colours with zero mismatches: benchmark/results/2026-10-28-phase5/gun-dark-shift.md.
+    """
+    x = np.arange(256, dtype=np.float64) / 255
+    linear = x * (x * (x * 0.305306011 + 0.682171111) + 0.012522878)
+    srgb = np.maximum(1.055 * np.clip(linear, 0, 1) ** 0.416666667 - 0.055, 0)
+    return np.rint(srgb * 255).astype(np.int16)
+
+
+COLOR_LUT = godot_gl_compatibility_lut()
 REQUIRED_UNIFORMS = ("sheet", "grid", "cell", "cell_pixels")
 LABEL = re.compile(r"^[a-z0-9][a-z0-9_]*$")
 SHADER_NAME = "PixelStandee.gdshader"
@@ -509,12 +520,12 @@ def _up(a: np.ndarray, s: int) -> np.ndarray:
 
 
 def check_render(img: np.ndarray, spec: RenderSpec, parts: list[Sheet], bg: np.ndarray, border: bool, tol: int) -> dict:
-    """Pixel facts of one composited render (H, W, 3): opaque source pixels equal their nearest-upscaled source
-    colour, the rest is background (or, with the border shader, a 1-px keyline ring then a 1-px outer ring)."""
+    """Pixel facts of one composited render (H, W, 3): opaque pixels equal the renderer-converted source blocks;
+    the rest is background (or, with the border shader, a 1-px keyline ring then a 1-px outer ring)."""
     s = spec.scale
     img = img.astype(np.int16)
     covered = np.zeros(img.shape[:2], bool)
-    max_dev = bad_opaque = bad_bg = bad_cell = 0
+    max_dev = max_raw_shift = bad_opaque = bad_bg = bad_cell = 0
     colour_pairs: set[tuple] = set()
     ring1: list[np.ndarray] = []
     ring2: list[np.ndarray] = []
@@ -530,11 +541,11 @@ def check_render(img: np.ndarray, spec: RenderSpec, parts: list[Sheet], bg: np.n
         opaque, z1, z2 = zones(src)
         op, m1, m2 = _up(opaque, s), _up(z1, s), _up(z2, s)
         want = _up(src[..., :3].astype(np.int16), s)
-        diff = np.abs(region - want)
-        limit = np.where(want >= DARK_BELOW, tol, DARK_TOL)
+        diff = np.abs(region - COLOR_LUT[want])
         if op.any():
             max_dev = max(max_dev, int(diff[op].max()))
-            bad_opaque += int((diff[op] > limit[op]).any(-1).sum())
+            max_raw_shift = max(max_raw_shift, int(np.abs(region[op] - want[op]).max()))
+            bad_opaque += int((diff[op] > tol).any(-1).sum())
             pairs = np.unique(np.concatenate([want[op], region[op]], axis=1), axis=0)
             colour_pairs.update(map(tuple, pairs.tolist()))
         rest = ~op & ~m1 & ~m2 if border else ~op
@@ -546,6 +557,7 @@ def check_render(img: np.ndarray, spec: RenderSpec, parts: list[Sheet], bg: np.n
     bad_bg += int((np.abs(img - bg).max(-1)[outside] > tol).sum())
     out = {
         "max_opaque_deviation": max_dev,
+        "max_raw_shift": max_raw_shift,
         "bad_opaque_pixels": bad_opaque,
         "bad_background_pixels": bad_bg,
         "bad_cells": bad_cell,
@@ -766,12 +778,13 @@ def run_smoke(
     split = {k: sorted(v) for k, v in colour_map.items() if len(v) > 1}
     checks["nearest_filtering"] = {
         "pass": bool(devs) and not split and all(d["bad_opaque_pixels"] == 0 and d["bad_cells"] == 0 for d in devs),
-        "method": "every opaque source pixel vs its nearest-upscaled block; dark channels (< 48) may shift up to 6, "
+        "method": "every opaque source pixel converted by the renderer LUT vs its nearest-upscaled block "
+        "within 2 codes on every channel, "
         "and one source colour must render as exactly one colour in every render (blending would split it)",
         "colour_map_changed": {str(list(k)): list(next(iter(v))) for k, v in colour_map.items() if k not in v},
         "colours_rendered_as_several": {str(list(k)): v for k, v in split.items()},
-        "dark_below": DARK_BELOW,
-        "dark_tolerance": DARK_TOL,
+        "conversion": COLOR_CONVERSION,
+        "max_raw_shift": max((d["max_raw_shift"] for d in devs), default=None),
         "max_deviation_observed": max((d["max_opaque_deviation"] for d in devs), default=None),
         "tolerance": COLOR_TOL,
         "bad_pixels": sum(d["bad_opaque_pixels"] for d in devs),

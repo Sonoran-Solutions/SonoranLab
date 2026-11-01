@@ -168,7 +168,7 @@ def test_pass_with_fake_engine(lab, monkeypatch, with_shader):
     assert c["all_stills_and_clip_frames_rendered"]["stills"] == 16
     if with_shader:
         assert c["alpha_and_border"]["border_colors_observed"] == {"keyline": [14, 11, 10], "outer": [255, 255, 255]}
-    # background and a 4x block equal the source pixel
+    # The composited background stays exact.
     img = np.asarray(Image.open(lab.root / "out/render/overview_4x.png"))
     assert tuple(img[0, 0]) == (0x3A, 0x3A, 0x3A)
 
@@ -370,10 +370,48 @@ def test_render_script_and_shell_wrapper_are_pinned():
     assert os.access(smoke.TOOL / "render.sh", os.X_OK)
 
 
-def test_consistent_dark_shift_passes_and_is_reported(lab, monkeypatch):
-    synth.patch_engine(monkeypatch, "dark")
+def test_renderer_conversion_lut():
+    lut = smoke.godot_gl_compatibility_lut()
+    assert lut.shape == (256,)
+    assert lut[:8].tolist() == [0] * 8
+    assert lut[[8, 12, 48, 126, 255]].tolist() == [2, 7, 47, 126, 255]
+    assert (np.diff(lut) >= 0).all()
+
+
+@pytest.mark.parametrize("with_shader", [False, True])
+def test_measured_gun_conversion_passes_and_is_reported(lab, monkeypatch, with_shader):
+    monkeypatch.setattr(synth, "PALETTE", [(126, 91, 7), (46, 41, 7)] * 2)
+    shader = None
+    if with_shader:
+        shader = lab.root / "PixelStandee.gdshader"
+        shader.write_text(synth.STAND_SHADER)
+    synth.patch_engine(monkeypatch)
+    doc = run(lab, shader=shader)
+    check = doc["checks"]["nearest_filtering"]
+    assert doc["status"] == "pass" and check["max_deviation_observed"] == 0
+    assert check["conversion"] == "godot_4.7.2_gl_compatibility_srgb_polynomial_pow"
+    assert check["tolerance"] == 2 and check["bad_pixels"] == 0
+    assert check["max_raw_shift"] == 7
+    assert check["colour_map_changed"] == {"[126, 91, 7]": [126, 91, 0], "[46, 41, 7]": [45, 40, 0]}
+    assert check["colours_rendered_as_several"] == {}
+
+
+@pytest.mark.parametrize("red,shift", [(126, 3), (40, 3), (40, 4), (40, 5), (40, 6)])
+def test_deviation_from_prediction_fails(lab, monkeypatch, red, shift):
+    # For red=40 the raw shift is only 2..5, which the old dark allowance accepted.
+    monkeypatch.setattr(synth, "PALETTE", [(red, 91, 7)] * 4)
+    synth.patch_engine(monkeypatch, red_shift=shift)
     doc = run(lab)
     check = doc["checks"]["nearest_filtering"]
-    assert doc["status"] == "pass" and check["max_deviation_observed"] == 5
-    assert check["colour_map_changed"]["[17, 13, 12]"] == [12, 8, 7]
+    assert doc["exit"] == 1 and doc["status"] == "fail" and not check["pass"]
+    assert check["bad_pixels"] > 0 and check["max_deviation_observed"] == shift
     assert check["colours_rendered_as_several"] == {}
+
+
+def test_one_source_colour_rendered_as_two_colours_fails(lab, monkeypatch):
+    synth.patch_engine(monkeypatch, "split")
+    doc = run(lab)
+    check = doc["checks"]["nearest_filtering"]
+    assert doc["exit"] == 1 and doc["status"] == "fail" and not check["pass"]
+    assert check["bad_pixels"] == 0 and check["max_deviation_observed"] == 1
+    assert check["colours_rendered_as_several"]
