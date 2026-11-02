@@ -885,3 +885,28 @@ def test_profile_inside_the_read_roots_is_read_in_place_without_git(job, monkeyp
     doc["alpha"]["threshold"] -= 1
     profile.write_text(yaml.safe_dump(doc))
     assert not production_usable(job)  # read in place, a shared-setting drift breaks the binding
+
+
+def test_outside_profile_that_cannot_be_recovered_is_refused_unopened(job, monkeypatch, tmp_path_factory):
+    """Senior review P1: when git recovery fails, an existing outside file must not be hashed as a fallback."""
+    from sonoranlab import repo_inputs
+    from sonoranlab import review as review_module
+
+    manifest_path = job / "manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    outside = tmp_path_factory.mktemp("outside-read-roots") / "toy.yaml"
+    shutil.copyfile(manifest["profile"]["path"], outside)
+    manifest["profile"] = {"path": str(outside), "sha256": sha256_file(outside)}  # the right bytes, unrecoverable
+    manifest["git"] = "0" * 40
+    manifest_path.write_text(json.dumps(manifest))
+    monkeypatch.setenv("SONORANLAB_READ_ROOTS", str(job))
+    monkeypatch.setattr(repo_inputs, "_REPO", job)
+    real = review_module.sha256_file
+
+    def guarded(path):
+        assert Path(path).resolve() != outside.resolve(), "outside profile opened"
+        return real(path)
+
+    monkeypatch.setattr(review_module, "sha256_file", guarded)
+    _, problems = review_module._provenance(job)
+    assert any("outside the permitted roots" in m for m in problems), problems

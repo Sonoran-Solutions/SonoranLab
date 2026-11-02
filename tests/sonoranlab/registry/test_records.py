@@ -249,6 +249,9 @@ def test_removed_profile_read_root_isolates_imported_job(setup, job, monkeypatch
     assert records.check_review(bad_entry["job_id"], ctx=ctx)["production_usable"]
 
     monkeypatch.delenv("SONORANLAB_READ_ROOTS")
+    from sonoranlab import repo_inputs
+
+    monkeypatch.setattr(repo_inputs, "_REPO", ctx.repo)  # the repo profile is inside the checkout, as in production
     full = call("get_character", {"project": "toy", "character": "hero"}, ctx=ctx)
     assert full["ok"], full
     character = full["result"]

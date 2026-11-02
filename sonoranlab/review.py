@@ -272,6 +272,8 @@ def _provenance(job: Path) -> tuple[dict | None, list[str]]:
             pass
         elif gone:
             problems.append(f"profile {p}: missing or not a regular file")
+        elif git_only:  # confinement: never hash a file outside the roots, even when it exists
+            problems.append(f"profile {p}: outside the permitted roots and not recoverable from git")
         elif sha256_file(p) != profile.get("sha256") and not same_character_profile(
             p, profile, manifest.get("git"), bound_character(job, manifest)
         ):
