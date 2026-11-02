@@ -22,6 +22,7 @@ REPO = HERE.parents[2]
 for directory in (HERE, HERE.parent, HERE.parent / "mcp", HERE.parent / "jobs"):
     sys.path.insert(0, str(directory))
 
+from comfy.birefnet_fixture import write_birefnet  # noqa: E402
 from test_pipeline import raw_set, stills_dir, toy_profile  # noqa: E402
 from test_stdio import TIMER, run_async  # noqa: E402, F401
 
@@ -176,9 +177,12 @@ def lab(tmp_path):
     data["animations"]["idle"]["track_default"] = "E"
     (repo / "profiles/toy.yaml").write_text(yaml.safe_dump(data))
     shutil.copytree(REPO / "workflows", repo / "workflows")
+    (repo / "env").mkdir()
+    write_birefnet(tmp_path / "work", repo / "env/models.tsv")  # synthetic DYL-125 BiRefNet files
     template = repo / "templates/poses/idle/east/pose_000.png"
     template.parent.mkdir(parents=True)
     shutil.copyfile(REPO / "templates/poses/run/east/pose_000.png", template)
+    shutil.copyfile(REPO / "templates/poses/run/template.yaml", template.parent.parent / "template.yaml")
     hook = tmp_path / "hooks"
     hook.mkdir()
     (hook / "sitecustomize.py").write_text(SITECUSTOMIZE)
@@ -188,6 +192,7 @@ def lab(tmp_path):
     env = {k: v for k, v in os.environ.items() if not k.startswith(("SONORANLAB_", "INTEGRATION_"))}
     env.update(
         SONORANLAB_STATE=str(tmp_path / "state"),
+        SONORANLAB_WORK=str(tmp_path / "work"),
         SONORANLAB_READ_ROOTS=str(tmp_path),
         SONORANLAB_JOB_LAUNCHER="popen",
         SONORANLAB_JOB_EXECUTORS="integration_fakes",

@@ -84,6 +84,25 @@ def build_parser() -> argparse.ArgumentParser:
     ct.add_argument("--scale", type=int, default=8)
     ct.set_defaults(func=contact)
 
+    sm = verbs.add_parser(
+        "smoke-render",
+        help="side-by-side Godot render, candidate beside siblings (docs/09); exit 0 pass, 1 fail, 3 no engine",
+    )
+    sm.add_argument("--profile", type=Path, required=True)
+    sm.add_argument("--candidate", type=Path, required=True, help="job/export dir holding <character>.sonoranlab.json")
+    sm.add_argument(
+        "--sibling",
+        action="append",
+        default=[],
+        metavar="ID=JOBDIR_OR_SHEET",
+        help="up to 3: an export dir, or a game sheet PNG / dir with its characters.json entry",
+    )
+    sm.add_argument("--out", type=Path, required=True, help="new empty dir outside the repo and the game checkout")
+    sm.add_argument("--shader", type=Path, help="the owner's private staged PixelStandee.gdshader (else no border)")
+    sm.add_argument("--godot", help="godot binary (default $GODOT, PATH, ~/.local/bin/godot)")
+    sm.add_argument("--timeout", type=float, default=600, help="wall-clock seconds for the supervised render")
+    sm.set_defaults(func=smoke_render_cmd)
+
     exp = verbs.add_parser("export", help="export a processed sheet").add_subparsers(dest="action", required=True)
     g = exp.add_parser(
         "godot", help="write the game-layout PNG, a SpriteFrames .tres and a provenance sidecar (docs/09)"
@@ -117,6 +136,83 @@ def build_parser() -> argparse.ArgumentParser:
     v.add_argument("--stills", type=Path, help="dir with final-resolution still_<direction>.png cells")
     v.add_argument("--registration", type=Path, help="registration dict JSON from a pipeline report or manifest")
     v.set_defaults(func=validate_frames)
+
+    cr = verbs.add_parser("classreq", help="class-request intake (ADR-0011)").add_subparsers(
+        dest="action", required=True
+    )
+    cc = cr.add_parser("check", help="check a class request + eight stills; exit 0 ready, 1 not ready, 2 usage")
+    cc.add_argument("request", type=Path, help="sonoranlab.class_request/1 YAML or JSON")
+    cc.add_argument("--profile", type=Path, required=True)
+    cc.add_argument("--stills", type=Path, help="dir of still_<direction>.png (default: the request's stills_dir)")
+    cc.add_argument("--state", type=Path, help="STATE root: read-only registry lookup for the character id")
+    cc.add_argument("--out", type=Path, help="write the JSON here (never overwritten) instead of printing it")
+    cc.add_argument("--contact", type=Path, help="write a 4x review contact sheet PNG (never overwritten)")
+    cc.set_defaults(func=classreq_check_cmd)
+    cp = cr.add_parser("propose-row", help="print a reviewable characters.<id> row; never edits the profile")
+    cp.add_argument("request", type=Path)
+    cp.add_argument("--profile", type=Path, required=True)
+    cp.add_argument("--cell", type=int, required=True)
+    cp.add_argument("--out", type=Path, help="write the snippet here (never overwritten)")
+    cp.set_defaults(func=classreq_propose_cmd)
+
+    cg = verbs.add_parser("campaign", help="resumable class campaign ledger (DYL-129); prints the API envelope")
+    cga = cg.add_subparsers(dest="action", required=True)
+    for name, help_text in CAMPAIGN_VERBS.items():
+        sub = cga.add_parser(name, help=help_text)
+        if name == "create":
+            sub.add_argument("--project", required=True)
+            sub.add_argument("--request", type=Path, required=True, help="sonoranlab.class_request/1 YAML or JSON")
+            sub.add_argument("--reference", required=True, dest="reference_id", help="approved refs-<12 hex> set")
+            sub.add_argument("--revise", metavar="CAMPAIGN_ID", help="freeze revision N+1 of this campaign")
+            sub.add_argument("--max-seeds", type=int, dest="max_seeds_per_clip", help="stricter owner budget")
+            sub.add_argument("--budget-decision-ref", help="owner decision reference for --max-seeds")
+        else:
+            sub.add_argument("--campaign", required=True, dest="campaign_id")
+        if name in {"submit", "escalate"}:
+            sub.add_argument("--clip", required=True)
+        if name == "submit":
+            sub.add_argument("--seed", type=int)
+        if name == "decide":
+            sub.add_argument("--job", required=True, dest="job_id")
+            sub.add_argument("--decision", required=True, choices=("selected", "rejected"))
+        if name in {"decide", "escalate"}:
+            sub.add_argument("--reason", required=True)
+        if name == "note":
+            sub.add_argument("--text")
+            sub.add_argument("--cost-source")
+            sub.add_argument("--cost-units")
+            sub.add_argument("--cost-amount", type=float)
+        sub.set_defaults(func=campaign_cmd)
+    od = cga.add_parser("owner-decision", help="OWNER ONLY (never an MCP tool); agents must never run this command")
+    od.add_argument("--campaign", required=True, dest="campaign_id")
+    od.add_argument(
+        "--kind",
+        required=True,
+        choices=("budget_grant", "resume", "delivery", "install", "profile_row", "reference_approval", "note"),
+    )
+    od.add_argument("--verbatim", required=True, help="the owner's words, recorded verbatim")
+    od.add_argument("--ref", help="job id / attempt key (resume), bundle (delivery, install), decision reference")
+    od.add_argument("--clip", help="budget_grant clip")
+    od.add_argument("--seeds", type=int, help="budget_grant: seeds ADDED to the clip budget")
+    od.add_argument("--state", choices=("staged_and_engine_verified", "ready_to_install", "installed"))
+    od.add_argument("--activity", choices=("preparation", "cleanup", "review"), help="owner time record")
+    od.add_argument("--seconds", type=float, help="owner time for --activity")
+    od.set_defaults(func=campaign_owner_cmd)
+
+    rf = verbs.add_parser("refprep", help="HD turnaround -> candidate stills (deterministic, no model; ADR-0011)")
+    rf.add_argument("--profile", type=Path, required=True)
+    rf.add_argument("--request", type=Path, required=True)
+    rf.add_argument("--turnaround", type=Path, help="HD grid image; optional only when --view gives all directions")
+    rf.add_argument("--grid", default="4x2", help="COLSxROWS of the turnaround (default 4x2)")
+    rf.add_argument("--order", help="comma-separated directions, row-major (default: profile directions.order)")
+    rf.add_argument(
+        "--view", action="append", default=[], metavar="DIRECTION=IMG", help="replace one view with a separate HD image"
+    )
+    rf.add_argument("--out", type=Path, required=True, help="new directory; refuses to exist")
+    rf.add_argument("--cell", type=int, help="cell size (default: profile row, else the smallest fitting)")
+    rf.add_argument("--bg-key", help="#rrggbb background key (default: profile alpha.bg_key)")
+    rf.add_argument("--despill-px", type=int, help="magenta despill band in HD px (default: profile processing)")
+    rf.set_defaults(func=refprep_cmd)
 
     pr = verbs.add_parser(
         "process", help="raw HD frames -> validated job dir -> Godot export on PASS (exit 0 pass, 1 fail, 2 error)"
@@ -214,6 +310,41 @@ def build_parser() -> argparse.ArgumentParser:
     rc = rv.add_parser("check", help="exit 0 only if the job is production usable (bound review still matches)")
     rc.add_argument("job", type=Path)
     rc.set_defaults(func=review_check_cmd)
+
+    co = verbs.add_parser(
+        "compose", help="per-clip exported jobs + approved stills -> one validated class sheet job (exit 0/1/2)"
+    )
+    co.add_argument("--profile", type=Path, required=True)
+    co.add_argument("--character", required=True)
+    co.add_argument(
+        "--clips", type=_clip_jobs, required=True, help="NAME=JOBDIR,... in sheet order, e.g. idle=J1,run=J2"
+    )
+    co.add_argument("--stills", type=Path, required=True, help="dir with the eight approved still_<direction>.png")
+    co.add_argument("--out", type=Path, required=True, help="new job dir (created exclusively)")
+    co.set_defaults(func=compose_cmd)
+
+    dl = verbs.add_parser("deliver", help="owner-gated delivery bundle; apply/verify/rollback in a disposable snapshot")
+    dla = dl.add_subparsers(dest="action", required=True)
+    db = dla.add_parser("build", help="stage BUNDLE from an owner-approved composed job (never touches the game)")
+    db.add_argument("--profile", type=Path, required=True)
+    db.add_argument("--composed", type=Path, required=True, help="`sonoranlab compose` job; review check must pass")
+    db.add_argument("--request", type=Path, required=True, help="class request (height_m, clips)")
+    db.add_argument("--target-rev", required=True, help="full commit of the game revision the bundle targets")
+    db.add_argument("--base-manifest", type=Path, required=True, help="characters.json at that revision")
+    db.add_argument("--import-template", type=Path, required=True, help="a sibling sheet's .png.import")
+    db.add_argument("--out", type=Path, required=True, help="new bundle dir (created exclusively)")
+    db.set_defaults(func=deliver_cmd)
+    for action, text in (
+        ("apply", "install into a disposable snapshot (refuses the real checkout)"),
+        ("verify", "check the applied snapshot (+ game-consumer result) and record the bundle state"),
+        ("rollback", "restore the snapshot's exact pre-apply bytes"),
+    ):
+        da = dla.add_parser(action, help=text)
+        da.add_argument("bundle", type=Path)
+        da.add_argument("--target", type=Path, required=True, help="snapshot: clean git worktree at the target rev")
+        if action == "verify":
+            da.add_argument("--consumer-result", type=Path, help="result.json from tools/game_consumer/run.sh")
+        da.set_defaults(func=deliver_cmd)
 
     rp = verbs.add_parser("repair", help="isolated repair workspace and lossless Aseprite interchange")
 
@@ -423,6 +554,38 @@ def contact(args: argparse.Namespace) -> int:
     return 0
 
 
+def smoke_render_cmd(args: argparse.Namespace) -> int:
+    from sonoranlab.smoke import SmokeError, run_smoke
+
+    siblings: dict[str, Path] = {}
+    try:
+        for item in args.sibling:
+            label, sep, path = item.partition("=")
+            if not sep or not label or not path or label in siblings:
+                raise SmokeError(f"--sibling {item!r}: expected a unique ID=PATH")
+            siblings[label] = Path(path)
+        result = run_smoke(
+            profile=args.profile,
+            candidate=args.candidate,
+            siblings=siblings,
+            out=args.out,
+            shader=args.shader,
+            godot=args.godot,
+            timeout=args.timeout,
+        )
+    except SmokeError as e:
+        print(f"smoke-render: {e}", file=sys.stderr)
+        return 2
+    failed = [k for k, v in result["checks"].items() if not v["pass"]]
+    print(
+        json.dumps(
+            {k: result[k] for k in ("status", "engine", "border", "smoke_json")} | {"failed_checks": failed},
+            indent=2,
+        )
+    )
+    return result["exit"]
+
+
 def _parse_clip(spec: str) -> dict:
     name, start, frames, fps, mode, *lf = spec.split(":")
     if mode not in ("loop", "once") or len(lf) > 1:
@@ -534,6 +697,7 @@ def export_godot_checked(args: argparse.Namespace, *, sheet_pixels=None, write: 
         max_colours=prof.palette.max_colors_per_cell,
         loop=anim_spec.loop,
         anchor_mode=spec.anchor_mode,
+        validator_mode=anim_spec.validator_mode,
         fringe_tolerance=prof.alpha.fringe_tolerance,
         mirror=dict(prof.directions.mirror_animations),
         registration=report.get("registration"),
@@ -601,6 +765,7 @@ def validation_report(args: argparse.Namespace, *, loaded=None) -> dict:
         "max_colours": prof.palette.max_colors_per_cell,
         "loop": anim.loop,
         "anchor_mode": spec.anchor_mode,
+        "validator_mode": anim.validator_mode,
         "fringe_tolerance": prof.alpha.fringe_tolerance,
         "mirror": dict(prof.directions.mirror_animations),
     }
@@ -914,6 +1079,211 @@ def review_check_cmd(args: argparse.Namespace) -> int:
     for error in problems:
         print(json.dumps(error))
     return int(bool(problems))
+
+
+def _exclusive(*paths: Path | None) -> None:
+    for p in paths:
+        if p is not None and (p.exists() or p.is_symlink()):
+            raise FileExistsError(f"{p} exists: outputs are never overwritten")
+
+
+def classreq_check_cmd(args: argparse.Namespace) -> int:
+    from sonoranlab import classreq
+
+    try:
+        _exclusive(args.out, args.contact)
+        prof = load_profile(args.profile)
+        raw, _ = classreq.load_request_file(args.request)
+        stills = args.stills
+        if stills is None and isinstance(raw, dict) and isinstance(raw.get("references"), dict):
+            given = raw["references"].get("stills_dir")
+            if isinstance(given, str) and given:
+                stills = args.request.parent / given
+        character = raw.get("character") if isinstance(raw, dict) else None
+        reg = None
+        if args.state and isinstance(character, str) and classreq.NAME_RE.match(character):
+            reg = classreq.read_registry(args.state, prof.id, character)
+        result, read = classreq.check(
+            raw,
+            prof,
+            load_palette(prof),
+            stills_dir=stills,
+            stills_source=str(stills) if stills else None,
+            registry=reg,
+        )
+        if args.contact:
+            img = classreq.contact(result, read, prof.directions.order)
+            with open(args.contact, "xb") as fh:
+                img.save(fh, "PNG")
+        text = json.dumps(result, indent=2)
+        if args.out:
+            with open(args.out, "x") as fh:
+                fh.write(text + "\n")
+            print(json.dumps({"status": result["status"], "out": str(args.out)}))
+        else:
+            print(text)
+    except (OSError, ValueError) as e:
+        print(f"classreq check: {e}", file=sys.stderr)
+        return 2
+    return 0 if result["status"] == "ready" else 1
+
+
+def classreq_propose_cmd(args: argparse.Namespace) -> int:
+    from sonoranlab import classreq
+
+    try:
+        _exclusive(args.out)
+        prof = load_profile(args.profile)
+        raw, _ = classreq.load_request_file(args.request)
+        req, problems = classreq.parse_request(raw)
+        if req is None:
+            raise ValueError("class request invalid: " + "; ".join(problems))
+        text = classreq.propose_row(prof, req["character"], args.cell, classreq.request_sha256(raw))
+        if args.out:
+            with open(args.out, "x") as fh:
+                fh.write(text)
+        print(text, end="")
+    except (OSError, ValueError) as e:
+        print(f"classreq propose-row: {e}", file=sys.stderr)
+        return 2
+    return 0
+
+
+def refprep_cmd(args: argparse.Namespace) -> int:
+    from sonoranlab.refprep import refprep
+
+    try:
+        views = {}
+        for spec in args.view:
+            d, sep, img = spec.partition("=")
+            if not sep or not img or d in views:
+                raise ValueError(f"--view {spec!r}: expected DIRECTION=IMG, once per direction")
+            views[d] = Path(img)
+        doc = refprep(
+            profile_path=args.profile,
+            request_path=args.request,
+            out=args.out,
+            turnaround=args.turnaround,
+            grid=args.grid,
+            order=args.order.split(",") if args.order else None,
+            views=views,
+            cell=args.cell,
+            bg_key=args.bg_key,
+            despill_px=args.despill_px,
+        )
+    except (OSError, ValueError) as e:
+        print(f"refprep: {e}", file=sys.stderr)
+        return 2
+    status = doc["check"]["status"]
+    print(
+        json.dumps(
+            {"out": str(args.out), "cell": doc["parameters"]["cell"], "status": status, "warnings": doc["warnings"]}
+        )
+    )
+    return 0 if status in ("ready", "needs_profile_row") else 1
+
+
+def _clip_jobs(text: str) -> list[tuple[str, Path]]:
+    pairs = [part.split("=", 1) for part in text.split(",")]
+    if any(len(p) != 2 or not p[0] or not p[1] for p in pairs):
+        raise argparse.ArgumentTypeError(f"{text!r}: expected NAME=JOBDIR[,NAME=JOBDIR...]")
+    return [(name, Path(job)) for name, job in pairs]
+
+
+def compose_cmd(args: argparse.Namespace) -> int:
+    from sonoranlab.compose import ComposeError, compose
+
+    try:
+        res = compose(
+            profile=args.profile, character=args.character, clips=args.clips, stills=args.stills, out=args.out
+        )
+    except (ComposeError, OSError) as e:
+        print(f"compose: {e}", file=sys.stderr)
+        return 2
+    if res["exit"] == 1:
+        print(f"FAIL {args.character}: {len(res['failures'])} validator failure(s); no export written", file=sys.stderr)
+        for m in res["failures"][:8]:
+            print(f"  - {m}", file=sys.stderr)
+        print(f"job: {res['job']}", file=sys.stderr)
+        return 1
+    print(f"PASS {args.character}: {len(res['warnings'])} warning(s)\njob:    {res['job']}")
+    print(f"export: {Path(res['export']['png']).parent}")
+    return 0
+
+
+def deliver_cmd(args: argparse.Namespace) -> int:
+    from sonoranlab import deliver
+
+    try:
+        if args.action == "build":
+            res = deliver.build(
+                profile=args.profile,
+                composed=args.composed,
+                request=args.request,
+                target_rev=args.target_rev,
+                base_manifest=args.base_manifest,
+                import_template=args.import_template,
+                out=args.out,
+            )
+        elif args.action == "verify":
+            res = deliver.verify(args.bundle, args.target, args.consumer_result)
+        else:
+            res = getattr(deliver, args.action)(args.bundle, args.target)
+    except (deliver.DeliveryError, OSError, ValueError) as e:
+        print(f"deliver {args.action}: {e}", file=sys.stderr)
+        return 2
+    print(json.dumps(res, indent=1))
+    return 0 if res.get("ok", True) else 1
+
+
+CAMPAIGN_VERBS = {
+    "create": "admit + freeze a campaign; exit 1 when nothing was created (blocking state printed)",
+    "status": "derived states, budgets, candidates and next actions (read-only)",
+    "submit": "the only generation path: one Track E animate job, next unused seed",
+    "decide": "agent candidate recommendation (selected needs technical PASS)",
+    "escalate": "record best two candidates and diagnostics for the owner",
+    "report": "per-clip attempts, failure classes, timings, explicit costs, interventions",
+    "note": "append a note and/or an explicit cost record",
+}
+
+
+def campaign_cmd(args: argparse.Namespace) -> int:
+    """CLI/MCP parity: the same registry call and envelope as `sonoranlab api campaign_<verb>`."""
+    from sonoranlab import classreq
+    from sonoranlab.api import call
+
+    params = {
+        k: v
+        for k, v in vars(args).items()
+        if v is not None and k not in {"verb", "action", "func", "request", "cost_source", "cost_units", "cost_amount"}
+    }
+    if args.action == "create":
+        try:
+            params["request"], _ = classreq.load_request_file(args.request)
+        except (OSError, ValueError) as exc:
+            print(f"campaign create: {exc}", file=sys.stderr)
+            return 2
+    if args.action == "note" and args.cost_source is not None:
+        params["cost"] = {"source": args.cost_source, "units": args.cost_units, "amount": args.cost_amount}
+    envelope = call(f"campaign_{args.action}", params)
+    print(json.dumps(envelope))
+    if not envelope["ok"]:
+        return 2 if envelope["error"]["code"] == "invalid_params" else 1
+    return 1 if args.action == "create" and not envelope["result"]["created"] else 0
+
+
+def campaign_owner_cmd(args: argparse.Namespace) -> int:
+    from sonoranlab import campaign
+    from sonoranlab.api.registry import Context, ToolError
+
+    options = {k: getattr(args, k) for k in ("ref", "clip", "seeds", "state", "activity", "seconds")}
+    try:
+        result = campaign.owner_decision(args.campaign_id, args.kind, args.verbatim, **options, ctx=Context())
+    except ToolError as exc:
+        print(json.dumps({"ok": False, "error": exc.error}))
+        return 2 if exc.error["code"] == "invalid_params" else 1
+    print(json.dumps({"ok": True, "result": result}))
+    return 0
 
 
 def main(argv: list[str] | None = None) -> int:

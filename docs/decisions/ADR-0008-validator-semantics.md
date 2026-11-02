@@ -82,3 +82,29 @@ Accepted by the owner on 2026-10-19: **H0 + H4 + the diagnostics, and F2**. Each
   weapon retention (samurai) and the east swing (oathguard). Open item 2 is closed by F2.
 - A frozen-file change (`2026-10-18.yaml` addendum) is not made retroactively. The new semantics apply from the Phase 2
   profile on, and Phase 1 scoring is unchanged.
+
+## Addendum 2026-10-29 — `fall` mode for death clips (owner: "New 'fall' rules (Recommended)", gun row only)
+
+A death clip ends lying down: its top and sides move by most of the body height, and its feet leave the anchor. The
+default gates would reject every real fall, and loosening the limits would weaken them for runs. Instead, a profile
+animation may set `validator_mode: fall` (explicit; never inferred from `hold_last`; only on `loop: false` clips).
+In fall mode, and only there:
+- `foot_slide` is gated on frame 0 only (the approved standing pose); later frames are reported.
+- `bbox_drift` is gated on the bottom edge and on the body core's centre x (same `max_bbox_drift_px`; 25 for gun);
+  the top/left/right edges are reported as warnings, not gated.
+- New gates per direction: `fall_final` (the last frame lies inside the cell padding and registration clipped none of
+  its pixels), `fall_hold` (the held last frame is settled: `silhouette_delta(second-to-last, last)` — the share of
+  the pair's opaque union whose opacity differs — is at most 0.02; amended 2026-10-29 by the owner, "Silhouette <= 2%",
+  after live seeds showed the first rule (alpha or colour, 0.10) fails even approved idles, whose resting frames
+  differ 24–38% in colour from re-quantisation but at most 1.1% in silhouette) and `static_clip` (not every frame equals frame
+  0, mirroring the game's `--pixel-check` refusal of a repeated-still death row).
+- `opaque_area_cv` stays a warning; the loop rules already do not run for loop=False. No limit is loosened and no
+  other clip's rules change. `cast` uses the gun's existing gates unchanged.
+- **Registration: fit, then anchor** (amended 2026-10-29 with the owner's "Widen the canvas for fall clips"). A fall
+  clip is still registered on frame 0's anchor. If the union of all its frames' boxes would then leave the cell
+  padding horizontally, and is narrow enough to fit, the whole clip moves by the minimum horizontal amount that keeps
+  every frame inside (`registration.<dir>.fit.offset_px`); if no shift can fit it, it stays frame-0 anchored and
+  `touches_edge`/`fall_final` fail it. A non-zero offset is reported as a `fall_start_offset` WARNING ("death start
+  offset N px from the still's anchor") and as `fall.start_offset_px`, so the owner judges the jump at 1×. Frame 0's
+  `foot_slide` gate is unchanged and is measured against the cell anchor, so an offset larger than
+  `max_foot_slide_px` minus frame 0's own slide still fails. Loop clips and `cast` never fit.

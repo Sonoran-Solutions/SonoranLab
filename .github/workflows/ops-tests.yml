@@ -25,7 +25,9 @@ jobs:
       - run: python -m pytest -q -rs tests --ignore=tests/sonoranlab
   package:
     runs-on: ubuntu-24.04
-    timeout-minutes: 25
+    # tests/sonoranlab grew in Phase 5: healthy hosted runs took 15.5 and 18 min, and two runs were cancelled at the
+    # 25-min cap mid-suite (no failure). 40 min keeps a finite deadline with headroom for runner variance.
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v6

@@ -14,11 +14,14 @@ import pytest
 from PIL import Image
 
 from sonoranlab import cli
+from sonoranlab.comfy import provenance
 from sonoranlab.comfy.adapters import track_e
 from sonoranlab.comfy.adapters.base import DEFAULT_BACKGROUND, GenerateRequest, RawResult
 from sonoranlab.comfy.adapters.track_e import RUN_PROMPTS, TrackE, alpha_fringe_stats, guarded_argv
 from sonoranlab.comfy.client import Workflow, graph_sha256
 from sonoranlab.comfy.guard import pending_submissions
+
+from .birefnet_fixture import work_untouched, write_birefnet
 
 DIRS = ["north", "north-east", "east", "south-east", "south"]
 
@@ -119,6 +122,7 @@ def env(tmp_path: Path):
         work=work,
         still=write_still(tmp_path / "still.png"),
         client=FakeClient(work / "output"),
+        models_tsv=write_birefnet(work),
     )
 
 
@@ -137,7 +141,7 @@ def request(env, **kw) -> GenerateRequest:
 
 
 def adapter(env) -> TrackE:
-    return TrackE(env.client, work_root=env.work, workflow=object(), timeout_s=99)
+    return TrackE(env.client, work_root=env.work, workflow=object(), timeout_s=99, models_tsv=env.models_tsv)
 
 
 def test_success_layout_and_values(env) -> None:
@@ -199,6 +203,48 @@ def test_canvas_for_samurai_cell(env) -> None:
     req = request(env, source_image=write_still(env.tmp / "samurai.png", 184))
     adapter(env).generate(req)
     assert (env.client.calls[0]["values"]["width"], env.client.calls[0]["values"]["height"]) == (560, 560)
+
+
+def test_start_scale_places_the_still_smaller_on_the_same_canvas(env) -> None:
+    """Fall clips (profile start_scale): the gun's 160 px cell keeps the 480 px canvas, so WanImageToVideo gets the same
+    width/height (same latent tokens, same admitted memory); the still sits at x2, centred, with 80 px of room each
+    side. Recorded in request.json and checks.source; a default request carries neither key."""
+    still = write_still(env.tmp / "gun.png", 160)
+    default = adapter(env).generate(request(env, source_image=still, out_dir=env.tmp / "attempts" / "x3"))
+    fall = adapter(env).generate(
+        request(env, source_image=still, anim="death", prompt="falls", start_scale=2, out_dir=env.tmp / "attempts/x2")
+    )
+    assert default.status == fall.status == "ok"
+    v3, v2 = (c["values"] for c in env.client.calls)
+    assert (v3["width"], v3["height"]) == (v2["width"], v2["height"]) == (480, 480)
+    assert {
+        k: v for k, v in v3.items() if k not in ("start_image", "prompt") and not k.startswith("output_prefix")
+    } == {k: v for k, v in v2.items() if k not in ("start_image", "prompt") and not k.startswith("output_prefix")}
+    assert "start_scale" not in json.loads((default.request.out_dir / "request.json").read_text())
+    assert "start_scale" not in default.checks["source"] and "placement" not in default.checks["source"]
+    assert json.loads((fall.request.out_dir / "request.json").read_text())["start_scale"] == 2
+    assert (fall.checks["source"]["start_scale"], fall.checks["source"]["placement"]) == (2, [80, 80])
+    assert RawResult.from_json(json.loads((fall.request.out_dir / "result.json").read_text())).request.start_scale == 2
+    with Image.open(fall.request.out_dir / "source/start_image.png") as im:
+        px = np.asarray(im)
+    body = np.argwhere((px != 128).any(-1))  # write_still: opaque square at still (4..155) -> x2 at 80+8 .. 80+311
+    assert (body.min(0).tolist(), body.max(0).tolist()) == ([88, 88], [391, 391])
+    assert (px[:, :88] == 128).all() and (px[:, 392:] == 128).all()  # background room left and right
+
+
+@pytest.mark.parametrize("kw", [{"start_scale": 4}, {"start_scale": 0}, {"start_scale": True}])
+def test_start_scale_refusals(env, kw) -> None:
+    req = request(env, **kw)
+    with pytest.raises(ValueError, match="start_scale"):
+        adapter(env).generate(req)
+    assert not req.out_dir.exists() and env.client.calls == []
+
+
+def test_start_scale_refuses_a_canvas_source(env) -> None:
+    posed = env.tmp / "posed.png"
+    Image.new("RGB", (64, 64), (10, 20, 30)).save(posed)
+    with pytest.raises(ValueError, match="already a canvas"):
+        adapter(env).generate(request(env, source_image=posed, start_scale=2))
 
 
 @pytest.mark.parametrize("direction", DIRS)
@@ -283,7 +329,7 @@ def test_submission_fsynced_before_client_with_workflow_hash(env, monkeypatch) -
         return run(*a, **kw)
 
     monkeypatch.setattr(env.client, "run", checked_run)
-    res = TrackE(env.client, work_root=env.work, workflow=workflow).generate(req)
+    res = TrackE(env.client, work_root=env.work, workflow=workflow, models_tsv=env.models_tsv).generate(req)
     (submission,) = synced
     assert res.status == "ok"
     assert submission["workflow_patched_sha256"] == graph_sha256(workflow.patch(env.client.calls[0]["values"]))
@@ -345,7 +391,7 @@ def test_malformed_request_writes_nothing(env, kw) -> None:
     req = request(env, **kw)
     with pytest.raises(ValueError):
         adapter(env).generate(req)
-    assert not req.out_dir.exists() and not env.work.exists() and env.client.calls == []
+    assert not req.out_dir.exists() and work_untouched(env.work) and env.client.calls == []
 
 
 def test_existing_out_dir_and_staging_refused(env) -> None:
@@ -417,6 +463,7 @@ def cli_env(env, monkeypatch, lease_window):
     monkeypatch.setattr(cli, "_exec", unexpected_exec)
     monkeypatch.setenv("SONORANLAB_WORK", str(env.work))
     monkeypatch.setattr(track_e, "load_workflow", lambda p: object())
+    monkeypatch.setattr(provenance, "MODELS_TSV", env.models_tsv)
     made = {}
 
     def make(base_url, output_root, exec_container=None):

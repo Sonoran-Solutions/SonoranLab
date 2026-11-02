@@ -81,9 +81,19 @@ raw frame (HD RGBA or RGB+bg)
   → alpha.clean        threshold α ≥ profile.alpha_threshold; remove 1-px fringe; no semi-transparent pixels
   → register           find foot line (lowest opaque row inside the foot zone) or rig anchor; pad to
                        profile canvas; align feet to profile.foot_y; center horizontally on profile.anchor_x
+                       (loop clips: median; non-loop: frame 0; validator_mode fall: frame 0, then the minimum
+                       horizontal shift that keeps every frame inside the cell padding, reported as a warning)
   → validate           docs/08 rules → report.json
   → contact            8× NN contact sheet with badges
 ```
+
+Track E start image and scale: the approved still is placed at ×3 (nearest) centred on a round16(cell×3) canvas, and
+the pixelize scale is the frame edge / cell. A profile animation may set `start_scale` (1–3; today only the gun's
+`death`, `start_scale: 2`, owner 2026-10-29): the canvas stays round16(cell×3) — same Wan width/height, latent tokens
+and run-window admission — and the still is placed smaller, centred, leaving background room for a body that falls
+sideways. The request records `start_scale`, the attempt's `checks.source` records `start_scale` and `placement`
+(the paste offset), the sweep refuses an attempt generated at another scale, and processing divides the whole canvas
+by `start_scale` (frames larger than the cell; registration places them). Other clips' requests are unchanged.
 
 Order matters: pixelize before palette (quantizing first starves the
 downscaler of gradient information), alpha clean after palette (the palette

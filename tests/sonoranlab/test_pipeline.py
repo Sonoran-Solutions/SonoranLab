@@ -424,3 +424,60 @@ def test_real_samurai_fails_without_export(tmp_path):
     assert process(raw, REAL, job, character="samurai", anim="run") == 1
     rules = {f.split(":")[0] for f in json.loads((job / "report.json").read_text())["failures"]}
     assert rules and rules <= {"bbox_drift", "foot_slide"} and not (job / "export").exists()
+
+
+def test_start_scale_processes_the_whole_canvas_at_the_clip_scale(tmp_path):
+    """A fall clip with start_scale 2 on a x3 canvas (72 px for the 24 px cell): the frames divide by 2 (36 px, larger
+    than the cell; the room around the body survives processing) and registration places them into the cell exactly
+    as a plain x2 clip of the same body (48 px frames, scale inferred) is placed."""
+    death = {"frames": 2, "fps": 8, "loop": False, "validator_mode": "fall"}
+    plain_root, room_root = tmp_path / "plain", tmp_path / "room"
+    for root in (plain_root, room_root):
+        root.mkdir()
+    plain_prof = toy_profile(plain_root, lambda d: d["animations"].update(death=death))
+    room_prof = toy_profile(room_root, lambda d: d["animations"].update(death=death | {"start_scale": 2}))
+    plain = raw_set(plain_root)
+    room = room_root / "set" / "raw"
+    room.mkdir(parents=True)
+    for p in sorted(plain.glob("*.png")):  # same x2 body, centred on a 72 px canvas of the key colour
+        with Image.open(p) as im:
+            canvas = Image.new("RGB", (CELL * 3, CELL * 3), (255, 0, 255))
+            canvas.paste(im, (CELL // 2, CELL // 2))
+            canvas.save(room / p.name)
+    a = pipeline.run(plain, profile=plain_prof, character="hero", anim="death", out=plain_root / "job")
+    b = pipeline.run(room, profile=room_prof, character="hero", anim="death", out=room_root / "job")
+    ra, rb = (json.loads(Path(r["report"]).read_text()) for r in (a, b))
+    assert ra["params"]["scale"] == rb["params"]["scale"] == 2
+    assert "start_scale" not in ra["params"] and rb["params"]["start_scale"] == 2
+    with Image.open(next((Path(b["job"]) / "processed/04_clean").rglob("east_0.png"))) as im:
+        assert im.size == (CELL * 3 // 2,) * 2  # 36: the canvas at cell scale, not cropped to the cell
+    reg_a, reg_b = (Path(r["job"]) / "processed/05_registered" for r in (a, b))
+    names = sorted(p.relative_to(reg_a).as_posix() for p in reg_a.rglob("*.png"))
+    assert names and names == sorted(p.relative_to(reg_b).as_posix() for p in reg_b.rglob("*.png"))
+    for n in names:
+        with Image.open(reg_a / n) as x, Image.open(reg_b / n) as y:
+            assert x.size == (CELL, CELL) and np.array_equal(np.asarray(x), np.asarray(y)), n
+    assert ra["digests"] == rb["digests"] and ra["pass"] == rb["pass"]
+    assert all(rb["registration"][d]["fit"]["fits"] for d in GEN)
+    with pytest.raises(pipeline.PipelineError, match="start_scale 2"):  # a x3 canvas that is not a x2 multiple
+        bad = room_root / "bad" / "raw"
+        bad.mkdir(parents=True)
+        for p in sorted(plain.glob("*.png")):
+            Image.new("RGB", (CELL * 3 + 1,) * 2, (255, 0, 255)).save(bad / p.name)
+        pipeline.run(bad, profile=room_prof, character="hero", anim="death", out=room_root / "bad-job")
+
+
+def test_loop_and_cast_registration_never_fit(tmp_path):
+    """Loop clips keep median anchoring and cast (non-loop, default validator) keeps frame-0 anchoring; neither gets a
+    fit record or a start-offset warning. Only validator_mode fall fits."""
+    cast = {"frames": 2, "fps": 10, "loop": False}
+    prof = toy_profile(tmp_path, lambda d: d["animations"].update(cast=cast))
+    raw = raw_set(tmp_path)
+    reps = {}
+    for anim in ("idle", "cast"):
+        r = pipeline.run(raw, profile=prof, character="hero", anim=anim, out=tmp_path / anim)
+        reps[anim] = json.loads(Path(r["report"]).read_text())
+    for d in GEN:
+        assert "fit" not in reps["idle"]["registration"][d] and "anchor_frame" not in reps["idle"]["registration"][d]
+        assert "fit" not in reps["cast"]["registration"][d] and reps["cast"]["registration"][d]["anchor_frame"] == 0
+    assert not [w for r in reps.values() for w in r["warnings"] if w.startswith("fall_start_offset")]

@@ -37,11 +37,15 @@ class GenerateRequest:
     background: str = DEFAULT_BACKGROUND
     control_image: Path | None = None  # C: Track D OpenPose render (image1, native keypoints)
     workflow: str | None = None  # repo-relative workflow override; None = the adapter's default
+    # E: integer scale of the still on the unchanged canvas (profile `start_scale`); None = the default x3 placement
+    start_scale: int | None = None
 
     def to_json(self) -> dict[str, Any]:
         d = dataclasses.asdict(self)
         for k in ("source_image", "out_dir", "control_image"):
             d[k] = None if d[k] is None else str(d[k])
+        if d["start_scale"] is None:  # added later: requests without it keep their exact JSON
+            del d["start_scale"]
         return d
 
     @classmethod
@@ -65,6 +69,8 @@ class RawResult:
     params: dict[str, Any] = field(default_factory=dict)  # every patched param, inputs included
     inputs: dict[str, str] = field(default_factory=dict)  # param name -> sha256 of the staged input file
     models: dict[str, str] = field(default_factory=dict)  # model file (models.tsv dest) -> sha256
+    # verified file inventory per role, e.g. {"birefnet": {name, files, node, verified, reason}} (comfy.provenance)
+    model_provenance: dict[str, Any] = field(default_factory=dict)
     outputs: dict[str, str] = field(default_factory=dict)  # output path relative to out_dir -> sha256
     timing: dict[str, float] = field(default_factory=dict)  # seconds: queue_wait, exec, wall, ...
     error: dict[str, Any] | None = None  # structured client/adapter error: code, stage, message, retryable, ...

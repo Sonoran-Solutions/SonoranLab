@@ -1,5 +1,8 @@
 # 01 — Architecture
 
+> Original design sketch. Shipped surface: ADR-0010 (tools) and ADR-0011 (Phase 5 loop). `generate_character`,
+> Track A defaults and the 4-direction walk shown below are superseded; the game format is ADR-0007.
+
 ## Layers
 
 ```

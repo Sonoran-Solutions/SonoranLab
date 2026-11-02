@@ -22,6 +22,8 @@ import yaml
 ANCHOR_MODES = ("foot", "rig", "bbox_bottom")
 RIG_UNSUPPORTED = "rig anchors need Track D per-frame anchors and a rig validator rule; not supported in Phase 2"
 TRACKS = ("A", "B", "C", "D", "E")
+VALIDATOR_MODES = ("fall",)  # non-default animation validator modes (ADR-0008 fall addendum); never inferred
+MAX_PROMPT_MOTION = 300  # characters of an animation's prompt_motion
 LIMIT_KEYS = ("max_foot_slide_px", "max_bbox_drift_px", "opaque_area_cv_warn", "loop_closure_ratio_warn")
 HOVER_KEYS = ("hover_x_drift_warn_px", "hover_min_bob_px")  # ADR-0008 F2: required for anchor_mode bbox_bottom
 PROCESSING_VERSIONS = ("processing-v1",)  # benchmark/characters/2026-10-18-processing-v1.yaml
@@ -79,6 +81,11 @@ class Animation:
     hold_last: bool = False
     track_default: str | None = None
     template: Path | None = None  # templates/poses/<name> dir holding template.yaml
+    validator_mode: str | None = None  # None = the default rules; "fall" = ADR-0008 fall addendum (explicit only)
+    prompt_motion: str | None = None  # Track E motion text for a non-run clip; None keeps the generic prompt
+    # Track E: integer scale of the approved still on the unchanged round16(cell*3) canvas (None = x3, the canvas
+    # filling the frame); a smaller scale leaves background room around it, and processing downscales by it
+    start_scale: int | None = None
 
 
 @dataclass(frozen=True)
@@ -156,6 +163,7 @@ class CharacterRow:
     limits: Limits
     animations: dict[str, Animation]
     locomotion: str | None
+    max_attempts_per_animation: int | None = None  # owner-approved per-character override of autonomy's limit
 
 
 @dataclass(frozen=True)
@@ -218,6 +226,13 @@ class Profile:
     export: Export
     autonomy: Autonomy
     processing: Processing | None = None  # optional for the schema; `sonoranlab process` refuses a profile without it
+
+    def attempt_limit(self, name: str) -> int:
+        """Animate attempts per clip for `name`: its row override, else autonomy.max_attempts_per_animation."""
+        row = self.characters.get(name)
+        if row and row.max_attempts_per_animation is not None:
+            return row.max_attempts_per_animation
+        return self.autonomy.max_attempts_per_animation
 
     def character(self, name: str, *, cell: int | list[int] | tuple[int, int] | None = None) -> CharacterSpec:
         """Resolve `name`. A character without a row gets the validator defaults (and says so); it needs `cell`
@@ -515,6 +530,8 @@ def _directions(raw: dict, errs: list[str]) -> Directions | None:
 
 
 ANIM_KEYS = ("frames", "fps", "loop", "loop_from", "hold_last", "track_default", "template")
+ANIM_KEYS += ("validator_mode", "prompt_motion", "start_scale")
+MAX_START_SCALE = 3  # the Track E canvas is round16(cell * 3); a still placed bigger would not fit
 
 
 def _animation(a: Any, where: str, base: Path, errs: list[str], *, parent: Animation | None = None) -> Animation | None:
@@ -532,10 +549,15 @@ def _animation(a: Any, where: str, base: Path, errs: list[str], *, parent: Anima
         "hold_last": _val(a, where, "hold_last", "bool", errs, required=False),
         "track_default": _val(a, where, "track_default", "str", errs, choices=TRACKS, required=False),
         "template": _path(_val(a, where, "template", "str", errs, required=False), base),
+        "validator_mode": _val(a, where, "validator_mode", "str", errs, choices=VALIDATOR_MODES, required=False),
+        "prompt_motion": _val(a, where, "prompt_motion", "str", errs, required=False),
+        "start_scale": _val(a, where, "start_scale", "int", errs, lo=1, hi=MAX_START_SCALE, required=False),
     }
-    vals = {
-        k: v for k, v in vals.items() if k in a and (v is not None or k in ("loop_from", "track_default", "template"))
-    }
+    motion = vals["prompt_motion"]
+    if motion is not None and (not motion.strip() or len(motion) > MAX_PROMPT_MOTION or not motion.isprintable()):
+        errs.append(f"{where}.prompt_motion: expected 1-{MAX_PROMPT_MOTION} printable characters on one line")
+    nullable = ("loop_from", "track_default", "template", "validator_mode", "prompt_motion", "start_scale")
+    vals = {k: v for k, v in vals.items() if k in a and (v is not None or k in nullable)}
     if req and any(k not in vals for k in ("frames", "fps", "loop")):
         return None
     anim = replace(parent, **vals) if parent else Animation(**vals)
@@ -543,6 +565,8 @@ def _animation(a: Any, where: str, base: Path, errs: list[str], *, parent: Anima
         errs.append(f"{where}.loop_from: {anim.loop_from} needs loop: false and < frames ({anim.frames})")
     if anim.hold_last and anim.loop:
         errs.append(f"{where}.hold_last: needs loop: false")
+    if anim.validator_mode == "fall" and anim.loop:
+        errs.append(f"{where}.validator_mode: fall needs loop: false")
     return anim
 
 
@@ -575,7 +599,7 @@ def _characters(
         errs.append(f"characters: expected a mapping of name -> row, got {chars!r}")
         return {}
     out = {}
-    keys = ("cell", "anchor_mode", "animations", "locomotion", *LIMIT_KEYS, *HOVER_KEYS)
+    keys = ("cell", "anchor_mode", "animations", "locomotion", "max_attempts_per_animation", *LIMIT_KEYS, *HOVER_KEYS)
     for name, row in chars.items():
         where = f"characters.{name}"
         if not (isinstance(name, str) and NAME_RE.match(name)):
@@ -617,6 +641,9 @@ def _characters(
             limits=_limits(row, where, errs, hover=(mode or (anchor.mode if anchor else None)) == "bbox_bottom"),
             animations=anims,
             locomotion=loco,
+            max_attempts_per_animation=_val(
+                row, where, "max_attempts_per_animation", "int", errs, lo=1, required=False
+            ),
         )
     return out
 

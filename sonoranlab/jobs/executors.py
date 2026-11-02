@@ -36,9 +36,12 @@ def executor(kind: str) -> Executor:
 
         for name in MODULES:
             EXECUTORS.update(importlib.import_module(f"sonoranlab.jobs.kinds.{name}").EXECUTORS)
-    # Test-only, just like SONORANLAB_PROC: never accept module names in tool parameters.
+    # Test-only, just like SONORANLAB_PROC: never accept module names in tool parameters. Looked up per call and never
+    # merged into EXECUTORS, so an override cannot outlive the environment that named it.
     if module := os.environ.get("SONORANLAB_JOB_EXECUTORS"):
-        EXECUTORS.update(importlib.import_module(module).EXECUTORS)
+        override = importlib.import_module(module).EXECUTORS
+        if kind in override:
+            return override[kind]
     try:
         return EXECUTORS[kind]
     except KeyError:

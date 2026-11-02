@@ -167,19 +167,35 @@ Exit criterion (demonstrated 2026-10-21 at DYL-120, pending senior review: `benc
 
 ---
 
-## Phase 5 — The "new class" orchestration (1 weekend)
+## Phase 5 — New-class orchestration and game-ready asset delivery
 
-Goal: the actual thing you wanted. Hand Opus reference images and a class
-spec; get a class in Twos Are Up.
+Goal: hand an agent a class request and eight approved stills; get a validated, owner-reviewed sheet and a
+reversible delivery bundle for Twos Are Up. Contract: [`ADR-0011`](docs/decisions/ADR-0011-phase5-new-class-contract.md)
+(proposed). Visual assets only: no abilities, balance or playable-class registration.
 
-Tasks
-- [ ] A Claude Code skill / command (`/new-class`) encoding the loop in `docs/10-orchestrator-loop.md`: profile → candidates → (human or agent) pick → animations in priority order → validate → export → in-engine smoke render.
-- [ ] Retry budget and escalation rules: how many seeds before changing track, when to stop and ask.
-- [ ] Godot headless smoke render: a scene that instantiates the new SpriteFrames next to an existing class and screenshots it, returned to the agent for a final style-drift check.
-- [ ] Run it three times on three new classes. Log where it needed a human.
+> The original Phase 5 text (Track A static candidates, `walk_4dir`, surgical `pose_frames`, automatic track
+> switching, "a 4-dir walk cycle") is **superseded, not passed** (ADR-0010, ADR-0011).
+
+Tasks (Linear, milestone "Phase 5 — New-class orchestration and game-ready asset delivery")
+- [ ] DYL-123: contract, trial selection, revised loop (ADR-0011, docs/10).
+- [ ] DYL-124/125/126: Phase 4 review follow-ups (runner test race, BiRefNet provenance, unified character history).
+- [ ] DYL-127 (optional): live Track C over MCP; disabled in `/new-class` unless verified and authorized.
+- [ ] DYL-128: class-request intake, `needs_reference_preparation`, eight-still reference preparation (`refprep`).
+- [ ] DYL-129: resumable campaign ledger with durable budgets and cost/time accounting.
+- [ ] DYL-130: project-scoped `/new-class` skill over the supported MCP tools, with bounded image viewing.
+- [ ] DYL-131: isolated side-by-side Godot render and actual game-consumer (`characters.json`/`PixelStandee`) check.
+- [ ] DYL-132 (optional): live repair MCP lifecycle; disabled in `/new-class` unless verified and authorized.
+- [ ] DYL-133: owner-gated, reversible delivery bundle; default stop READY_TO_INSTALL.
+- [ ] DYL-134: three new classes (owner choice 2026-10-28: gun, thief, engineer), idle + run, all failures kept.
+- [ ] DYL-135: combined check and senior-review package.
 
 Exit criterion
-- A new class with static art and a 4-dir walk cycle goes from references to the running game without opening Aseprite/Pixelorama. Documented time and token cost per class.
+- Three owner-selected new classes each reach ARTIFACT_APPROVED (owner 1×, artifact-bound) with idle + run, eight
+  independent stills, five generated + three mirrored animation rows, validator and Godot PASS, side-by-side and
+  actual-consumer evidence and a READY_TO_INSTALL bundle, through `/new-class` without a manual pixel editor, or the
+  phase ends HOLD / NEEDS_OWNER_INPUT with the exact blockers. Per class: preparation, generation (including failed
+  attempts), processing, review and hands-on time, tokens/cost where available; unknown is null, never zero.
+  INSTALLED needs separate owner authorization per bundle.
 
 ---
 

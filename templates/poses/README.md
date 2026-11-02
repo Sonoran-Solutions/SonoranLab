@@ -28,4 +28,7 @@ joints, bboxes, lowest opaque rows).
   may not be.
 - Frame 0 of every direction is the one Track E uses as its seed: the bake picks right-foot touchdown.
 
+Other cells: `sonoranlab/posetemplate.py` redraws these joints for any cell (`pose_frame` does this per job); the
+shipped PNGs are the cell-136 renders and match it to within a few edge pixels (tests/sonoranlab/posetemplate).
+
 Templates: `run` (6 and 7 frames, N/NE/E/SE/S; Phase 1, ADR-0007).

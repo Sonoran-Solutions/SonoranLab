@@ -33,6 +33,8 @@ def test_prepare_start_image(tmp_path: Path) -> None:
         "sha256": hashlib.sha256(out.read_bytes()).hexdigest(),
         "canvas": 32,
         "background": "#808080",
+        "scale": 3,
+        "offset": [4, 4],
     }
     with Image.open(out) as im:
         assert im.mode == "RGB" and im.size == (32, 32)
@@ -42,6 +44,22 @@ def test_prepare_start_image(tmp_path: Path) -> None:
         assert all(im.getpixel((off + 6 + dx, off + 9 + dy)) == (200, 10, 10) for dx in range(3) for dy in range(3))
     with pytest.raises(FileExistsError):
         prepare_start_image(tmp_path / "s.png", 8, out)
+
+
+def test_start_scale_keeps_the_canvas_and_leaves_room(tmp_path: Path) -> None:
+    """A fall clip's x2 still on the x3 canvas: same canvas edge (same Wan tokens), centred, background margins."""
+    src = still(tmp_path / "s.png", size=160)
+    x3 = prepare_start_image(src, 160, tmp_path / "x3.png")
+    x2 = prepare_start_image(src, 160, tmp_path / "x2.png", scale=2, canvas=gen_canvas(160))
+    assert x3["canvas"] == x2["canvas"] == 480 and x3["offset"] == [0, 0]
+    assert (x2["scale"], x2["offset"]) == (2, [80, 80])
+    with Image.open(tmp_path / "x2.png") as im:
+        assert im.size == (480, 480)
+        # still pixel (2, 3) at x2 covers x 84..85, y 86..87 only
+        assert all(im.getpixel((84 + dx, 86 + dy)) == (200, 10, 10) for dx in range(2) for dy in range(2))
+        assert im.getpixel((83, 86)) == im.getpixel((86, 86)) == (128, 128, 128)
+    with pytest.raises(ValueError, match="smaller than the still"):
+        prepare_start_image(src, 160, tmp_path / "bad.png", scale=3, canvas=320)
 
 
 def test_background_parameter(tmp_path: Path) -> None:

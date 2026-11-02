@@ -478,3 +478,68 @@ def test_real_batch_round_trip(fixture):
     output = Path(ws.export(repair, converter=converter)["export"])
     assert compare(repair, output)["ok"], compare(repair, output)
     assert hashes(job) == before
+
+
+def _edited_parent_profile(fixture, monkeypatch, tmp_path_factory, edit, report_character="hero"):
+    """The parent's profile (with a second character) as the job ran it is committed in a repository standing in for
+    this one (the profile's own directory has no git); bind the manifest to that commit and a report that names the
+    character, then apply `edit` to the profile on disk."""
+    from sonoranlab import repo_inputs
+
+    job, profile, repair = fixture
+    root = tmp_path_factory.mktemp("repo")
+    doc = yaml.safe_load(profile.path.read_text())
+    doc["characters"]["villain"] = dict(doc["characters"]["hero"])
+    profile.path.write_text(yaml.safe_dump(doc))
+    shutil.copyfile(profile.path, root / profile.path.name)
+    git = ["git", "-C", str(root), "-c", "user.name=t", "-c", "user.email=t@t"]
+    for args in (["init", "-q"], ["add", "-A"], ["commit", "-qm", "p"]):
+        subprocess.run([*git, *args], check=True)
+    rev = subprocess.run([*git, "rev-parse", "HEAD"], check=True, capture_output=True, text=True).stdout.strip()
+    manifest = read_json(job / "manifest.json")
+    write(job / "report.json", {"pass": True, "character": report_character, "animation": manifest["animation"]})
+    manifest["profile"] = {"path": str(profile.path), "sha256": sha256_file(profile.path)}
+    manifest["git"] = rev
+    manifest["outputs"]["report.json"] = sha256_file(job / "report.json")
+    write(job / "manifest.json", manifest)
+    monkeypatch.setattr(repo_inputs, "_REPO", root)
+    edit(doc)
+    profile.path.write_text(yaml.safe_dump(doc))
+    return job, load_profile(profile.path), repair
+
+
+def test_parent_admitted_when_only_another_characters_row_changed(fixture, monkeypatch, tmp_path_factory):
+    job, profile, repair = _edited_parent_profile(
+        fixture,
+        monkeypatch,
+        tmp_path_factory,
+        lambda doc: doc["characters"]["villain"].update(max_attempts_per_animation=6),
+    )
+    ws.prepare(job, profile, "hero", "idle", repair, converter=ws.FakeConverter())
+    assert read_json(repair / "repair.json")["profile"]["sha256"] == sha256_file(profile.path)
+
+
+@pytest.mark.parametrize(
+    "edit",
+    [
+        lambda doc: doc["characters"]["hero"].update(max_foot_slide_px=3),
+        lambda doc: doc["alpha"].update(threshold=127),
+    ],
+)
+def test_parent_refused_when_own_row_or_shared_setting_changed(fixture, monkeypatch, tmp_path_factory, edit):
+    job, profile, repair = _edited_parent_profile(fixture, monkeypatch, tmp_path_factory, edit)
+    with pytest.raises(Refused, match="parent profile sha256 differs"):
+        ws.prepare(job, profile, "hero", "idle", repair, converter=ws.FakeConverter())
+    assert not repair.exists()
+
+
+def test_parent_relabelled_report_cannot_borrow_another_rows_equivalence(fixture, monkeypatch, tmp_path_factory):
+    job, profile, repair = _edited_parent_profile(
+        fixture,
+        monkeypatch,
+        tmp_path_factory,
+        lambda doc: doc["characters"]["villain"].update(max_attempts_per_animation=6),
+        report_character="villain",  # report and manifest disagree on the character: no row-level equivalence
+    )
+    with pytest.raises(Refused, match="parent profile sha256 differs"):
+        ws.prepare(job, profile, "hero", "idle", repair, converter=ws.FakeConverter())
