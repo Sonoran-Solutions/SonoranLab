@@ -37,3 +37,18 @@ def test_every_tool_named_is_allowed_and_exists():
     for name in FORBIDDEN_MENTIONS:
         assert f"`{name}`" in never and name not in ALLOWED
     assert not {n for n in tools if re.search("approve|install|review_record", n)}
+
+
+def test_skill_follows_the_planned_clips_not_a_fixed_pair():
+    """Senior review P2: a four-clip campaign (gun) must be completable by following the skill literally."""
+    text = SKILL.read_text()
+    assert "every planned clip" in text and "in_plan" in text
+    assert "idle, run, cast, death" in text
+    assert "clips=[{name: idle, job}, {name: run, job}]" not in text and "both clips" not in text
+    assert "fall_start_offset" in text
+
+
+def test_scripted_agent_composes_every_planned_clip_in_game_order():
+    from newclass_agent import GAME_ORDER
+
+    assert list(GAME_ORDER) == ["idle", "run", "cast", "death"]
