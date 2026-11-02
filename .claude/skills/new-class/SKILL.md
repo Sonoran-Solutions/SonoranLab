@@ -66,7 +66,7 @@ details, schemas and examples: `docs/runbooks/new-class.md`.
 4. `campaign_create(project, request, reference_id[, max_seeds_per_clip, budget_decision_ref])`. `created: false`
    → report `state` and `findings`; STOP. Only pass a budget the owner gave you.
 
-## 3. Generation (per clip, request priority order: run, then idle)
+## 3. Generation (per planned clip, in the request's `clips` order; `campaign_status` lists them with `in_plan`)
 
 1. `campaign_submit(campaign_id, clip)` once. `refused`/`conflict` → read the message (GENERATING, BLOCKED,
    HOLD_BUDGET, campaign_busy) and act on that state; never retry blindly.
@@ -93,10 +93,15 @@ details, schemas and examples: `docs/runbooks/new-class.md`.
 4. Write the technical verdict (validator) and your recommendation as two separate sentences, then
    `campaign_decide(campaign_id, job_id, selected|rejected, reason)`. It only marks a recommendation.
 
-## 5. Final sheet (both clips selected: clip states `AWAITING_OWNER_REVIEW`)
+## 5. Final sheet (every planned clip selected: clip states `AWAITING_OWNER_REVIEW` or `ARTIFACT_APPROVED`)
 
-1. `compose_sheet(project, character, clips=[{name: idle, job}, {name: run, job}], reference_id, campaign_id)`
-   (game order: idle then run; the jobs must be the campaign's current selected candidates) → a job; poll;
+Compose only when every `in_plan` clip has a selected candidate. A sheet missing a planned clip is refused at delivery.
+A `loop: false` clip (cast, death) is judged as an action: it starts from the still pose. Check that cast returns near
+the start pose and keeps the weapon; check that death ends on a held pose inside the cell, and show the owner any
+`fall_start_offset` warning for the 1x review.
+
+1. `compose_sheet(project, character, clips=[{name, job} for every planned clip], reference_id, campaign_id)`
+   (game order: idle, run, cast, death, skipping clips not planned; the jobs must be the campaign's current selected candidates) → a job; poll;
    `job_result`. `pass: false` or a failed job → report its failures; STOP.
 2. `godot_check(project, character, anim=clip, source="<job_id>:<…/sweep/final/job/report.json>")` per clip (take
    the ref from `job_result` artifacts); poll as in 3.2. Any failed CPU/engine job is reported, never retried.
@@ -125,7 +130,7 @@ Call `campaign_report(campaign_id)` when a campaign exists, then write:
 
 ```
 campaign: <id> rev <n>   state: <campaign state>   stop: <why you stopped>
-clips:    run <state> (job ids, seeds used/remaining)   idle <state> (...)
+clips:    <clip> <state> (job ids, seeds used/remaining) for every planned clip
 failures: <class + job id + one-line diagnostic, or none>
 timings:  <generation / processing / queue / render seconds from campaign_report; null stays null>
 verdicts: technical <…> | recommendation <…> | owner review <…> | delivery <…>

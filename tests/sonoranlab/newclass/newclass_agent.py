@@ -35,7 +35,7 @@ ALLOWED = frozenset(
 )
 GPU_WAIT, CPU_WAIT, MAX_POLLS = 60, 10, 40
 TERMINAL = {"succeeded", "failed", "cancelled", "blocked"}
-GAME_ORDER = ("idle", "run")
+GAME_ORDER = ("idle", "run", "cast", "death")  # the game's sheet order; clips not planned are skipped
 
 
 class Stop(Exception):
