@@ -1,9 +1,32 @@
 # Phase 5 senior-review handoff — New-class orchestration and game-ready asset delivery (DYL-123..135)
 
-**Status: READY_FOR_SENIOR_RE-REVIEW** (revision 3, 2026-11-01; §0b, §0a, then §0). Nothing is merged, auto-merge is off,
-Phase 6 is not started, no artwork was approved on the owner's behalf (every approval below quotes the owner), and
-the production game checkout was never written. Game installation: **HOLD**, pending the owner's per-bundle
-authorization.
+**Status: SENIOR-REVIEW REVISIONS COMPLETE; MERGE AUTHORIZED BY THE OWNER** (revision 4, 2026-11-01; §0c, §0b, §0a, then §0).
+Auto-merge is off, Phase 6 is not started, no artwork was approved on the owner's behalf (every approval below quotes
+the owner), and the production game checkout was never written. Game installation: **HOLD**, a separate decision
+pending the owner's per-bundle authorization. Engineering acceptance does not imply installation.
+
+## 0c. Revision 4 (2026-11-01): second senior review
+
+The owner (verbatim): "Make the required revisions from senior review, once completed you can merge in the reccomended
+merge path".
+
+- **P1, confinement (`0808c40`, #67).** A profile outside the checkout and the read roots that git cannot recover is
+  now refused without being opened, even when the file exists. Regression:
+  `test_outside_profile_that_cannot_be_recovered_is_refused_unopened`. Tests declare the temp dir a read root in
+  `tests/sonoranlab/conftest.py` instead of relying on the old fallback.
+- **P2, `/new-class` planned clips (`1ce46fd`, #68).** The skill, runbook and scripted agent follow every planned clip
+  in game order (idle, run, cast, death), with the non-loop guidance and `fall_start_offset`.
+- **Integration.** Both fixes merged into `p5/integration` (`853c51a`, `bba92ad`). All 18 focused heads are ancestors,
+  and integration-only commits `c08d0f0` and `698f813` stay in history. #66 was a reference only and is closed unmerged.
+
+**Tested code tree: `bba92ad` (tree `9ab5244`).** `tests/sonoranlab` in one process: **2081 passed, 1 skipped** (the opt-in
+real-Godot smoke, not counted as a pass; 1786 s). `tests` without `tests/sonoranlab`: **147 passed**. Ruff format and check clean.
+This handoff commit on top touches docs only.
+
+**Live state at `bba92ad`** (real `check_review` and `campaign_status`, not a fixture): Phase 4 gate job, the Phase 3
+import, the other imported jobs and the thief repair child `import-8c775c12…` are all production-usable with review
+`pass`, so P1 did not strand old provenance. Gun, thief and engineer campaigns stay READY_TO_INSTALL at game `fb712e7`.
+No threshold, golden image or bundle changed.
 
 ## 0b. Revision 3 (2026-11-01)
 
