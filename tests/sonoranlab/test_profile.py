@@ -352,7 +352,8 @@ def test_character_attempt_limit_override():
     "grant 3 more death seeds (cap to 9)")."""
     prof = load_profile(REAL, check_paths=False)
     assert prof.attempt_limit("gun") == 9
-    assert prof.attempt_limit("thief") == prof.autonomy.max_attempts_per_animation == 3
+    assert prof.attempt_limit("thief") == 6  # owner 2026-11-03 "3 more, narrower stance": cast cap 3 -> 6
+    assert prof.attempt_limit("engineer") == prof.autonomy.max_attempts_per_animation == 3
     assert prof.attempt_limit("not-a-row") == 3
 
 
@@ -395,11 +396,13 @@ def test_gun_cast_and_death_are_track_e_with_explicit_modes():
 
 
 def test_thief_cast_and_death_are_track_e_with_explicit_modes():
-    """Owner 2026-11-03 "Approve as drafted": thief dagger-strike cast and a fall death with the gun's room rule."""
+    """Owner 2026-11-03 "Approve as drafted": thief dagger-strike cast and a fall death with the gun's room rule; cast
+    wording narrowed the same day ("3 more, narrower stance")."""
     prof = load_profile(REAL, check_paths=False)
     thief = prof.character("thief").animations
     assert (thief["cast"].track_default, thief["cast"].validator_mode, thief["cast"].start_scale) == ("E", None, None)
-    assert thief["cast"].prompt_motion.startswith("strikes fast with both reverse-grip daggers")
+    assert thief["cast"].prompt_motion.startswith("makes short, quick strikes close to the body")
+    assert "feet planted shoulder-width apart" in thief["cast"].prompt_motion
     death = thief["death"]
     assert (death.track_default, death.validator_mode, death.hold_last, death.start_scale) == ("E", "fall", True, 2)
     assert death.prompt_motion == "is hit, staggers and collapses to the ground, ending lying still"

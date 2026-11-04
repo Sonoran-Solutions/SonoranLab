@@ -111,6 +111,18 @@ Track E with profile `prompt_motion` text, exactly as the gun amendments do; `de
 side). No `max_attempts_per_animation` override: the default 3 matches the 3-seed budget. The thief's run/idle rows
 are unchanged, so their selections and the owner's 1× review stay current (rows are bound per clip).
 
+**Amendment 2026-11-03 (thief cast stance).** All three thief `cast` seeds of revision 5 failed the validator, each
+mainly on `foot_slide` (30.5–33 px against the limit 30) as the two-handed strike widened the stance in the north and
+south views, with east `bbox_drift` from the extended arm; seed budget and the default attempt cap (3) were spent.
+Owner question: "All 3 Thief attack seeds failed SonoranLab's checks, mostly by a pixel or two of foot slide as the
+stance widens. More attempts need a profile PR raising the Thief's attempt cap, plus a seed grant from you. What should
+the next attempts be?" Answer: "3 more, narrower stance (Recommended)" ("Cap 3→6, 3 more seeds, and change the attack
+wording to short strikes close to the body with the feet planted shoulder-width, aimed at the foot-slide failures").
+As implemented: the thief row's `max_attempts_per_animation` is 6, and the cast `prompt_motion` is "makes short,
+quick strikes close to the body with both reverse-grip daggers, one per hand, feet planted shoulder-width apart and not
+moving, then returns to the ready stance". Validator limits are unchanged. The 3-seed grant is the owner's
+`budget_grant`; the changed cast row needs a campaign revision, and the death, idle and run rows are unchanged.
+
 Every exported sheet: eight rows in profile order; five generated directions; north-west/west/south-west animation
 rows mirrored from north-east/east/south-east; column 0 = the eight approved stills, pixel-exact; unchanged palette,
 alpha and validator limits.
@@ -180,8 +192,8 @@ here. Samurai, oathguard and pyromancer are regression baselines, not new classe
 | O2 | Accept this ADR | **accepted 2026-10-29** with the amendments above |
 | O3 | Trial classes gun, thief, engineer; Codex creates the references | given 2026-10-28 |
 | O4 | Each class request and its eight-still reference set (hash-bound) | given 2026-10-28: "Approve all three" (gun-v3, thief-v3-dp6, engineer-v3); engineer `height_m` amended to 1.74 on 2026-10-28 ("Set height_m to 1.74") |
-| O5 | Profile rows for gun/thief/engineer | given 2026-10-28: "Approve rows" (gun 160, thief 144, engineer 144, default limits); gun `max_attempts_per_animation: 6` on 2026-10-28; 9 and death `start_scale: 2` on 2026-10-29 ("Widen the canvas for fall clips, grant 3 more death seeds (cap to 9)"); thief Track E `cast`/`death` (death `validator_mode: fall`, `start_scale: 2`) on 2026-11-03 ("Approve as drafted (Recommended)") |
-| O6 | Live generation budget per class | given 2026-10-28: "≤3 seeds per clip"; gun run +3 ("Grant 3 more seeds"); thief cast and death 3 each on 2026-11-03 ("3 seeds each (Recommended)") |
+| O5 | Profile rows for gun/thief/engineer | given 2026-10-28: "Approve rows" (gun 160, thief 144, engineer 144, default limits); gun `max_attempts_per_animation: 6` on 2026-10-28; 9 and death `start_scale: 2` on 2026-10-29 ("Widen the canvas for fall clips, grant 3 more death seeds (cap to 9)"); thief Track E `cast`/`death` (death `validator_mode: fall`, `start_scale: 2`) on 2026-11-03 ("Approve as drafted (Recommended)"); thief `max_attempts_per_animation: 6` and narrower cast wording on 2026-11-03 ("3 more, narrower stance (Recommended)") |
+| O6 | Live generation budget per class | given 2026-10-28: "≤3 seeds per clip"; gun run +3 ("Grant 3 more seeds"); thief cast and death 3 each on 2026-11-03 ("3 seeds each (Recommended)"); thief cast +3 on 2026-11-03 ("3 more, narrower stance (Recommended)") |
 | O7 | Track C live window (DYL-127) | given 2026-10-28: host ComfyUI kept off for Phase 5 |
 | O8 | Game read + private staged copies + disposable snapshot (DYL-131/133) | given 2026-10-28 |
 | O9 | One bounded live repair edit (DYL-132) | given 2026-10-28 for a pyromancer copy (refused at admission); retargeted 2026-10-29 to a disposable copy of an approved Phase 5 thief job; performed; child approved 2026-11-01 ("Record that I approve the thief child") |
