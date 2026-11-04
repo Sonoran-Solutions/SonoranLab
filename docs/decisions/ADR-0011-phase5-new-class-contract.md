@@ -99,6 +99,18 @@ cell. Fall clips register "fit, then anchor" (ADR-0008 fall addendum). The gun r
 is 9 (was 6); each clip's campaign seed budget still bounds it, and the 3-seed grant is recorded by the coordinator.
 Run, idle and cast requests and processing are unchanged.
 
+**Amendment 2026-11-03 (thief cast and death).** Owner ruling R202 in Twos Are Up: the Thief's game body is this
+Phase 5 Thief, whose delivered sheet has idle and run only; the owner chose "Generate in SonoranLab" over stand-ins.
+Owner answers (AskUserQuestion, 2026-11-03): row "Approve as drafted (Recommended)" ("The SonoranLab session opens a PR
+adding the Thief's cast and death plus the decision-record amendment, for you to review and merge"); budget "3 seeds
+each (Recommended)" ("Same as idle and run got; the attempt cap stays at the default 3"); run in the four-clip sheet
+"The delivered run (Recommended)" (job-20261028T074425Z-9fa9090d, not the DYL-132 repaired child). The thief row
+(`characters.thief.animations`) makes `cast` (the dagger strike PixelStandee plays for every ability) and `death`
+Track E with profile `prompt_motion` text, exactly as the gun amendments do; `death` uses `validator_mode: fall` and
+`start_scale: 2` from its first seed (canvas round16(144×3) = 432 px, still at ×2 = 288 px, 72 px of background each
+side). No `max_attempts_per_animation` override: the default 3 matches the 3-seed budget. The thief's run/idle rows
+are unchanged, so their selections and the owner's 1× review stay current (rows are bound per clip).
+
 Every exported sheet: eight rows in profile order; five generated directions; north-west/west/south-west animation
 rows mirrored from north-east/east/south-east; column 0 = the eight approved stills, pixel-exact; unchanged palette,
 alpha and validator limits.
@@ -168,8 +180,8 @@ here. Samurai, oathguard and pyromancer are regression baselines, not new classe
 | O2 | Accept this ADR | **accepted 2026-10-29** with the amendments above |
 | O3 | Trial classes gun, thief, engineer; Codex creates the references | given 2026-10-28 |
 | O4 | Each class request and its eight-still reference set (hash-bound) | given 2026-10-28: "Approve all three" (gun-v3, thief-v3-dp6, engineer-v3); engineer `height_m` amended to 1.74 on 2026-10-28 ("Set height_m to 1.74") |
-| O5 | Profile rows for gun/thief/engineer | given 2026-10-28: "Approve rows" (gun 160, thief 144, engineer 144, default limits); gun `max_attempts_per_animation: 6` on 2026-10-28; 9 and death `start_scale: 2` on 2026-10-29 ("Widen the canvas for fall clips, grant 3 more death seeds (cap to 9)") |
-| O6 | Live generation budget per class | given 2026-10-28: "≤3 seeds per clip"; gun run +3 ("Grant 3 more seeds") |
+| O5 | Profile rows for gun/thief/engineer | given 2026-10-28: "Approve rows" (gun 160, thief 144, engineer 144, default limits); gun `max_attempts_per_animation: 6` on 2026-10-28; 9 and death `start_scale: 2` on 2026-10-29 ("Widen the canvas for fall clips, grant 3 more death seeds (cap to 9)"); thief Track E `cast`/`death` (death `validator_mode: fall`, `start_scale: 2`) on 2026-11-03 ("Approve as drafted (Recommended)") |
+| O6 | Live generation budget per class | given 2026-10-28: "≤3 seeds per clip"; gun run +3 ("Grant 3 more seeds"); thief cast and death 3 each on 2026-11-03 ("3 seeds each (Recommended)") |
 | O7 | Track C live window (DYL-127) | given 2026-10-28: host ComfyUI kept off for Phase 5 |
 | O8 | Game read + private staged copies + disposable snapshot (DYL-131/133) | given 2026-10-28 |
 | O9 | One bounded live repair edit (DYL-132) | given 2026-10-28 for a pyromancer copy (refused at admission); retargeted 2026-10-29 to a disposable copy of an approved Phase 5 thief job; performed; child approved 2026-11-01 ("Record that I approve the thief child") |

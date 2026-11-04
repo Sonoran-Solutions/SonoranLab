@@ -123,6 +123,15 @@ characters:
   thief:                  # Phase 5 new class (DYL-134); owner-approved row 2026-10-28; default limits
     cell: 144
     anchor_mode: foot
+    animations:             # owner 2026-11-03 (ADR-0011 amendment): thief Track E cast (dagger strike) and death
+      cast:
+        track_default: E
+        prompt_motion: "strikes fast with both reverse-grip daggers, a short slash with each hand, then returns to the ready stance; feet stay planted"
+      death:
+        track_default: E
+        validator_mode: fall    # ADR-0008 fall addendum
+        start_scale: 2          # same room rule as the gun's death
+        prompt_motion: "is hit, staggers and collapses to the ground, ending lying still"
     max_foot_slide_px: 30
     max_bbox_drift_px: 25
     opaque_area_cv_warn: 0.13
