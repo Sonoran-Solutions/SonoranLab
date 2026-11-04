@@ -360,6 +360,10 @@ def test_character_attempt_limit_override():
 GAME_CLIPS = [("idle", 1, 4, 5, True), ("run", 5, 6, 10, True), ("cast", 11, 8, 10, False), ("death", 19, 6, 8, False)]
 
 
+# Rows the owner gave Track E cast and death (ADR-0011 amendments 2026-10-29 gun, 2026-11-03 thief).
+TRACK_E_ACTION_ROWS = {"gun", "thief"}
+
+
 def test_gun_cast_and_death_are_track_e_with_explicit_modes():
     """Owner 2026-10-29: gun row only; death uses the fall validator, explicit, never inferred from hold_last."""
     prof = load_profile(REAL, check_paths=False)
@@ -372,7 +376,10 @@ def test_gun_cast_and_death_are_track_e_with_explicit_modes():
     assert gun["death"].start_scale == 2
     assert all(gun[n].start_scale is None for n in ("idle", "run", "cast"))
     assert all(
-        a.start_scale is None for c in prof.characters if c != "gun" for a in prof.character(c).animations.values()
+        a.start_scale is None
+        for c in prof.characters
+        if c not in TRACK_E_ACTION_ROWS
+        for a in prof.character(c).animations.values()
     )
     start, table = 1, []
     for name in ("idle", "run", "cast", "death"):
@@ -381,10 +388,28 @@ def test_gun_cast_and_death_are_track_e_with_explicit_modes():
         start += a.frames
     assert table == GAME_CLIPS and start == 25  # columns = sum(frames) + 1
     for other in prof.characters:  # every other character is unchanged
-        if other != "gun":
+        if other not in TRACK_E_ACTION_ROWS:
             anims = prof.character(other).animations
             assert anims["cast"] == prof.animations["cast"] and anims["death"] == prof.animations["death"]
             assert anims["death"].validator_mode is None and anims["cast"].track_default is None
+
+
+def test_thief_cast_and_death_are_track_e_with_explicit_modes():
+    """Owner 2026-11-03 "Approve as drafted": thief dagger-strike cast and a fall death with the gun's room rule."""
+    prof = load_profile(REAL, check_paths=False)
+    thief = prof.character("thief").animations
+    assert (thief["cast"].track_default, thief["cast"].validator_mode, thief["cast"].start_scale) == ("E", None, None)
+    assert thief["cast"].prompt_motion.startswith("strikes fast with both reverse-grip daggers")
+    death = thief["death"]
+    assert (death.track_default, death.validator_mode, death.hold_last, death.start_scale) == ("E", "fall", True, 2)
+    assert death.prompt_motion == "is hit, staggers and collapses to the ground, ending lying still"
+    assert thief["idle"] == prof.animations["idle"] and thief["run"] == prof.animations["run"]
+    start, table = 1, []
+    for name in ("idle", "run", "cast", "death"):
+        a = thief[name]
+        table.append((name, start, a.frames, a.fps, a.loop))
+        start += a.frames
+    assert table == GAME_CLIPS
 
 
 def test_new_animation_keys_keep_frozen_rows_stable():
@@ -393,7 +418,11 @@ def test_new_animation_keys_keep_frozen_rows_stable():
 
     prof = load_profile(REAL, check_paths=False)
     old_keys = {"frames", "fps", "loop", "loop_from", "hold_last", "track_default", "template"}
-    assert all(set(a) == old_keys for a in _spec(prof, "thief")["animations"].values())
+    thief = _spec(prof, "thief")["animations"]
+    assert set(thief["run"]) == set(thief["idle"]) == old_keys  # the approved run/idle rows stay bound unchanged
+    assert set(thief["cast"]) == old_keys | {"prompt_motion"}
+    assert set(thief["death"]) == old_keys | {"validator_mode", "prompt_motion", "start_scale"}
+    assert all(set(a) == old_keys for a in _spec(prof, "engineer")["animations"].values())
     gun = _spec(prof, "gun")["animations"]
     assert set(gun["run"]) == set(gun["idle"]) == old_keys
     assert set(gun["cast"]) == old_keys | {"prompt_motion"}
