@@ -123,10 +123,15 @@ characters:
   thief:                  # Phase 5 new class (DYL-134); owner-approved row 2026-10-28; default limits
     cell: 144
     anchor_mode: foot
-    animations:             # owner 2026-11-03 (ADR-0011 amendment): thief Track E cast (dagger strike) and death
+    max_attempts_per_animation: 6   # owner 2026-11-03: "3 more, narrower stance (Recommended)" (cap 3 -> 6 after three
+                                    #   cast seeds failed foot_slide). Row-level cap only: each clip's campaign seed
+                                    #   budget still bounds it
+    animations:             # owner 2026-11-03 (ADR-0011 amendments): thief Track E cast (dagger strike) and death
       cast:
         track_default: E
-        prompt_motion: "strikes fast with both reverse-grip daggers, a short slash with each hand, then returns to the ready stance; feet stay planted"
+        # owner 2026-11-03 "3 more, narrower stance": short strikes close to the body, feet shoulder-width (was "strikes
+        #   fast with both reverse-grip daggers, a short slash with each hand, then returns to the ready stance; feet stay planted")
+        prompt_motion: "makes short, quick strikes close to the body with both reverse-grip daggers, one per hand, feet planted shoulder-width apart and not moving, then returns to the ready stance"
       death:
         track_default: E
         validator_mode: fall    # ADR-0008 fall addendum
