@@ -353,7 +353,8 @@ def test_character_attempt_limit_override():
     prof = load_profile(REAL, check_paths=False)
     assert prof.attempt_limit("gun") == 9
     assert prof.attempt_limit("thief") == 6  # owner 2026-11-03 "3 more, narrower stance": cast cap 3 -> 6
-    assert prof.attempt_limit("engineer") == prof.autonomy.max_attempts_per_animation == 3
+    assert prof.attempt_limit("engineer") == 6  # owner 2026-11-07 "Amend and run (Recommended)"
+    assert prof.attempt_limit("pyromancer") == prof.autonomy.max_attempts_per_animation == 3
     assert prof.attempt_limit("not-a-row") == 3
 
 
@@ -361,8 +362,8 @@ def test_character_attempt_limit_override():
 GAME_CLIPS = [("idle", 1, 4, 5, True), ("run", 5, 6, 10, True), ("cast", 11, 8, 10, False), ("death", 19, 6, 8, False)]
 
 
-# Rows the owner gave Track E cast and death (ADR-0011 amendments 2026-10-29 gun, 2026-11-03 thief).
-TRACK_E_ACTION_ROWS = {"gun", "thief"}
+# Rows the owner gave Track E cast and death (ADR-0011 amendments: gun 2026-10-29, thief 2026-11-03, engineer 11-07).
+TRACK_E_ACTION_ROWS = {"gun", "thief", "engineer"}
 
 
 def test_gun_cast_and_death_are_track_e_with_explicit_modes():
@@ -415,6 +416,27 @@ def test_thief_cast_and_death_are_track_e_with_explicit_modes():
     assert table == GAME_CLIPS
 
 
+def test_engineer_cast_and_death_are_track_e_with_explicit_modes():
+    """Owner 2026-11-07 "Amend and run (Recommended)": engineer hand-cannon cast and a fall death with the gun's room
+    rule."""
+    prof = load_profile(REAL, check_paths=False)
+    eng = prof.character("engineer").animations
+    assert (eng["cast"].track_default, eng["cast"].validator_mode, eng["cast"].start_scale) == ("E", None, None)
+    assert eng["cast"].prompt_motion == (
+        "raises the hand cannon, fires one shot with a small recoil, then lowers it; feet stay planted"
+    )
+    death = eng["death"]
+    assert (death.track_default, death.validator_mode, death.hold_last, death.start_scale) == ("E", "fall", True, 2)
+    assert death.prompt_motion == "is hit, staggers and collapses to the ground, ending lying still"
+    assert eng["idle"] == prof.animations["idle"] and eng["run"] == prof.animations["run"]
+    start, table = 1, []
+    for name in ("idle", "run", "cast", "death"):
+        a = eng[name]
+        table.append((name, start, a.frames, a.fps, a.loop))
+        start += a.frames
+    assert table == GAME_CLIPS
+
+
 def test_new_animation_keys_keep_frozen_rows_stable():
     """registry._spec (campaign character_row) omits unset new keys: rows frozen before them still compare equal."""
     from sonoranlab.registry import _spec
@@ -425,7 +447,11 @@ def test_new_animation_keys_keep_frozen_rows_stable():
     assert set(thief["run"]) == set(thief["idle"]) == old_keys  # the approved run/idle rows stay bound unchanged
     assert set(thief["cast"]) == old_keys | {"prompt_motion"}
     assert set(thief["death"]) == old_keys | {"validator_mode", "prompt_motion", "start_scale"}
-    assert all(set(a) == old_keys for a in _spec(prof, "engineer")["animations"].values())
+    engineer = _spec(prof, "engineer")["animations"]
+    assert set(engineer["run"]) == set(engineer["idle"]) == old_keys  # the approved run/idle rows stay bound unchanged
+    assert set(engineer["cast"]) == old_keys | {"prompt_motion"}
+    assert set(engineer["death"]) == old_keys | {"validator_mode", "prompt_motion", "start_scale"}
+    assert all(set(a) == old_keys for a in _spec(prof, "pyromancer")["animations"].values())
     gun = _spec(prof, "gun")["animations"]
     assert set(gun["run"]) == set(gun["idle"]) == old_keys
     assert set(gun["cast"]) == old_keys | {"prompt_motion"}
