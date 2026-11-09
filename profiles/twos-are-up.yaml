@@ -144,6 +144,17 @@ characters:
   engineer:               # Phase 5 new class (DYL-134); owner-approved row 2026-10-28; default limits
     cell: 144
     anchor_mode: foot
+    max_attempts_per_animation: 6   # owner 2026-11-07 "Amend and run (Recommended)": cap 6 (3 seeds per clip budget).
+                                    #   Row-level cap only: each clip's campaign seed budget still bounds it
+    animations:             # owner 2026-11-07 (ADR-0011 amendment): engineer Track E cast (hand-cannon shot) and death
+      cast:
+        track_default: E
+        prompt_motion: "raises the hand cannon, fires one shot with a small recoil, then lowers it; feet stay planted"
+      death:
+        track_default: E
+        validator_mode: fall    # ADR-0008 fall addendum
+        start_scale: 2          # same room rule as the gun's and thief's death
+        prompt_motion: "is hit, staggers and collapses to the ground, ending lying still"
     max_foot_slide_px: 30
     max_bbox_drift_px: 25
     opaque_area_cv_warn: 0.13

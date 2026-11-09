@@ -123,6 +123,19 @@ quick strikes close to the body with both reverse-grip daggers, one per hand, fe
 moving, then returns to the ready stance". Validator limits are unchanged. The 3-seed grant is the owner's
 `budget_grant`; the changed cast row needs a campaign revision, and the death, idle and run rows are unchanged.
 
+**Amendment 2026-11-07 (engineer cast and death).** Twos Are Up F3.8 needs the Engineer's game body with cast and
+death; the engineer row had only the frozen pilot clips. Owner question (relayed from the Twos Are Up session): "Cast
+and death need a Track E amendment to the engineer row in SonoranLab's profile, as the Gun and Thief got. May I add it
+and run the clips?" Answer: "Amend and run (Recommended)", with these terms: cast `prompt_motion` "raises the hand
+cannon, fires one shot with a small recoil, then lowers it; feet stay planted"; death Track E, `validator_mode: fall`,
+`start_scale: 2`, `prompt_motion` "is hit, staggers and collapses to the ground, ending lying still"; budget 3 seeds
+per clip; the row's `max_attempts_per_animation` is 6; edit SonoranLab locally, push nothing and open no PR; the owner
+reviews the clips at 1x before install. As implemented: the engineer row (`characters.engineer.animations`) makes
+`cast` and `death` Track E exactly as the gun and thief amendments do (death canvas round16(144×3) = 432 px, still at
+×2 = 288 px, 72 px of background each side). Validator limits are unchanged. The engineer's run/idle rows are
+unchanged, so their selections (run job-20261028T171349Z-2b667313, idle job-20261028T180159Z-6ffa35aa) and the
+owner's 1× review stay current (rows are bound per clip).
+
 Every exported sheet: eight rows in profile order; five generated directions; north-west/west/south-west animation
 rows mirrored from north-east/east/south-east; column 0 = the eight approved stills, pixel-exact; unchanged palette,
 alpha and validator limits.
@@ -192,8 +205,8 @@ here. Samurai, oathguard and pyromancer are regression baselines, not new classe
 | O2 | Accept this ADR | **accepted 2026-10-29** with the amendments above |
 | O3 | Trial classes gun, thief, engineer; Codex creates the references | given 2026-10-28 |
 | O4 | Each class request and its eight-still reference set (hash-bound) | given 2026-10-28: "Approve all three" (gun-v3, thief-v3-dp6, engineer-v3); engineer `height_m` amended to 1.74 on 2026-10-28 ("Set height_m to 1.74") |
-| O5 | Profile rows for gun/thief/engineer | given 2026-10-28: "Approve rows" (gun 160, thief 144, engineer 144, default limits); gun `max_attempts_per_animation: 6` on 2026-10-28; 9 and death `start_scale: 2` on 2026-10-29 ("Widen the canvas for fall clips, grant 3 more death seeds (cap to 9)"); thief Track E `cast`/`death` (death `validator_mode: fall`, `start_scale: 2`) on 2026-11-03 ("Approve as drafted (Recommended)"); thief `max_attempts_per_animation: 6` and narrower cast wording on 2026-11-03 ("3 more, narrower stance (Recommended)") |
-| O6 | Live generation budget per class | given 2026-10-28: "≤3 seeds per clip"; gun run +3 ("Grant 3 more seeds"); thief cast and death 3 each on 2026-11-03 ("3 seeds each (Recommended)"); thief cast +3 on 2026-11-03 ("3 more, narrower stance (Recommended)") |
+| O5 | Profile rows for gun/thief/engineer | given 2026-10-28: "Approve rows" (gun 160, thief 144, engineer 144, default limits); gun `max_attempts_per_animation: 6` on 2026-10-28; 9 and death `start_scale: 2` on 2026-10-29 ("Widen the canvas for fall clips, grant 3 more death seeds (cap to 9)"); thief Track E `cast`/`death` (death `validator_mode: fall`, `start_scale: 2`) on 2026-11-03 ("Approve as drafted (Recommended)"); thief `max_attempts_per_animation: 6` and narrower cast wording on 2026-11-03 ("3 more, narrower stance (Recommended)"); engineer Track E `cast`/`death` (death `validator_mode: fall`, `start_scale: 2`) and `max_attempts_per_animation: 6` on 2026-11-07 ("Amend and run (Recommended)") |
+| O6 | Live generation budget per class | given 2026-10-28: "≤3 seeds per clip"; gun run +3 ("Grant 3 more seeds"); thief cast and death 3 each on 2026-11-03 ("3 seeds each (Recommended)"); thief cast +3 on 2026-11-03 ("3 more, narrower stance (Recommended)"); engineer cast and death 3 each on 2026-11-07 ("Amend and run (Recommended)") |
 | O7 | Track C live window (DYL-127) | given 2026-10-28: host ComfyUI kept off for Phase 5 |
 | O8 | Game read + private staged copies + disposable snapshot (DYL-131/133) | given 2026-10-28 |
 | O9 | One bounded live repair edit (DYL-132) | given 2026-10-28 for a pyromancer copy (refused at admission); retargeted 2026-10-29 to a disposable copy of an approved Phase 5 thief job; performed; child approved 2026-11-01 ("Record that I approve the thief child") |
