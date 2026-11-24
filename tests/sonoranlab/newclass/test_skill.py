@@ -8,7 +8,7 @@ from newclass_agent import ALLOWED
 
 from sonoranlab.api import call
 
-SKILL = Path(__file__).resolve().parents[3] / ".claude/skills/new-class/SKILL.md"
+SKILL = Path(__file__).resolve().parents[3] / ".agents/skills/new-class/SKILL.md"
 FORBIDDEN_MENTIONS = {"pose_frame", "animate", "retry_job", "cancel_job"}  # named only in the "never call" rule
 
 

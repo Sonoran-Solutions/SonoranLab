@@ -1,6 +1,6 @@
 # New class: the `/new-class` skill (DYL-130)
 
-`.claude/skills/new-class/SKILL.md` is a Claude Code project skill that runs the ADR-0011 loop
+`.agents/skills/new-class/SKILL.md` is a project skill that runs the ADR-0011 loop
 ([docs/10](../10-orchestrator-loop.md)) over the SonoranLab MCP server (`.mcp.json`). It is a procedure for the
 agent, not code: everything it does goes through the 23 allowlisted tools, and everything it cannot do is an owner
 or coordinator command it prints and stops for.

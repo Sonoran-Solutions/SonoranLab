@@ -1,4 +1,4 @@
-"""`sonoranlab <verb>`: the CLI every MCP tool wraps (CLAUDE.md). Exit codes: 0 ok, 1 validation failed, 2 usage/config.
+"""`sonoranlab <verb>`: the CLI every MCP tool wraps (AGENTS.md). Exit codes: 0 ok, 1 validation failed, 2 usage/config.
 
 A new verb is one `add_parser` block in `build_parser` plus its handler function below.
 """

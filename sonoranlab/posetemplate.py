@@ -1,6 +1,6 @@
 """Render an OpenPose control image for any cell from a pose template's canvas-independent joints.
 
-Pixel math lives here, not in a prompt (CLAUDE.md #1). This mirrors tools/godot/bake_rig.gd `_draw_pose`:
+Pixel math lives here, not in a prompt (AGENTS.md #1). This mirrors tools/godot/bake_rig.gd `_draw_pose`:
 filled-ellipse limbs at 0.6x colour, then full-colour joint discs, on black; null face points skipped.
 Joint mapping is the template's `to_canvas`: s = W/cell, px = W/2 + x*s, py = (cell - 3)*s - h*s.
 """

@@ -1,4 +1,4 @@
-# CLAUDE.md — conventions for agents working in SonoranLab
+# AGENTS.md — conventions for agents working in SonoranLab
 
 Read `README.md` and `PLAN.md` first. Read `docs/02-research-findings.md`
 before proposing a different model, node pack, or tool; most "obvious" swaps
