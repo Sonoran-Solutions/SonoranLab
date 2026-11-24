@@ -1,4 +1,4 @@
-"""Clip registration on the foot line / rig anchor (CLAUDE.md non-negotiable 3), never centre of mass.
+"""Clip registration on the foot line / rig anchor (AGENTS.md non-negotiable 3), never centre of mass.
 
 One (dx, dy) for the whole clip, so a frame's bob relative to its neighbours survives. Plain numpy, no profile.
 Parity reference: `benchmark/tools/process.py::register_clip` (processing-v1).

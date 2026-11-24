@@ -40,7 +40,7 @@ foot line is ever delegated to a prompt.
 ```
 README.md                 you are here
 PLAN.md                   phased implementation plan with exit criteria
-CLAUDE.md                 conventions for agents working in this repo
+AGENTS.md                 conventions for agents working in this repo
 docs/
   00-vision.md            what this is, what it is not, success criteria
   01-architecture.md      layers, data flow, where code vs model lives

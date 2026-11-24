@@ -1,4 +1,4 @@
-"""A scripted (not LLM) /new-class agent: plain Python following .claude/skills/new-class/SKILL.md over a real stdio
+"""A scripted (not LLM) /new-class agent: plain Python following .agents/skills/new-class/SKILL.md over a real stdio
 MCP session. It only interprets structured results, never free text, which is what the skill demands."""
 
 from __future__ import annotations

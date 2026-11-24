@@ -2,7 +2,7 @@
 
 How an agent (Claude Code, or any MCP client) turns a class request and eight approved stills into a validated,
 owner-reviewed sheet and a delivery bundle for the game. Phase 5 encodes it as the project-scoped `/new-class`
-skill ([`.claude/skills/new-class/SKILL.md`](../.claude/skills/new-class/SKILL.md), operator notes in
+skill ([`.agents/skills/new-class/SKILL.md`](../.agents/skills/new-class/SKILL.md), operator notes in
 [runbooks/new-class.md](runbooks/new-class.md)). Contract: [ADR-0011](decisions/ADR-0011-phase5-new-class-contract.md). The loop is deliberately boring: the
 agent's job is judgment and stopping at the right gate, not cleverness.
 

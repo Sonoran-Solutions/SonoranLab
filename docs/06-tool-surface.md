@@ -537,7 +537,7 @@ Owner decisions (`budget_grant` adds seeds, `resume` clears a non-artistic block
 
 ## `/new-class` support tools (DYL-130)
 
-The project skill `.claude/skills/new-class/SKILL.md` drives the ADR-0011 loop with an allowlist of 23 tools; see
+The project skill `.agents/skills/new-class/SKILL.md` drives the ADR-0011 loop with an allowlist of 23 tools; see
 [the new-class runbook](runbooks/new-class.md). These four tools close its gaps.
 
 | Tool | Access / kind | Input | Result |
